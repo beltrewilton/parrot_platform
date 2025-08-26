@@ -14,7 +14,7 @@ defmodule Parrot.MediaHandler do
 
   Media handlers receive messages through `handle_info/2` from your SIP handlers,
   allowing for powerful media control patterns:
-  
+
   - Play single or multiple audio files with looping options
   - Fork audio to WebSocket servers for transcription/analysis
   - Receive processed audio from external services
@@ -31,7 +31,7 @@ defmodule Parrot.MediaHandler do
   send(media_handler_pid, {:play_files, ["welcome.wav", "menu.wav"], loop: true})
   send(media_handler_pid, {:play_files, ["music.wav"], loop: false})  # Play once
   send(media_handler_pid, {:stop_playback})
-  
+
   # Connect audio devices (for UAC or soft phone scenarios)
   send(media_handler_pid, {:connect_microphone})  # Connect mic for input
   send(media_handler_pid, {:connect_speakers})    # Connect speakers for output
@@ -173,7 +173,8 @@ defmodule Parrot.MediaHandler do
           {:play, file_path :: String.t()}
           | {:play_sequence, [String.t()]}
           | {:play_loop, [String.t()]}
-          | {:connect_audio_device, input_device :: String.t() | nil, output_device :: String.t() | nil}
+          | {:connect_audio_device, input_device :: String.t() | nil,
+             output_device :: String.t() | nil}
           | {:set_audio_source, :file | :device | :bridge | :rtp}
           | {:set_audio_sink, :rtp | :device | :file | :bridge | :none}
           | :stop
