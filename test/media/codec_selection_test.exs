@@ -2,6 +2,7 @@ defmodule Parrot.Media.CodecSelectionTest do
   use ExUnit.Case, async: true
 
   alias Parrot.Media.MediaSession
+  alias Parrot.Test.TestMediaHandler
 
   describe "codec selection" do
     test "SDP offer with PCMA and PCMU selects PCMA when preferred" do
@@ -10,6 +11,7 @@ defmodule Parrot.Media.CodecSelectionTest do
         id: "test-session-1",
         dialog_id: "test-dialog-1",
         role: :uas,
+        media_handler: TestMediaHandler,
         supported_codecs: [:pcma, :pcmu]
       ]
 
@@ -46,6 +48,7 @@ defmodule Parrot.Media.CodecSelectionTest do
         id: "test-session-2",
         dialog_id: "test-dialog-2",
         role: :uas,
+        media_handler: TestMediaHandler,
         supported_codecs: [:pcma]
       ]
 
@@ -81,6 +84,7 @@ defmodule Parrot.Media.CodecSelectionTest do
         id: "test-session-3",
         dialog_id: "test-dialog-3",
         role: :uac,
+        media_handler: TestMediaHandler,
         supported_codecs: [:pcma, :opus]
       ]
 

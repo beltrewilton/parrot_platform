@@ -190,26 +190,7 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
     end
   end
   
-  describe "MediaSession without MediaHandler" do
-    test "ignores media messages when no handler configured" do
-      {:ok, session} = MediaSession.start_link(
-        id: "test_no_handler_#{:rand.uniform(10000)}",
-        dialog_id: "test_dialog_#{:rand.uniform(10000)}",
-        role: :uas
-        # No media_handler specified
-      )
-      
-      # Send play_files message - should be ignored
-      send(session, {:play_files, ["test.wav"], loop: false})
-      
-      Process.sleep(50)
-      
-      # Session should still be running
-      assert Process.alive?(session)
-      
-      GenServer.stop(session)
-    end
-  end
+  # Removed "MediaSession without MediaHandler" tests - MediaHandler is now required
   
   describe "MediaSession with audio device actions" do
     test "handles :connect_microphone message" do

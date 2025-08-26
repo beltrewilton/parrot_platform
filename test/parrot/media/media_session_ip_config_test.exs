@@ -3,13 +3,15 @@ defmodule Parrot.Media.MediaSessionIPConfigTest do
   
   alias Parrot.Media.MediaSession
   alias Parrot.Sip.Transport.Inet
+  alias Parrot.Test.TestMediaHandler
   
   describe "IP configuration" do
     test "uses auto-detected IP by default" do
       {:ok, pid} = MediaSession.start_link(
         id: "test-ip-auto",
         dialog_id: "dialog-ip-auto",
-        role: :uac  # generate_offer requires UAC role
+        role: :uac,  # generate_offer requires UAC role
+        media_handler: TestMediaHandler
       )
       
       # Generate offer to see what IP is used
@@ -27,6 +29,7 @@ defmodule Parrot.Media.MediaSessionIPConfigTest do
         id: "test-ip-explicit",
         dialog_id: "dialog-ip-explicit",
         role: :uac,
+        media_handler: TestMediaHandler,
         local_ip: "192.168.1.100"
       )
       
@@ -41,6 +44,7 @@ defmodule Parrot.Media.MediaSessionIPConfigTest do
         id: "test-ip-tuple",
         dialog_id: "dialog-ip-tuple",
         role: :uac,
+        media_handler: TestMediaHandler,
         local_ip: {10, 0, 0, 1}
       )
       
@@ -55,6 +59,7 @@ defmodule Parrot.Media.MediaSessionIPConfigTest do
         id: "test-ip-advertised",
         dialog_id: "dialog-ip-advertised",
         role: :uac,
+        media_handler: TestMediaHandler,
         local_ip: "192.168.1.100",
         advertised_ip: "203.0.113.1"
       )
@@ -83,6 +88,7 @@ defmodule Parrot.Media.MediaSessionIPConfigTest do
         id: "test-ip-answer",
         dialog_id: "dialog-ip-answer",
         role: :uas,
+        media_handler: TestMediaHandler,
         local_ip: "172.16.0.10",
         advertised_ip: "198.51.100.1"
       )
@@ -101,6 +107,7 @@ defmodule Parrot.Media.MediaSessionIPConfigTest do
         id: "test-ip-invalid",
         dialog_id: "dialog-ip-invalid",
         role: :uac,
+        media_handler: TestMediaHandler,
         local_ip: "invalid.ip.address"
       )
       

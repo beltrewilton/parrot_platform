@@ -1,6 +1,7 @@
 defmodule Parrot.Media.MediaSessionAudioTest do
   use ExUnit.Case, async: true
   alias Parrot.Media.MediaSession
+  alias Parrot.Test.TestMediaHandler
 
   describe "audio configuration" do
     test "defaults audio_source to :file when audio_file is provided" do
@@ -9,6 +10,7 @@ defmodule Parrot.Media.MediaSessionAudioTest do
           id: "test-audio-1",
           dialog_id: "dialog-1",
           role: :uas,
+          media_handler: TestMediaHandler,
           audio_file: "/path/to/audio.wav"
         )
 
@@ -24,7 +26,8 @@ defmodule Parrot.Media.MediaSessionAudioTest do
         MediaSession.start_link(
           id: "test-audio-2",
           dialog_id: "dialog-2",
-          role: :uas
+          role: :uas,
+          media_handler: TestMediaHandler
         )
 
       {_state_name, data} = :sys.get_state(pid)
@@ -40,6 +43,7 @@ defmodule Parrot.Media.MediaSessionAudioTest do
           id: "test-audio-3",
           dialog_id: "dialog-3",
           role: :uas,
+          media_handler: TestMediaHandler,
           audio_source: :device,
           audio_sink: :device,
           input_device_id: 0,
@@ -61,6 +65,7 @@ defmodule Parrot.Media.MediaSessionAudioTest do
           id: "test-audio-4",
           dialog_id: "dialog-4",
           role: :uas,
+          media_handler: TestMediaHandler,
           audio_source: :silence,
           audio_sink: :file,
           output_file: "/tmp/recording.wav"
@@ -98,6 +103,7 @@ defmodule Parrot.Media.MediaSessionAudioTest do
           id: "test-pipeline-1",
           dialog_id: "dialog-5",
           role: :uas,
+          media_handler: TestMediaHandler,
           audio_source: :device
         )
 
@@ -116,6 +122,7 @@ defmodule Parrot.Media.MediaSessionAudioTest do
           id: "test-pipeline-2",
           dialog_id: "dialog-6",
           role: :uas,
+          media_handler: TestMediaHandler,
           audio_source: :file,
           audio_sink: :none,
           audio_file: "/path/to/audio.wav"

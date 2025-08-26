@@ -21,8 +21,10 @@ defmodule Parrot.Media.MediaSession do
 
       {:ok, session} = MediaSession.start_link(
         id: "session_123",
+        dialog_id: "dialog_456",
         role: :uas,
-        audio_file: "/path/to/audio.wav"
+        media_handler: MyApp.MediaHandler,
+        handler_args: %{audio_file: "/path/to/audio.wav"}
       )
 
       {:ok, answer} = MediaSession.process_offer(session, sdp_offer)
@@ -109,7 +111,7 @@ defmodule Parrot.Media.MediaSession do
             audio_file: String.t() | nil,
             owner_pid: pid() | nil,
             owner_monitor: reference() | nil,
-            media_handler: module() | nil,
+            media_handler: module(),
             handler_state: term(),
             supported_codecs: list(),
             selected_codec: atom() | nil,
@@ -129,23 +131,26 @@ defmodule Parrot.Media.MediaSession do
   @doc """
   Starts a media session.
 
-  ## Options
+  ## Required Options
 
-  - `:id` - Session ID (required)
-  - `:dialog_id` - Dialog ID this session belongs to (required)
-  - `:role` - `:uac` or `:uas` (required)
-  - `:owner` - Owner process PID (optional, defaults to caller)
-  - `:audio_file` - Path to audio file to play (optional, used when audio_source is :file)
-  - `:audio_source` - Source of audio: `:file` | `:device` | `:silence` (optional, defaults to :file if audio_file provided)
-  - `:audio_sink` - Destination for received audio: `:none` | `:device` | `:file` (optional, defaults to :none)
-  - `:output_file` - Path to save received audio when audio_sink is :file (optional)
-  - `:input_device_id` - PortAudio device ID for microphone when audio_source is :device (optional)
-  - `:output_device_id` - PortAudio device ID for speaker when audio_sink is :device (optional)
-  - `:media_handler` - Media handler module (optional)
-  - `:handler_state` - Initial handler state (optional)
-  - `:supported_codecs` - List of supported codecs in preference order (optional, defaults to [:pcma])
-  - `:local_ip` - Local IP address for media: `:auto` | IP string | IP tuple (optional, defaults to :auto)
-  - `:advertised_ip` - IP to advertise in SDP if different from local_ip (optional, for NAT scenarios)
+  - `:id` - Session ID
+  - `:dialog_id` - Dialog ID this session belongs to
+  - `:role` - `:uac` or `:uas`
+  - `:media_handler` - Media handler module implementing `Parrot.Media.MediaHandler` behaviour
+
+  ## Optional Options
+
+  - `:handler_args` - Arguments to pass to media handler init (defaults to %{})
+  - `:owner` - Owner process PID (defaults to caller)
+  - `:audio_file` - Path to audio file to play (used when audio_source is :file)
+  - `:audio_source` - Source of audio: `:file` | `:device` | `:silence` (defaults to :file if audio_file provided)
+  - `:audio_sink` - Destination for received audio: `:none` | `:device` | `:file` (defaults to :none)
+  - `:output_file` - Path to save received audio when audio_sink is :file
+  - `:input_device_id` - PortAudio device ID for microphone when audio_source is :device
+  - `:output_device_id` - PortAudio device ID for speaker when audio_sink is :device
+  - `:supported_codecs` - List of supported codecs in preference order (defaults to [:pcma])
+  - `:local_ip` - Local IP address for media: `:auto` | IP string | IP tuple (defaults to :auto)
+  - `:advertised_ip` - IP to advertise in SDP if different from local_ip (for NAT scenarios)
   """
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(opts) do
@@ -242,12 +247,15 @@ defmodule Parrot.Media.MediaSession do
 
   @impl true
   def init(opts) do
+    # Required parameters
     id = Keyword.fetch!(opts, :id)
     dialog_id = Keyword.fetch!(opts, :dialog_id)
     role = Keyword.fetch!(opts, :role)
+    media_handler = Keyword.fetch!(opts, :media_handler)
+
+    # Optional parameters
     owner_pid = Keyword.get(opts, :owner, self())
     audio_file = Keyword.get(opts, :audio_file)
-    media_handler = Keyword.get(opts, :media_handler)
     handler_args = Keyword.get(opts, :handler_args, %{})
     # G.711 A-law by default
     supported_codecs = Keyword.get(opts, :supported_codecs, [:pcma])
@@ -291,35 +299,30 @@ defmodule Parrot.Media.MediaSession do
       advertised_ip: advertised_ip
     }
 
-    # Call media handler init if provided
-    data =
-      if media_handler do
-        case media_handler.init(handler_args || %{}) do
-          {:ok, new_handler_state} ->
-            # Call handle_session_start callback
-            case media_handler.handle_session_start(id, opts, new_handler_state) do
-              {:ok, handler_state} ->
-                %{data | handler_state: handler_state}
+    # Initialize media handler (required)
+    case media_handler.init(handler_args) do
+      {:ok, initial_handler_state} ->
+        # Call handle_session_start callback
+        case media_handler.handle_session_start(id, opts, initial_handler_state) do
+          {:ok, handler_state} ->
+            final_data = %{data | handler_state: handler_state}
+            Logger.info("MediaSession #{id} starting for dialog #{dialog_id} as #{role}")
+            {:ok, :idle, final_data}
 
-              {:error, reason, handler_state} ->
-                Logger.error("MediaHandler failed to start session: #{inspect(reason)}")
-                %{data | handler_state: handler_state}
-            end
-
-          {:stop, reason} ->
-            Logger.error("MediaHandler init failed: #{inspect(reason)}")
-            data
+          {:error, reason, _handler_state} ->
+            Logger.error("MediaHandler failed to start session: #{inspect(reason)}")
+            {:stop, {:handler_session_start_failed, reason}}
         end
-      else
-        data
-      end
 
-    Logger.info("MediaSession #{id} starting for dialog #{dialog_id} as #{role}")
-
-    {:ok, :idle, data}
+      {:stop, reason} ->
+        Logger.error("MediaHandler init failed: #{inspect(reason)}")
+        {:stop, {:handler_init_failed, reason}}
+    end
   end
 
-  # State: idle
+  ###############
+  # State: idle #
+  ###############
 
   def idle({:call, from}, :generate_offer, data) when data.role == :uac do
     # Generate SDP offer
@@ -331,31 +334,54 @@ defmodule Parrot.Media.MediaSession do
   def idle({:call, from}, {:process_offer, sdp_offer}, data) when data.role == :uas do
     Logger.info("MediaSession #{data.id}: Processing SDP offer in idle state")
 
-    # Call handler's handle_offer callback if available
-    if data.media_handler do
-      case data.media_handler.handle_offer(sdp_offer, :inbound, data.handler_state) do
-        {:ok, modified_sdp, new_state} ->
-          data = %{data | handler_state: new_state}
-          process_offer_internal(from, modified_sdp, data)
+    # Call handler's handle_offer callback (handler is always present now)
+    case data.media_handler.handle_offer(sdp_offer, :inbound, data.handler_state) do
+      {:ok, modified_sdp, new_state} ->
+        data = %{data | handler_state: new_state}
+        process_offer_internal(from, modified_sdp, data)
 
-        {:reject, reason, new_state} ->
-          Logger.warning("MediaSession #{data.id}: Handler rejected offer: #{inspect(reason)}")
+      {:reject, reason, new_state} ->
+        Logger.warning("MediaSession #{data.id}: Handler rejected offer: #{inspect(reason)}")
 
-          {:keep_state, %{data | handler_state: new_state},
-           [{:reply, from, {:error, {:handler_rejected, reason}}}]}
+        {:keep_state, %{data | handler_state: new_state},
+         [{:reply, from, {:error, {:handler_rejected, reason}}}]}
 
-        {:noreply, new_state} ->
-          data = %{data | handler_state: new_state}
-          process_offer_internal(from, sdp_offer, data)
-      end
-    else
-      process_offer_internal(from, sdp_offer, data)
+      {:noreply, new_state} ->
+        data = %{data | handler_state: new_state}
+        process_offer_internal(from, sdp_offer, data)
     end
   end
 
-  def idle(event_type, event_content, data) do
-    handle_common_event(event_type, event_content, :idle, data)
+  # Owner process DOWN
+  def idle(:info, {:DOWN, ref, :process, _pid, reason}, %{owner_monitor: ref} = data) do
+    Logger.info("MediaSession #{data.id}: Owner process terminated: #{inspect(reason)}")
+    cleanup_session(data)
+    {:stop, :normal}
   end
+
+  # Pipeline process DOWN
+  def idle(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
+    Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
+    {:next_state, :ready, %{data | pipeline_pid: nil}}
+  end
+
+  # Media control messages
+  def idle(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
+  def idle(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
+
+  # Unknown process DOWN
+  def idle(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
+    Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
+    {:keep_state_and_data, []}
+  end
+
+  # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
+  def idle(:info, msg, data), do: handle_media_message(msg, data)
+
+  # get_state call
+  def idle({:call, from}, :get_state, data), do: reply_with_state(from, :idle, data)
+
+  # No catch-all for :call, :cast, or other event types - let them crash
 
   defp process_offer_internal(from, sdp_offer, data) do
     # Process SDP offer and generate answer
@@ -390,30 +416,55 @@ defmodule Parrot.Media.MediaSession do
     end
   end
 
-  def negotiating(event_type, event_content, data) do
-    handle_common_event(event_type, event_content, :negotiating, data)
+  # Owner process DOWN
+  def negotiating(:info, {:DOWN, ref, :process, _pid, reason}, %{owner_monitor: ref} = data) do
+    Logger.info("MediaSession #{data.id}: Owner process terminated: #{inspect(reason)}")
+    cleanup_session(data)
+    {:stop, :normal}
   end
+
+  # Pipeline process DOWN
+  def negotiating(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
+    Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
+    {:next_state, :ready, %{data | pipeline_pid: nil}}
+  end
+
+  # Media control messages
+  def negotiating(:info, {:play_files, _files, _opts} = msg, data),
+    do: handle_media_message(msg, data)
+
+  def negotiating(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
+
+  # Unknown process DOWN
+  def negotiating(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
+    Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
+    {:keep_state_and_data, []}
+  end
+
+  # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
+  def negotiating(:info, msg, data), do: handle_media_message(msg, data)
+
+  # get_state call
+  def negotiating({:call, from}, :get_state, data), do: reply_with_state(from, :negotiating, data)
+
+  # No catch-all for :call, :cast, or other event types - let them crash
 
   # State: ready
 
   def ready({:call, from}, :start_media, data) do
     Logger.info("MediaSession #{data.id}: Starting media pipeline in ready state")
 
-    # Notify handler that stream is starting
+    # Notify handler that stream is starting (handler is always present now)
     {action, updated_data} =
-      if data.media_handler do
-        case data.media_handler.handle_stream_start(data.id, :outbound, data.handler_state) do
-          {:noreply, new_state} ->
-            {:noreply, %{data | handler_state: new_state}}
+      case data.media_handler.handle_stream_start(data.id, :outbound, data.handler_state) do
+        {:noreply, new_state} ->
+          {:noreply, %{data | handler_state: new_state}}
 
-          {actions, new_state} when is_list(actions) ->
-            {List.first(actions), %{data | handler_state: new_state}}
+        {actions, new_state} when is_list(actions) ->
+          {List.first(actions), %{data | handler_state: new_state}}
 
-          {action, new_state} ->
-            {action, %{data | handler_state: new_state}}
-        end
-      else
-        {:noreply, data}
+        {action, new_state} ->
+          {action, %{data | handler_state: new_state}}
       end
 
     # Process any media action from handler
@@ -438,109 +489,133 @@ defmodule Parrot.Media.MediaSession do
     end
   end
 
-  def ready(event_type, event_content, data) do
-    handle_common_event(event_type, event_content, :ready, data)
+  # Owner process DOWN
+  def ready(:info, {:DOWN, ref, :process, _pid, reason}, %{owner_monitor: ref} = data) do
+    Logger.info("MediaSession #{data.id}: Owner process terminated: #{inspect(reason)}")
+    cleanup_session(data)
+    {:stop, :normal}
   end
 
-  # State: active
+  # Pipeline process DOWN
+  def ready(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
+    Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
+    {:next_state, :ready, %{data | pipeline_pid: nil}}
+  end
+
+  # Media control messages
+  def ready(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
+  def ready(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
+
+  # Unknown process DOWN
+  def ready(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
+    Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
+    {:keep_state_and_data, []}
+  end
+
+  # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
+  def ready(:info, msg, data), do: handle_media_message(msg, data)
+
+  # get_state call
+  def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
+
+  #################
+  # State: active #
+  #################
 
   def active({:call, from}, :pause_media, _data) do
     # Pause not implemented
     {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
   end
 
-  def active(event_type, event_content, data) do
-    handle_common_event(event_type, event_content, :active, data)
+  # Owner process DOWN
+  def active(:info, {:DOWN, ref, :process, _pid, reason}, %{owner_monitor: ref} = data) do
+    Logger.info("MediaSession #{data.id}: Owner process terminated: #{inspect(reason)}")
+    cleanup_session(data)
+    {:stop, :normal}
   end
 
-  # State: paused
+  # Pipeline process DOWN
+  def active(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
+    Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
+    {:next_state, :ready, %{data | pipeline_pid: nil}}
+  end
+
+  # Media control messages
+  def active(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
+  def active(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
+
+  # Unknown process DOWN
+  def active(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
+    Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
+    {:keep_state_and_data, []}
+  end
+
+  # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
+  def active(:info, msg, data), do: handle_media_message(msg, data)
+
+  # get_state call
+  def active({:call, from}, :get_state, data), do: reply_with_state(from, :active, data)
+
+  #################
+  # State: paused #
+  #################
 
   def paused({:call, from}, :resume_media, _data) do
     # Resume not implemented
     {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
   end
 
-  def paused(event_type, event_content, data) do
-    handle_common_event(event_type, event_content, :paused, data)
-  end
-
-  # State: terminated
-
-  def terminated(event_type, event_content, data) do
-    handle_common_event(event_type, event_content, :terminated, data)
-  end
-
-  # Common event handling
-
-  # Handle owner process termination
-  defp handle_common_event(
-         :info,
-         {:DOWN, ref, :process, _pid, reason},
-         _state,
-         %{owner_monitor: ref} = data
-       ) do
+  # Owner process DOWN
+  def paused(:info, {:DOWN, ref, :process, _pid, reason}, %{owner_monitor: ref} = data) do
     Logger.info("MediaSession #{data.id}: Owner process terminated: #{inspect(reason)}")
     cleanup_session(data)
     {:stop, :normal}
   end
 
-  # Handle pipeline process termination
-  defp handle_common_event(
-         :info,
-         {:DOWN, _ref, :process, pid, reason},
-         _state,
-         %{pipeline_pid: pid} = data
-       ) do
+  # Pipeline process DOWN
+  def paused(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    updated_data = %{data | pipeline_pid: nil}
-    {:next_state, :ready, updated_data}
+    {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-  # Handle media control messages  
-  # Handle media control messages - forward to handler in any state
-  defp handle_common_event(:info, {:play_files, _files, _opts} = msg, _state, data) do
-    Logger.info("MediaSession #{data.id}: handle_common_event - :info -> :play_files")
+  # Media control messages
+  def paused(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
+  def paused(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
 
-    case forward_to_media_handler(msg, data) do
-      {:ok, actions, new_handler_state} ->
-        updated_data = %{data | handler_state: new_handler_state}
-        updated_data = process_media_actions(actions, updated_data)
-        {:keep_state, updated_data, []}
-
-      {:noreply, new_handler_state} ->
-        {:keep_state, %{data | handler_state: new_handler_state}, []}
-
-      _ ->
-        {:keep_state_and_data, []}
-    end
-  end
-
-  defp handle_common_event(:info, {:stop_playback} = msg, _state, data) do
-    case forward_to_media_handler(msg, data) do
-      {:ok, actions, new_handler_state} ->
-        updated_data = %{data | handler_state: new_handler_state}
-        updated_data = process_media_actions(actions, updated_data)
-        {:keep_state, updated_data, []}
-
-      {:noreply, new_handler_state} ->
-        {:keep_state, %{data | handler_state: new_handler_state}, []}
-
-      _ ->
-        {:keep_state_and_data, []}
-    end
-  end
-
-  # Handle unknown process termination
-  defp handle_common_event(:info, {:DOWN, _ref, :process, pid, _reason}, _state, data) do
+  # Unknown process DOWN
+  def paused(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
     Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
     {:keep_state_and_data, []}
   end
 
-  # Handle any other messages that should be forwarded to the handler
-  defp handle_common_event(:info, msg, _state, data) do
-    Logger.info(
-      "MediaSession #{data.id}: handle_common_event :info -> msg:#{inspect(msg)}, data:#{inspect(data)}"
-    )
+  # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
+  def paused(:info, msg, data), do: handle_media_message(msg, data)
+
+  # get_state call
+  def paused({:call, from}, :get_state, data), do: reply_with_state(from, :paused, data)
+
+  #####################
+  # State: terminated #
+  #####################
+
+  # Terminated state - minimal handling, we're shutting down
+  def terminated(_event_type, _event_content, _data) do
+    {:keep_state_and_data, []}
+  end
+
+  # Helper functions for common patterns
+
+  defp handle_media_message(msg, data) do
+    case msg do
+      {:play_files, _files, _opts} ->
+        Logger.info("MediaSession #{data.id}: Handling play_files message")
+
+      :stop_playback ->
+        Logger.info("MediaSession #{data.id}: Handling stop_playback message")
+
+      _ ->
+        Logger.debug("MediaSession #{data.id}: Forwarding message to handler: #{inspect(msg)}")
+    end
 
     case forward_to_media_handler(msg, data) do
       {:ok, actions, new_handler_state} ->
@@ -551,13 +626,25 @@ defmodule Parrot.Media.MediaSession do
       {:noreply, new_handler_state} ->
         {:keep_state, %{data | handler_state: new_handler_state}, []}
 
-      _ ->
-        # If no handler or handler doesn't handle it, pass through silently
+      :no_handler_function ->
+        # Handler doesn't implement handle_info/2 - this is okay
+        Logger.debug(
+          "MediaSession #{data.id}: Handler doesn't implement handle_info/2 for message: #{inspect(msg)}"
+        )
+
+        {:keep_state_and_data, []}
+
+      :error ->
+        # Handler exists but had an error or didn't handle the message
+        Logger.warning(
+          "MediaSession #{data.id}: Unexpected info message not handled: #{inspect(msg)}"
+        )
+
         {:keep_state_and_data, []}
     end
   end
 
-  defp handle_common_event({:call, from}, :get_state, state, data) do
+  defp reply_with_state(from, state, data) do
     state_info = %{
       state: state,
       id: data.id,
@@ -569,14 +656,6 @@ defmodule Parrot.Media.MediaSession do
     }
 
     {:keep_state_and_data, [{:reply, from, state_info}]}
-  end
-
-  defp handle_common_event(event_type, event_content, state, data) do
-    Logger.warning(
-      "MediaSession #{data.id}: Unhandled event in state #{inspect(state)}: #{inspect(event_type)} #{inspect(event_content)}"
-    )
-
-    {:keep_state_and_data, []}
   end
 
   # Private helpers
@@ -703,7 +782,9 @@ defmodule Parrot.Media.MediaSession do
           pipeline_module
         )
 
-      {:ok, final_data} = call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec)
+      {:ok, final_data} =
+        call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec)
+
       Logger.info("MediaSession #{data.id}: SDP negotiation complete")
       {:ok, sdp_answer, final_data}
     end
@@ -747,16 +828,6 @@ defmodule Parrot.Media.MediaSession do
     )
 
     "127.0.0.1"
-  end
-
-  defp negotiate_codec(audio_media, %{media_handler: nil} = data) do
-    offered_codecs = extract_offered_codecs(audio_media)
-    selected_codec = select_best_codec(offered_codecs, data.supported_codecs)
-
-    case selected_codec do
-      nil -> {:error, :no_common_codec}
-      codec -> {:ok, codec, data.handler_state}
-    end
   end
 
   defp negotiate_codec(audio_media, %{media_handler: handler} = data) do
@@ -812,22 +883,13 @@ defmodule Parrot.Media.MediaSession do
     }
   end
 
-  defp call_handler_if_present(
-         %{media_handler: nil} = data,
-         _sdp_answer,
-         _sdp_offer,
-         _selected_codec
-       ) do
-    {:ok, data}
-  end
-
-  defp call_handler_if_present(
-         %{media_handler: handler} = data,
-         sdp_answer,
-         sdp_offer,
-         selected_codec
-       ) do
-    handler.handle_negotiation_complete(sdp_answer, sdp_offer, selected_codec, data.handler_state)
+  defp call_handler_if_present(data, sdp_answer, sdp_offer, selected_codec) do
+    data.media_handler.handle_negotiation_complete(
+      sdp_answer,
+      sdp_offer,
+      selected_codec,
+      data.handler_state
+    )
     |> handle_callback_result(data)
   end
 
@@ -872,16 +934,9 @@ defmodule Parrot.Media.MediaSession do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp select_best_codec(offered_codecs, supported_codecs) do
-    # Find first codec that appears in both lists (preference order from supported_codecs)
-    Enum.find(supported_codecs, :pcma, fn codec ->
-      codec in offered_codecs
-    end)
-  end
-
   defp generate_answer_sdp(local_rtp_port, selected_codec, data) do
     {pt, rtpmap} = get_codec_rtpmap(selected_codec)
-    
+
     # Get the IP address to use in SDP
     sdp_ip = get_sdp_ip(data)
 
@@ -1202,7 +1257,7 @@ defmodule Parrot.Media.MediaSession do
 
   # Forward messages to media handler
   defp forward_to_media_handler(msg, data) do
-    if data.media_handler && function_exported?(data.media_handler, :handle_info, 2) do
+    if function_exported?(data.media_handler, :handle_info, 2) do
       try do
         case data.media_handler.handle_info(msg, data.handler_state) do
           {actions, new_state} when is_list(actions) ->
@@ -1227,7 +1282,8 @@ defmodule Parrot.Media.MediaSession do
           :error
       end
     else
-      :no_handler
+      # Handler doesn't implement handle_info/2 - this is okay, it's optional
+      :no_handler_function
     end
   end
 
@@ -1290,11 +1346,13 @@ defmodule Parrot.Media.MediaSession do
   defp normalize_ip(ip) when is_binary(ip) do
     case :inet.parse_address(String.to_charlist(ip)) do
       {:ok, ip_tuple} -> ip_tuple
-      {:error, _} -> {127, 0, 0, 1}  # Fallback to localhost on parse error
+      # Fallback to localhost on parse error
+      {:error, _} -> {127, 0, 0, 1}
     end
   end
 
-  defp normalize_ip(_), do: {127, 0, 0, 1}  # Fallback for any other format
+  # Fallback for any other format
+  defp normalize_ip(_), do: {127, 0, 0, 1}
 
   defp ensure_pipeline_termination(pipeline_pid, pipeline_module) when is_pid(pipeline_pid) do
     ref = Process.monitor(pipeline_pid)

@@ -302,37 +302,5 @@ defmodule Parrot.Media.MediaSessionHandlerIntegrationTest do
     end
   end
 
-  describe "backward compatibility" do
-    test "MediaSession works without handler" do
-      session_id = "test_session_#{:rand.uniform(1000)}"
-
-      # Start session without handler
-      {:ok, session} =
-        MediaSession.start_link(
-          id: session_id,
-          dialog_id: "dialog_1",
-          role: :uas,
-          audio_file: Path.join(:code.priv_dir(:parrot_platform), "audio/parrot-welcome.wav")
-        )
-
-      # Should work normally
-      sdp_offer = """
-      v=0
-      o=- 123456 123456 IN IP4 127.0.0.1
-      s=Test
-      c=IN IP4 127.0.0.1
-      t=0 0
-      m=audio 5004 RTP/AVP 0
-      a=rtpmap:0 PCMU/8000
-      """
-
-      {:ok, answer} = MediaSession.process_offer(session, sdp_offer)
-      # We don't support PCMU, so should answer with PCMA
-      assert answer =~ "PCMA"
-
-      :ok = MediaSession.start_media(session)
-
-      MediaSession.terminate_session(session)
-    end
-  end
+  # Removed backward compatibility test - MediaHandler is now required
 end
