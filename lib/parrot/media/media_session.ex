@@ -686,16 +686,9 @@ defmodule Parrot.Media.MediaSession do
           pipeline_module
         )
 
-      case call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec) do
-        {:ok, final_data} ->
-          Logger.info("MediaSession #{data.id}: SDP negotiation complete")
-          {:ok, sdp_answer, final_data}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-
-      {:ok, final_data.local_sdp, final_data}
+      {:ok, final_data} = call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec)
+      Logger.info("MediaSession #{data.id}: SDP negotiation complete")
+      {:ok, sdp_answer, final_data}
     end
   end
 
@@ -708,7 +701,7 @@ defmodule Parrot.Media.MediaSession do
 
   defp extract_remote_info(parsed_sdp, audio_media, session_id) do
     remote_rtp_address = get_remote_address(parsed_sdp, session_id)
-    remote_rtp_port = audio_media_port
+    remote_rtp_port = audio_media.port
 
     Logger.info(
       "MediaSession #{session_id}: Remote RTP endpoint: #{remote_rtp_address}:#{remote_rtp_port}"
@@ -764,7 +757,7 @@ defmodule Parrot.Media.MediaSession do
         codec = Enum.find(codec_list, &(&1 in offered_codecs)) || hd(codec_list)
         {:ok, codec, new_state}
 
-      {:error, :no_common_codec, new_state} ->
+      {:error, :no_common_codec, _new_state} ->
         Logger.warning("MediaSession #{data.id}: Handler found no common codec")
         {:error, :no_common_codec}
     end
