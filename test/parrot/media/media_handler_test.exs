@@ -42,6 +42,42 @@ defmodule Parrot.Media.MediaHandlerTest do
     end
 
     @impl true
+    def handle_info({:play_files, files, [loop: true]}, state) do
+      {[{:play_loop, files}], Map.put(state, :looping, true)}
+    end
+    
+    @impl true
+    def handle_info({:play_files, files, opts}, state) when is_list(opts) do
+      {[{:play_sequence, files}], Map.put(state, :playing, files)}
+    end
+    
+    @impl true
+    def handle_info({:fork_audio, url, opts}, state) do
+      bidirectional = Keyword.get(opts, :bidirectional, false)
+      {[{:fork_audio, url, bidirectional: bidirectional}], Map.put(state, :forking_to, url)}
+    end
+    
+    @impl true
+    def handle_info({:received_audio, _data, %{source: source}}, state) do
+      case source do
+        "test_source" -> 
+          {[{:play, "response.wav"}], Map.put(state, :received_from, source)}
+        _ -> 
+          {:noreply, Map.put(state, :last_audio_source, source)}
+      end
+    end
+    
+    @impl true
+    def handle_info({:stop_playback}, state) do
+      {[:stop], Map.put(state, :playback_stopped, true)}
+    end
+    
+    @impl true
+    def handle_info(_msg, state) do
+      {:noreply, state}
+    end
+    
+    @impl true
     def handle_codec_negotiation(offered, supported, state) do
       case state[:codec_preference] do
         :error ->
@@ -277,6 +313,90 @@ defmodule Parrot.Media.MediaHandlerTest do
 
       assert {:error, :unknown_request, ^state} =
                MediaTestHandler.handle_media_request(:unknown, state)
+    end
+  end
+  
+  describe "handle_info/2 - message-based media control" do
+    test "handles play_files with loop option using pattern matching" do
+      state = %{}
+      files = ["file1.wav", "file2.wav"]
+      
+      assert {[{:play_loop, ^files}], new_state} = 
+        MediaTestHandler.handle_info({:play_files, files, [loop: true]}, state)
+      
+      assert new_state.looping == true
+    end
+    
+    test "handles play_files without loop option" do
+      state = %{}
+      files = ["file1.wav", "file2.wav"]
+      
+      assert {[{:play_sequence, ^files}], new_state} = 
+        MediaTestHandler.handle_info({:play_files, files, []}, state)
+      
+      assert new_state.playing == files
+    end
+    
+    test "handles fork_audio with bidirectional option" do
+      state = %{}
+      url = "ws://transcription.service/"
+      
+      assert {[{:fork_audio, ^url, bidirectional: true}], new_state} = 
+        MediaTestHandler.handle_info({:fork_audio, url, [bidirectional: true]}, state)
+      
+      assert new_state.forking_to == url
+    end
+    
+    test "handles fork_audio without bidirectional option defaults to false" do
+      state = %{}
+      url = "ws://analysis.service/"
+      
+      assert {[{:fork_audio, ^url, bidirectional: false}], new_state} = 
+        MediaTestHandler.handle_info({:fork_audio, url, []}, state)
+      
+      assert new_state.forking_to == url
+    end
+    
+    test "handles received_audio from test_source" do
+      state = %{}
+      audio_data = <<1, 2, 3, 4>>
+      
+      assert {[{:play, "response.wav"}], new_state} = 
+        MediaTestHandler.handle_info(
+          {:received_audio, audio_data, %{source: "test_source"}}, 
+          state
+        )
+      
+      assert new_state.received_from == "test_source"
+    end
+    
+    test "handles received_audio from other sources" do
+      state = %{}
+      audio_data = <<1, 2, 3, 4>>
+      
+      assert {:noreply, new_state} = 
+        MediaTestHandler.handle_info(
+          {:received_audio, audio_data, %{source: "other_source"}}, 
+          state
+        )
+      
+      assert new_state.last_audio_source == "other_source"
+    end
+    
+    test "handles stop_playback message" do
+      state = %{}
+      
+      assert {[:stop], new_state} = 
+        MediaTestHandler.handle_info({:stop_playback}, state)
+      
+      assert new_state.playback_stopped == true
+    end
+    
+    test "handles unknown messages with catch-all" do
+      state = %{}
+      
+      assert {:noreply, ^state} = 
+        MediaTestHandler.handle_info({:unknown_message, "data"}, state)
     end
   end
 end

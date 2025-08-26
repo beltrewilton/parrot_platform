@@ -339,6 +339,10 @@ defmodule Parrot.Media.MediaSession do
     end
   end
 
+  def idle(event_type, event_content, data) do
+    handle_common_event(event_type, event_content, :idle, data)
+  end
+
   defp process_offer_internal(from, sdp_offer, data) do
     # Process SDP offer and generate answer
     case process_sdp_offer(sdp_offer, data) do
@@ -426,17 +430,9 @@ defmodule Parrot.Media.MediaSession do
 
   # State: active
 
-  def active({:call, from}, :pause_media, data) do
-    # Pause media pipeline
-    case pause_media_pipeline(data) do
-      :ok ->
-        Logger.info("MediaSession #{data.id}: Paused media")
-        {:next_state, :paused, data, [{:reply, from, :ok}]}
-
-      {:error, reason} = error ->
-        Logger.error("MediaSession #{data.id}: Failed to pause media: #{inspect(reason)}")
-        {:next_state, :active, data, [{:reply, from, error}]}
-    end
+  def active({:call, from}, :pause_media, _data) do
+    # Pause not implemented
+    {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
   end
 
   def active(event_type, event_content, data) do
@@ -445,17 +441,9 @@ defmodule Parrot.Media.MediaSession do
 
   # State: paused
 
-  def paused({:call, from}, :resume_media, data) do
-    # Resume media pipeline
-    case resume_media_pipeline(data) do
-      :ok ->
-        Logger.info("MediaSession #{data.id}: Resumed media")
-        {:next_state, :active, data, [{:reply, from, :ok}]}
-
-      {:error, reason} = error ->
-        Logger.error("MediaSession #{data.id}: Failed to resume media: #{inspect(reason)}")
-        {:next_state, :paused, data, [{:reply, from, error}]}
-    end
+  def paused({:call, from}, :resume_media, _data) do
+    # Resume not implemented
+    {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
   end
 
   def paused(event_type, event_content, data) do
@@ -494,10 +482,65 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, updated_data}
   end
 
+  # Handle media control messages  
+  # Handle media control messages - forward to handler in any state
+  defp handle_common_event(:info, {:play_files, _files, _opts} = msg, _state, data) do
+    Logger.info("MediaSession #{data.id}: handle_common_event - :info -> :play_files")
+
+    case forward_to_media_handler(msg, data) do
+      {:ok, actions, new_handler_state} ->
+        updated_data = %{data | handler_state: new_handler_state}
+        updated_data = process_media_actions(actions, updated_data)
+        {:keep_state, updated_data, []}
+
+      {:noreply, new_handler_state} ->
+        {:keep_state, %{data | handler_state: new_handler_state}, []}
+
+      _ ->
+        {:keep_state_and_data, []}
+    end
+  end
+
+  defp handle_common_event(:info, {:stop_playback} = msg, _state, data) do
+    case forward_to_media_handler(msg, data) do
+      {:ok, actions, new_handler_state} ->
+        updated_data = %{data | handler_state: new_handler_state}
+        updated_data = process_media_actions(actions, updated_data)
+        {:keep_state, updated_data, []}
+
+      {:noreply, new_handler_state} ->
+        {:keep_state, %{data | handler_state: new_handler_state}, []}
+
+      _ ->
+        {:keep_state_and_data, []}
+    end
+  end
+
   # Handle unknown process termination
   defp handle_common_event(:info, {:DOWN, _ref, :process, pid, _reason}, _state, data) do
     Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
     {:keep_state_and_data, []}
+  end
+
+  # Handle any other messages that should be forwarded to the handler
+  defp handle_common_event(:info, msg, _state, data) do
+    Logger.info(
+      "MediaSession #{data.id}: handle_common_event :info -> msg:#{inspect(msg)}, data:#{inspect(data)}"
+    )
+
+    case forward_to_media_handler(msg, data) do
+      {:ok, actions, new_handler_state} ->
+        updated_data = %{data | handler_state: new_handler_state}
+        updated_data = process_media_actions(actions, updated_data)
+        {:keep_state, updated_data, []}
+
+      {:noreply, new_handler_state} ->
+        {:keep_state, %{data | handler_state: new_handler_state}, []}
+
+      _ ->
+        # If no handler or handler doesn't handle it, pass through silently
+        {:keep_state_and_data, []}
+    end
   end
 
   defp handle_common_event({:call, from}, :get_state, state, data) do
@@ -622,139 +665,172 @@ defmodule Parrot.Media.MediaSession do
 
   defp process_sdp_offer(sdp_offer, data) do
     Logger.debug("MediaSession #{data.id}: Parsing SDP offer")
-    # Parse remote SDP using ex_sdp
-    case ExSDP.parse(sdp_offer) do
-      {:ok, parsed_sdp} ->
-        # Extract audio media
-        audio_media = Enum.find(parsed_sdp.media, &(&1.type == :audio))
 
-        if audio_media do
-          # Extract remote RTP info
-          remote_rtp_port = audio_media.port
+    with {:ok, parsed_sdp} <- ExSDP.parse(sdp_offer),
+         {:ok, audio_media} <- find_audio_media(parsed_sdp),
+         {:ok, remote_info} <- extract_remote_info(parsed_sdp, audio_media, data.id),
+         {:ok, selected_codec, handler_state} <- negotiate_codec(audio_media, data) do
+      data_with_handler_state = %{data | handler_state: handler_state}
+      local_rtp_port = get_or_allocate_rtp_port(data_with_handler_state)
+      sdp_answer = generate_answer_sdp(local_rtp_port, selected_codec)
+      pipeline_module = get_pipeline_module_for_config(selected_codec, data_with_handler_state)
 
-          remote_rtp_address =
-            case parsed_sdp.connection_data do
-              %{address: addr} when is_tuple(addr) ->
-                addr |> Tuple.to_list() |> Enum.join(".")
+      session_data =
+        build_session_data(
+          data_with_handler_state,
+          sdp_offer,
+          remote_info,
+          selected_codec,
+          local_rtp_port,
+          sdp_answer,
+          pipeline_module
+        )
 
-              %{address: addr} when is_binary(addr) ->
-                addr
+      case call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec) do
+        {:ok, final_data} ->
+          Logger.info("MediaSession #{data.id}: SDP negotiation complete")
+          {:ok, sdp_answer, final_data}
 
-              %{address: addr} ->
-                to_string(addr)
+        {:error, reason} ->
+          {:error, reason}
+      end
 
-              _ ->
-                Logger.warning(
-                  "MediaSession #{data.id}: No connection data in SDP, defaulting to 127.0.0.1"
-                )
-
-                "127.0.0.1"
-            end
-
-          Logger.info(
-            "MediaSession #{data.id}: Remote RTP endpoint: #{remote_rtp_address}:#{remote_rtp_port}"
-          )
-
-          # Find common codec between offer and our supported codecs
-          offered_codecs = extract_offered_codecs(audio_media)
-
-          # Call handler for codec negotiation if available
-          {selected_codec, handler_state} =
-            if data.media_handler do
-              case data.media_handler.handle_codec_negotiation(
-                     offered_codecs,
-                     data.supported_codecs,
-                     data.handler_state
-                   ) do
-                {:ok, codec, new_state} when is_atom(codec) ->
-                  {codec, new_state}
-
-                {:ok, codec_list, new_state} when is_list(codec_list) ->
-                  # Take the first codec from the preference list that's in offered_codecs
-                  codec = Enum.find(codec_list, fn c -> c in offered_codecs end) || hd(codec_list)
-                  {codec, new_state}
-
-                {:error, :no_common_codec, new_state} ->
-                  Logger.warning("MediaSession #{data.id}: Handler found no common codec")
-                  {nil, new_state}
-              end
-            else
-              {select_best_codec(offered_codecs, data.supported_codecs), data.handler_state}
-            end
-
-          # Update handler state
-          data = %{data | handler_state: handler_state}
-
-          if selected_codec do
-            Logger.info("MediaSession #{data.id}: Selected codec: #{inspect(selected_codec)}")
-
-            # Use existing local RTP port if already allocated, otherwise allocate new one
-            local_rtp_port =
-              if data.local_rtp_port do
-                Logger.info(
-                  "MediaSession #{data.id}: Using pre-allocated local RTP port: #{data.local_rtp_port}"
-                )
-
-                data.local_rtp_port
-              else
-                port = allocate_rtp_port()
-                Logger.info("MediaSession #{data.id}: Allocated new local RTP port: #{port}")
-                port
-              end
-
-            # Generate answer SDP with selected codec
-            sdp_answer = generate_answer_sdp(local_rtp_port, selected_codec)
-
-            # Determine pipeline module based on selected codec and audio config
-            pipeline_module = get_pipeline_module_for_config(selected_codec, data)
-
-            updated_data = %{
-              data
-              | local_sdp: sdp_answer,
-                remote_sdp: sdp_offer,
-                local_rtp_port: local_rtp_port,
-                remote_rtp_port: remote_rtp_port,
-                remote_rtp_address: remote_rtp_address,
-                selected_codec: selected_codec,
-                pipeline_module: pipeline_module
-            }
-
-            # Call handle_negotiation_complete if handler exists
-            final_data =
-              if updated_data.media_handler do
-                case updated_data.media_handler.handle_negotiation_complete(
-                       sdp_answer,
-                       sdp_offer,
-                       selected_codec,
-                       updated_data.handler_state
-                     ) do
-                  {:ok, new_state} ->
-                    %{updated_data | handler_state: new_state}
-
-                  {:error, reason, new_state} ->
-                    Logger.error(
-                      "MediaSession #{data.id}: Handler negotiation complete error: #{inspect(reason)}"
-                    )
-
-                    %{updated_data | handler_state: new_state}
-                end
-              else
-                updated_data
-              end
-
-            Logger.info("MediaSession #{data.id}: SDP negotiation complete")
-            {:ok, sdp_answer, final_data}
-          else
-            {:error, :no_common_codec}
-          end
-        else
-          {:error, :no_audio_media}
-        end
-
-      {:error, reason} ->
-        Logger.error("MediaSession #{data.id}: Failed to parse SDP: #{inspect(reason)}")
-        {:error, {:sdp_parse_error, reason}}
+      {:ok, final_data.local_sdp, final_data}
     end
+  end
+
+  defp find_audio_media(%{media: media}) do
+    case Enum.find(media, &(&1.type == :audio)) do
+      nil -> {:error, :no_audio_media}
+      audio_media -> {:ok, audio_media}
+    end
+  end
+
+  defp extract_remote_info(parsed_sdp, audio_media, session_id) do
+    remote_rtp_address = get_remote_address(parsed_sdp, session_id)
+    remote_rtp_port = audio_media_port
+
+    Logger.info(
+      "MediaSession #{session_id}: Remote RTP endpoint: #{remote_rtp_address}:#{remote_rtp_port}"
+    )
+
+    {:ok, %{address: remote_rtp_address, port: remote_rtp_port}}
+  end
+
+  defp get_remote_address(%{connection_data: %{address: addr}}, _session_id)
+       when is_tuple(addr) do
+    addr |> Tuple.to_list() |> Enum.join(".")
+  end
+
+  defp get_remote_address(%{connection_data: %{address: addr}}, _session_id)
+       when is_binary(addr) do
+    addr
+  end
+
+  defp get_remote_address(%{connection_data: %{address: addr}}, _session_id) do
+    to_string(addr)
+  end
+
+  defp get_remote_address(_parsed_sdp, session_id) do
+    Logger.warning(
+      "MediaSession #{session_id}: No connection data in SDP, defaulting to 127.0.0.1"
+    )
+
+    "127.0.0.1"
+  end
+
+  defp negotiate_codec(audio_media, %{media_handler: nil} = data) do
+    offered_codecs = extract_offered_codecs(audio_media)
+    selected_codec = select_best_codec(offered_codecs, data.supported_codecs)
+
+    case selected_codec do
+      nil -> {:error, :no_common_codec}
+      codec -> {:ok, codec, data.handler_state}
+    end
+  end
+
+  defp negotiate_codec(audio_media, %{media_handler: handler} = data) do
+    offered_codecs = extract_offered_codecs(audio_media)
+
+    case handler.handle_codec_negotiation(
+           offered_codecs,
+           data.supported_codecs,
+           data.handler_state
+         ) do
+      {:ok, codec, new_state} when is_atom(codec) ->
+        {:ok, codec, new_state}
+
+      {:ok, codec_list, new_state} when is_list(codec_list) ->
+        codec = Enum.find(codec_list, &(&1 in offered_codecs)) || hd(codec_list)
+        {:ok, codec, new_state}
+
+      {:error, :no_common_codec, new_state} ->
+        Logger.warning("MediaSession #{data.id}: Handler found no common codec")
+        {:error, :no_common_codec}
+    end
+  end
+
+  defp get_or_allocate_rtp_port(%{local_rtp_port: port, id: session_id}) when not is_nil(port) do
+    Logger.info("MediaSession #{session_id}: Using pre-allocated local RTP port: #{port}")
+    port
+  end
+
+  defp get_or_allocate_rtp_port(%{id: session_id}) do
+    port = allocate_rtp_port()
+    Logger.info("MediaSession #{session_id}: Allocated new local RTP port: #{port}")
+    port
+  end
+
+  defp build_session_data(
+         data,
+         sdp_offer,
+         remote_info,
+         selected_codec,
+         local_rtp_port,
+         sdp_answer,
+         pipeline_module
+       ) do
+    %{
+      data
+      | local_sdp: sdp_answer,
+        remote_sdp: sdp_offer,
+        local_rtp_port: local_rtp_port,
+        remote_rtp_port: remote_info.port,
+        remote_rtp_address: remote_info.address,
+        selected_codec: selected_codec,
+        pipeline_module: pipeline_module
+    }
+  end
+
+  defp call_handler_if_present(
+         %{media_handler: nil} = data,
+         _sdp_answer,
+         _sdp_offer,
+         _selected_codec
+       ) do
+    {:ok, data}
+  end
+
+  defp call_handler_if_present(
+         %{media_handler: handler} = data,
+         sdp_answer,
+         sdp_offer,
+         selected_codec
+       ) do
+    handler.handle_negotiation_complete(sdp_answer, sdp_offer, selected_codec, data.handler_state)
+    |> handle_callback_result(data)
+  end
+
+  defp handle_callback_result({:ok, new_state}, data) do
+    {:ok, %{data | handler_state: new_state}}
+  end
+
+  defp handle_callback_result({:error, reason, new_state}, data) do
+    Logger.error(
+      "MediaSession #{data.id}: Handler negotiation complete error: #{inspect(reason)}"
+    )
+
+    {:ok, %{data | handler_state: new_state}}
   end
 
   defp extract_offered_codecs(audio_media) do
@@ -836,59 +912,39 @@ defmodule Parrot.Media.MediaSession do
   end
 
   defp process_sdp_answer(sdp_answer, data) do
-    # Parse remote SDP using ex_sdp
-    case ExSDP.parse(sdp_answer) do
-      {:ok, parsed_sdp} ->
-        # Extract audio media
-        audio_media = Enum.find(parsed_sdp.media, &(&1.type == :audio))
-
-        if audio_media do
-          # Extract remote RTP info
-          remote_rtp_port = audio_media.port
-
-          remote_rtp_address =
-            case parsed_sdp.connection_data do
-              %{address: addr} when is_tuple(addr) ->
-                addr |> Tuple.to_list() |> Enum.join(".")
-
-              %{address: addr} when is_binary(addr) ->
-                addr
-
-              %{address: addr} ->
-                to_string(addr)
-
-              _ ->
-                Logger.warning(
-                  "MediaSession #{data.id}: No connection data in SDP, defaulting to 127.0.0.1"
-                )
-
-                "127.0.0.1"
-            end
-
-          # Extract selected codec from answer
-          answered_codecs = extract_offered_codecs(audio_media)
-          selected_codec = List.first(answered_codecs, :pcma)
-
-          # Determine pipeline module based on selected codec and audio config
-          pipeline_module = get_pipeline_module_for_config(selected_codec, data)
-
-          updated_data = %{
-            data
-            | remote_sdp: sdp_answer,
-              remote_rtp_port: remote_rtp_port,
-              remote_rtp_address: remote_rtp_address,
-              selected_codec: selected_codec,
-              pipeline_module: pipeline_module
-          }
-
-          {:ok, updated_data}
-        else
-          {:error, :no_audio_media}
-        end
-
-      {:error, reason} ->
-        {:error, {:sdp_parse_error, reason}}
+    with {:ok, parsed_sdp} <- ExSDP.parse(sdp_answer),
+         {:ok, audio_media} <- find_audio_media(parsed_sdp),
+         {:ok, remote_info} <- extract_answer_remote_info(parsed_sdp, audio_media, data.id),
+         {:ok, updated_data} <- build_answer_data(sdp_answer, remote_info, audio_media, data) do
+      {:ok, updated_data}
     end
+  end
+
+  defp extract_answer_remote_info(parsed_sdp, audio_media, session_id) do
+    remote_address = get_remote_address(parsed_sdp, session_id)
+    remote_port = audio_media.port
+
+    {:ok, %{address: remote_address, port: remote_port}}
+  end
+
+  defp build_answer_data(sdp_answer, remote_info, audio_media, data) do
+    selected_codec =
+      audio_media
+      |> extract_offered_codecs()
+      |> List.first(:pcma)
+
+    pipeline_module = get_pipeline_module_for_config(selected_codec, data)
+
+    updated_data = %{
+      data
+      | remote_sdp: sdp_answer,
+        remote_rtp_port: remote_info.port,
+        remote_rtp_address: remote_info.address,
+        selected_codec: selected_codec,
+        pipeline_module: pipeline_module
+    }
+
+    {:ok, updated_data}
   end
 
   defp allocate_rtp_port(config \\ %{}) do
@@ -1016,21 +1072,33 @@ defmodule Parrot.Media.MediaSession do
     %{data | audio_file: file_path}
   end
 
+  defp process_media_action({:play_sequence, files}, data) when is_list(files) do
+    Logger.info("MediaSession #{data.id}: Playing sequence of #{length(files)} files")
+    # Just play the first file for now
+    case files do
+      [first | _rest] ->
+        %{data | audio_file: first}
+
+      [] ->
+        data
+    end
+  end
+
+  defp process_media_action({:play_loop, files}, data) when is_list(files) do
+    Logger.info("MediaSession #{data.id}: Playing #{length(files)} files in loop")
+    # Just play the first file for now
+    case files do
+      [first | _rest] ->
+        %{data | audio_file: first}
+
+      [] ->
+        data
+    end
+  end
+
   defp process_media_action(:stop, data) do
     Logger.info("MediaSession #{data.id}: Stopping media")
     stop_media_pipeline(data)
-    data
-  end
-
-  defp process_media_action(:pause, data) do
-    Logger.info("MediaSession #{data.id}: Pausing media")
-    pause_media_pipeline(data)
-    data
-  end
-
-  defp process_media_action(:resume, data) do
-    Logger.info("MediaSession #{data.id}: Resuming media")
-    resume_media_pipeline(data)
     data
   end
 
@@ -1039,9 +1107,68 @@ defmodule Parrot.Media.MediaSession do
     data
   end
 
-  defp process_media_action({:bridge, _target_session}, data) do
-    Logger.warning("MediaSession #{data.id}: Bridging not yet implemented")
-    data
+  defp process_media_action({:connect_audio_device, input_device, output_device}, data) do
+    Logger.info(
+      "MediaSession #{data.id}: Connecting audio devices - input: #{inspect(input_device)}, output: #{inspect(output_device)}"
+    )
+
+    updated_data =
+      data
+      |> Map.put(:input_device_id, input_device)
+      |> Map.put(:output_device_id, output_device)
+      |> Map.put(:audio_source, if(input_device, do: :device, else: data.audio_source))
+      |> Map.put(:audio_sink, if(output_device, do: :device, else: data.audio_sink))
+
+    # If pipeline is running, we need to restart it with new configuration
+    if updated_data.pipeline_pid && Process.alive?(updated_data.pipeline_pid) do
+      Logger.info("MediaSession #{data.id}: Restarting pipeline with audio devices")
+      stop_media_pipeline(updated_data)
+      # Pipeline will be restarted when media starts again
+    else
+      updated_data
+    end
+  end
+
+  defp process_media_action({:set_audio_source, source}, data)
+       when source in [:file, :device, :bridge, :rtp] do
+    Logger.info("MediaSession #{data.id}: Setting audio source to #{source}")
+
+    updated_data = Map.put(data, :audio_source, source)
+
+    # Configure device IDs if switching to/from device
+    updated_data =
+      case source do
+        :device ->
+          # Use default device if not specified
+          Map.put_new(updated_data, :input_device_id, "default")
+
+        _ ->
+          # Clear device ID when not using device
+          Map.put(updated_data, :input_device_id, nil)
+      end
+
+    updated_data
+  end
+
+  defp process_media_action({:set_audio_sink, sink}, data)
+       when sink in [:rtp, :device, :file, :bridge, :none] do
+    Logger.info("MediaSession #{data.id}: Setting audio sink to #{sink}")
+
+    updated_data = Map.put(data, :audio_sink, sink)
+
+    # Configure device IDs if switching to/from device
+    updated_data =
+      case sink do
+        :device ->
+          # Use default device if not specified
+          Map.put_new(updated_data, :output_device_id, "default")
+
+        _ ->
+          # Clear device ID when not using device
+          Map.put(updated_data, :output_device_id, nil)
+      end
+
+    updated_data
   end
 
   defp process_media_action({:inject_audio, _audio_data}, data) do
@@ -1060,6 +1187,50 @@ defmodule Parrot.Media.MediaSession do
     data
   end
 
+  # Forward messages to media handler
+  defp forward_to_media_handler(msg, data) do
+    if data.media_handler && function_exported?(data.media_handler, :handle_info, 2) do
+      try do
+        case data.media_handler.handle_info(msg, data.handler_state) do
+          {actions, new_state} when is_list(actions) ->
+            {:ok, actions, new_state}
+
+          {:noreply, new_state} ->
+            {:noreply, new_state}
+
+          {action, new_state} ->
+            {:ok, [action], new_state}
+
+          other ->
+            Logger.warning(
+              "MediaSession #{data.id}: Unexpected return from handle_info: #{inspect(other)}"
+            )
+
+            :error
+        end
+      rescue
+        e ->
+          Logger.error("MediaSession #{data.id}: Error in media handler: #{inspect(e)}")
+          :error
+      end
+    else
+      :no_handler
+    end
+  end
+
+  # Process multiple media actions
+  defp process_media_actions(actions, data) when is_list(actions) do
+    Enum.reduce(actions, data, &process_media_action/2)
+  end
+
+  defp process_media_actions(action, data) do
+    Logger.info(
+      "MediaSession #{data.id}: process_media_actions - action:#{inspect(action)}, data:#{inspect(data)}"
+    )
+
+    process_media_action(action, data)
+  end
+
   defp stop_media_pipeline(data) do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Stopping pipeline")
@@ -1067,28 +1238,6 @@ defmodule Parrot.Media.MediaSession do
     end
 
     %{data | pipeline_pid: nil}
-  end
-
-  defp pause_media_pipeline(data) do
-    # Membrane pipelines don't have direct pause/resume methods
-    # Would need to implement this via pipeline messages
-    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
-      # TODO: Send pause message to pipeline
-      :ok
-    else
-      {:error, :no_pipeline}
-    end
-  end
-
-  defp resume_media_pipeline(data) do
-    # Membrane pipelines don't have direct pause/resume methods
-    # Would need to implement this via pipeline messages
-    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
-      # TODO: Send resume message to pipeline
-      :ok
-    else
-      {:error, :no_pipeline}
-    end
   end
 
   defp cleanup_session(data) do

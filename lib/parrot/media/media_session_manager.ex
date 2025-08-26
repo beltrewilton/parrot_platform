@@ -132,19 +132,4 @@ defmodule Parrot.Media.MediaSessionManager do
   def complete_uas_setup(session_pid) do
     MediaSession.start_media(session_pid)
   end
-
-  # @doc """
-  # Gets the allocated RTP port from a session.
-
-  # Useful for debugging or if you need the port for other purposes.
-  # """
-  # def get_local_rtp_port(session_pid) do
-  #   case MediaSession.get_state(session_pid) do
-  #     {:ok, state} ->
-  #       {:ok, state.local_rtp_port}
-
-  #     error ->
-  #       error
-  #   end
-  # end
 end

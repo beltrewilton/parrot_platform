@@ -399,7 +399,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
         {:respond, 200, "OK", %{}, ""}
       end<% end %><%= if @include_media do %>
 
-      # MediaHandler callbacks
+      # MediaHandler callbacks - Message-based media control
       
       @impl Parrot.MediaHandler
       def init(args) do
@@ -410,6 +410,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
           music_file: nil,
           goodbye_file: nil,
           current_state: :init,
+          audio_queue: [],
+          fork_urls: [],
           call_stats: %{
             packets_received: 0,
             packets_lost: 0,
@@ -418,6 +420,68 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
         }, args || %{})
         
         {:ok, state}
+      end
+      
+      # Pattern matching for media control messages
+      @impl Parrot.MediaHandler
+      def handle_info({:play_files, files, [loop: true]}, state) do
+        Logger.info("[<%= @module %> MediaHandler] Playing files in loop mode")
+        {[{:play_loop, files}], %{state | audio_queue: files, current_state: :looping}}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:play_files, files, opts}, state) when is_list(opts) do
+        Logger.info("[<%= @module %> MediaHandler] Playing files in sequence")
+        {[{:play_sequence, files}], %{state | audio_queue: files, current_state: :playing}}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:fork_audio, url, opts}, state) do
+        bidirectional = Keyword.get(opts, :bidirectional, false)
+        Logger.info("[<%= @module %> MediaHandler] Forking audio to \#{url} (bidirectional: \#{bidirectional})")
+        
+        actions = [{:fork_audio, url, bidirectional: bidirectional}]
+        new_fork_urls = [url | state.fork_urls] |> Enum.uniq()
+        {actions, %{state | fork_urls: new_fork_urls}}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:received_audio, audio_data, %{source: source}}, state) do
+        Logger.info("[<%= @module %> MediaHandler] Received audio from \#{source}")
+        Logger.info("  Data size: \#{byte_size(audio_data)} bytes")
+        
+        # Add your custom audio processing logic here
+        {:noreply, state}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:stop_playback}, state) do
+        Logger.info("[<%= @module %> MediaHandler] Stopping playback")
+        {[:stop], %{state | current_state: :stopped, audio_queue: []}}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:pause_playback}, state) do
+        Logger.info("[<%= @module %> MediaHandler] Pausing playback")
+        {[:pause], %{state | current_state: :paused}}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:resume_playback}, state) do
+        Logger.info("[<%= @module %> MediaHandler] Resuming playback")
+        {[:resume], %{state | current_state: :playing}}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info({:set_volume, level}, state) when is_float(level) and level >= 0.0 and level <= 1.0 do
+        Logger.info("[<%= @module %> MediaHandler] Setting volume to: \#{level}")
+        {[{:set_volume, level}], state}
+      end
+      
+      @impl Parrot.MediaHandler
+      def handle_info(msg, state) do
+        Logger.debug("[<%= @module %> MediaHandler] Unhandled message: \#{inspect(msg)}")
+        {:noreply, state}
       end
       
       @impl Parrot.MediaHandler
@@ -483,14 +547,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
       def handle_stream_start(session_id, direction, state) do
         Logger.info("[<%= @module %> MediaHandler] Stream started for \#{session_id} (\#{direction})")
         
-        # Start playing welcome message
-        if state.welcome_file && File.exists?(state.welcome_file) do
-          Logger.info("  Playing welcome file: \#{state.welcome_file}")
-          {{:play, state.welcome_file}, %{state | current_state: :welcome}}
-        else
-          Logger.warning("  No welcome file configured")
-          {:ok, state}
-        end
+        # Don't auto-play - wait for messages from SIP handler
+        {:noreply, %{state | current_state: :ready}}
       end
       
       @impl Parrot.MediaHandler

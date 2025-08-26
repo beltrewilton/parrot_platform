@@ -11,7 +11,6 @@ Logger.configure(level: log_level)
 Application.put_env(:parrot_platform, :test_log_level, log_level)
 Application.put_env(:parrot_platform, :test_sip_trace, sip_trace)
 
-Code.require_file("support/uas_handler.ex", __DIR__)
 Application.ensure_all_started(:parrot_platform)
 
 # Exclude slow tests by default (they cause long delays)

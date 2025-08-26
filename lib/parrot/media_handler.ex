@@ -4,7 +4,7 @@ defmodule Parrot.MediaHandler do
 
   The `Parrot.MediaHandler` behaviour provides callbacks for handling media-specific
   events during SIP calls, including SDP negotiation, codec selection, media stream
-  lifecycle, and real-time media events.
+  lifecycle, and real-time media processing.
 
   ## Overview
 
@@ -12,13 +12,31 @@ defmodule Parrot.MediaHandler do
   media sessions. While UasHandler manages SIP protocol events, MediaHandler focuses
   on the actual media streams (audio/video).
 
-  Media handlers allow applications to:
-  - Control audio playback with event-driven callbacks
-  - Customize SDP offer/answer negotiation
-  - Influence codec selection based on your preferences
-  - React to media stream lifecycle events
-  - Handle errors and recover gracefully
-  - Build IVR systems, voicemail, music on hold, and more
+  Media handlers receive messages through `handle_info/2` from your SIP handlers,
+  allowing for powerful media control patterns:
+  
+  - Play single or multiple audio files with looping options
+  - Fork audio to WebSocket servers for transcription/analysis
+  - Receive processed audio from external services
+  - Mix audio streams for conferencing
+  - Implement IVR systems with dynamic media control
+
+  ## Message-Based Media Control
+
+  MediaHandler uses Erlang message passing for media control, making it easy
+  to trigger media operations from anywhere in your application:
+
+  ```elixir
+  # From your SIP handler or anywhere else
+  send(media_handler_pid, {:play_files, ["welcome.wav", "menu.wav"], loop: true})
+  send(media_handler_pid, {:play_files, ["music.wav"], loop: false})  # Play once
+  send(media_handler_pid, {:stop_playback})
+  
+  # Connect audio devices (for UAC or soft phone scenarios)
+  send(media_handler_pid, {:connect_microphone})  # Connect mic for input
+  send(media_handler_pid, {:connect_speakers})    # Connect speakers for output
+  send(media_handler_pid, {:connect_audio_devices}) # Connect both
+  ```
 
   ## Basic Usage
 
@@ -28,70 +46,81 @@ defmodule Parrot.MediaHandler do
 
     @impl true
     def init(_args) do
-      {:ok, %{preferred_codec: :opus}}
+      {:ok, %{
+        audio_queue: [],
+        looping: false
+      }}
     end
 
+    # Pattern matching for play_files with different options
     @impl true
-    def handle_codec_negotiation(offered, supported, state) do
-      # Prefer Opus over G.711
-      cond do
-        :opus in offered and :opus in supported ->
-          {:ok, :opus, state}
-        :pcmu in offered and :pcmu in supported ->
-          {:ok, :pcmu, state}
-        true ->
-          {:error, :no_common_codec, state}
-      end
-    end
-
-    @impl true
-    def handle_stream_start(_session_id, :outbound, state) do
-      # Play welcome message when call connects
-      {{:play, "/audio/welcome.wav"}, state}
+    def handle_info({:play_files, files, [loop: true]}, state) do
+      # Play files in a loop
+      {[{:play_loop, files}], %{state | audio_queue: files}}
     end
     
     @impl true
-    def handle_play_complete(file_path, state) do
-      # After welcome, play menu or stop
-      if file_path == "/audio/welcome.wav" do
-        {{:play, "/audio/menu.wav"}, state}
-      else
-        {:stop, state}
-      end
+    def handle_info({:play_files, files, opts}, state) when is_list(opts) do
+      # Play files in sequence (default when loop not specified)
+      {[{:play_sequence, files}], %{state | audio_queue: files}}
+    end
+
+    @impl true
+    def handle_info({:stop_playback}, state) do
+      {[:stop], %{state | audio_queue: [], looping: false}}
+    end
+    
+    @impl true
+    def handle_info(_msg, state) do
+      {:noreply, state}
     end
   end
   ```
 
   ## Integration with UasHandler
 
-  Typically, you'll implement both behaviours in your application:
-
   ```elixir
   defmodule MyApp do
     use Parrot.UasHandler
     @behaviour Parrot.MediaHandler
     
-    # Handle incoming call
-    @impl true
+    @impl Parrot.UasHandler
     def handle_invite(request, state) do
-      # Create media session with this module as the handler
-      {:ok, _pid} = Parrot.Media.MediaSession.start_link(
+      # Create media session
+      {:ok, media_pid} = Parrot.Media.MediaSession.start_link(
         id: "call_123",
         role: :uas,
         media_handler: __MODULE__,
-        handler_args: %{welcome_file: "welcome.wav"}
+        handler_args: %{}
       )
       
-      # Process SDP and respond
+      # Store media handler PID for later use
+      state = Map.put(state, :media_handler, media_pid)
+      
+      # Process SDP
       case Parrot.Media.MediaSession.process_offer("call_123", request.body) do
         {:ok, sdp_answer} ->
-          {:respond, 200, "OK", %{}, sdp_answer}
+          # Trigger media operations after accepting call
+          send(media_pid, {:play_files, ["welcome.wav"], loop: false})
+          
+          {:respond, 200, "OK", %{}, sdp_answer, state}
         {:error, _} ->
-          {:respond, 488, "Not Acceptable Here", %{}, ""}
+          {:respond, 488, "Not Acceptable Here", %{}, "", state}
       end
     end
     
-    # MediaHandler callbacks...
+    @impl Parrot.UasHandler  
+    def handle_info({:dtmf, digit}, %{media_handler: media_pid} = state) do
+      # React to DTMF by playing different files
+      files = case digit do
+        "1" -> ["option1.wav"]
+        "2" -> ["option2.wav"]
+        _ -> ["invalid.wav", "menu.wav"]
+      end
+      
+      send(media_pid, {:play_files, files, []})
+      {:noreply, state}
+    end
   end
   ```
 
@@ -105,16 +134,15 @@ defmodule Parrot.MediaHandler do
   4. `handle_codec_negotiation/3` - Select codec
   5. `handle_negotiation_complete/4` - Negotiation done
   6. `handle_stream_start/3` - Media streaming begins
-  7. `handle_play_complete/2` - Audio playback events (if playing)
+  7. `handle_info/2` - Process media control messages
   8. `handle_stream_stop/3` - Media streaming ends
   9. `handle_session_stop/3` - Cleanup
 
-  ## Current Implementation
+  ## Media Control Messages
 
-  The current implementation provides:
-  - G.711 (PCMU/PCMA) codec support
-  - Basic media control (play, stop, pause, resume)
-  - Audio file playback with completion callbacks
+  - `{:play_files, files, opts}` - Play one or more audio files
+    - Options: `loop: true/false` - Whether to loop the files
+  - `{:stop_playback}` - Stop current playback
   """
 
   @typedoc "Handler state - can be any term"
@@ -133,20 +161,22 @@ defmodule Parrot.MediaHandler do
   Media actions that can be returned from callbacks.
 
   - `{:play, file_path}` - Play an audio file
-  - `{:play, file_path, opts}` - Play with options
+  - `{:play_sequence, files}` - Play first file from list
+  - `{:play_loop, files}` - Play first file from list
+  - `{:connect_audio_device, input_device, output_device}` - Connect to mic/speakers
+  - `{:set_audio_source, source}` - Set audio source (:file, :device, :bridge, :rtp)
+  - `{:set_audio_sink, sink}` - Set audio sink (:rtp, :device, :file, :bridge, :none)
   - `:stop` - Stop current media
-  - `:pause` - Pause playback
-  - `:resume` - Resume playback
-  - `{:set_codec, codec}` - Switch codec
   - `:noreply` - No action
   """
   @type media_action ::
           {:play, file_path :: String.t()}
-          | {:play, file_path :: String.t(), opts :: keyword()}
+          | {:play_sequence, [String.t()]}
+          | {:play_loop, [String.t()]}
+          | {:connect_audio_device, input_device :: String.t() | nil, output_device :: String.t() | nil}
+          | {:set_audio_source, :file | :device | :bridge | :rtp}
+          | {:set_audio_sink, :rtp | :device | :file | :bridge | :none}
           | :stop
-          | :pause
-          | :resume
-          | {:set_codec, codec()}
           | :noreply
 
   # Session Lifecycle Callbacks
@@ -445,6 +475,75 @@ defmodule Parrot.MediaHandler do
   @callback handle_media_request(request :: term(), state) ::
               media_action() | {media_action(), state} | {:error, reason :: term(), state}
 
+  @doc """
+  Handle arbitrary Erlang messages sent to the media handler.
+
+  This is the primary callback for implementing message-based media control.
+  Messages can be sent from your SIP handlers or any other part of your application
+  to control media playback, audio forking, and other media operations.
+
+  ## Common Messages
+
+  - `{:play_files, files, opts}` - Play one or more audio files
+  - `{:fork_audio, url, opts}` - Fork audio to WebSocket endpoint  
+  - `{:received_audio, data, metadata}` - Audio received from external service
+  - `{:stop_playback}` - Stop current playback
+  - `{:pause_playback}` - Pause current playback
+  - `{:resume_playback}` - Resume paused playback
+  - `{:set_volume, level}` - Adjust playback volume
+  - Custom messages specific to your application
+
+  ## Parameters
+
+  - `msg` - Any Erlang term
+  - `state` - Current handler state
+
+  ## Returns
+
+  - `{[media_action], state}` - List of actions to execute with new state
+  - `{media_action, state}` - Single action with new state
+  - `{:noreply, state}` - Continue with new state, no media action
+  - `{:stop, reason, state}` - Stop the handler
+
+  ## Examples
+
+      @impl true
+      def handle_info({:play_files, files, opts}, state) do
+        loop = Keyword.get(opts, :loop, false)
+        actions = if loop do
+          [{:play_loop, files}]
+        else
+          [{:play_sequence, files}]
+        end
+        {actions, %{state | current_playlist: files}}
+      end
+
+      @impl true
+      def handle_info({:fork_audio, url, opts}, state) do
+        bidirectional = Keyword.get(opts, :bidirectional, false)
+        actions = [{:fork_audio, url, bidirectional: bidirectional}]
+        {actions, Map.put(state, :fork_urls, [url | state.fork_urls])}
+      end
+
+      @impl true  
+      def handle_info({:received_audio, audio_data, %{source: source}}, state) do
+        # Process audio from external service
+        case process_external_audio(audio_data, source) do
+          {:play, processed_audio} ->
+            {[{:play, processed_audio}], state}
+          {:store, processed_audio} ->
+            {:noreply, store_audio(state, processed_audio)}
+          :ignore ->
+            {:noreply, state}
+        end
+      end
+  """
+  @callback handle_info(msg :: term(), state) ::
+              {[media_action()], state}
+              | {media_action(), state}
+              | {:noreply, state}
+              | {:stop, reason :: term(), state}
+
   # Optional callbacks - all except init
   @optional_callbacks [
     handle_session_start: 3,
@@ -457,6 +556,7 @@ defmodule Parrot.MediaHandler do
     handle_stream_stop: 3,
     handle_stream_error: 3,
     handle_play_complete: 2,
-    handle_media_request: 2
+    handle_media_request: 2,
+    handle_info: 2
   ]
 end

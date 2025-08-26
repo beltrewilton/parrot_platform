@@ -27,6 +27,48 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building teleco
      - Wrong password (should reject)
      - OPTIONS with authentication
 
+## Media Handler Pattern (IMPORTANT - Updated 2024)
+
+**The MediaHandler system is message-driven. Files are NEVER configured at initialization and NEVER played automatically.**
+
+### Correct Implementation Pattern:
+
+1. **Create MediaSession with handler** (no audio_file parameter):
+   ```elixir
+   {:ok, media_pid} = MediaSessionSupervisor.start_session(
+     id: session_id,
+     dialog_id: dialog_id,
+     role: :uas,
+     media_handler: MyMediaHandler,
+     handler_args: %{}  # No files here!
+   )
+   ```
+
+2. **Store the media PID** for later use (e.g., in Registry)
+
+3. **After media starts** (e.g., after ACK in SIP), send messages:
+   ```elixir
+   # Start the media pipeline
+   MediaSession.start_media(session_id)
+   
+   # Then send control messages
+   send(media_pid, {:play_files, ["welcome.wav"], loop: false})
+   ```
+
+### MediaHandler Rules:
+
+- **NEVER** put audio files in init/1 state
+- **NEVER** automatically play files in handle_stream_start/3
+- **ONLY** play files when receiving explicit messages
+- The handler should return actions like `{:play_sequence, files}` or `{:play_loop, files}`
+- Use pattern matching in handle_info/2 for different message types
+
+### Anti-patterns to avoid:
+❌ Passing welcome_file or any audio files during initialization
+❌ Playing files automatically when stream starts
+❌ Configuring media behavior through init args
+❌ Using audio_file parameter in MediaSession.start_link
+
 ## Coding Style Principles
 
 ### Pattern Matching Over Conditionals
