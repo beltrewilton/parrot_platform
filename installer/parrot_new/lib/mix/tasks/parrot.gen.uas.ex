@@ -675,7 +675,11 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
           audio_file: audio_config.welcome_file,
           media_handler: __MODULE__,
           handler_args: audio_config,
-          supported_codecs: [:pcma]  # Only G.711 A-law for now (Opus send not implemented)
+          supported_codecs: [:pcma],  # Only G.711 A-law for now (Opus send not implemented)
+          # IP configuration - defaults to auto-detect
+          # Uncomment and configure as needed:
+          # local_ip: :auto,  # or explicit IP like "192.168.1.100"
+          # advertised_ip: "203.0.113.1"  # for NAT scenarios
         )
       end<% end %>
     end

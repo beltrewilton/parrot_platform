@@ -33,6 +33,7 @@ defmodule Parrot.Media.MediaSession do
   require Logger
 
   alias ExSDP
+  alias Parrot.Sip.Transport.Inet
 
   # Child spec for supervisor
   def child_spec(opts) do
@@ -89,7 +90,10 @@ defmodule Parrot.Media.MediaSession do
       :output_file,
       # PortAudio device IDs
       :input_device_id,
-      :output_device_id
+      :output_device_id,
+      # IP configuration for SDP
+      :local_ip,
+      :advertised_ip
     ]
 
     @type t :: %__MODULE__{
@@ -114,7 +118,9 @@ defmodule Parrot.Media.MediaSession do
             audio_sink: :none | :device | :file | nil,
             output_file: String.t() | nil,
             input_device_id: non_neg_integer() | nil,
-            output_device_id: non_neg_integer() | nil
+            output_device_id: non_neg_integer() | nil,
+            local_ip: :auto | String.t() | tuple() | nil,
+            advertised_ip: String.t() | tuple() | nil
           }
   end
 
@@ -138,6 +144,8 @@ defmodule Parrot.Media.MediaSession do
   - `:media_handler` - Media handler module (optional)
   - `:handler_state` - Initial handler state (optional)
   - `:supported_codecs` - List of supported codecs in preference order (optional, defaults to [:pcma])
+  - `:local_ip` - Local IP address for media: `:auto` | IP string | IP tuple (optional, defaults to :auto)
+  - `:advertised_ip` - IP to advertise in SDP if different from local_ip (optional, for NAT scenarios)
   """
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(opts) do
@@ -254,6 +262,10 @@ defmodule Parrot.Media.MediaSession do
     # Get pre-allocated RTP port if provided
     local_rtp_port = Keyword.get(opts, :local_rtp_port)
 
+    # IP configuration - defaults to auto-detect
+    local_ip = Keyword.get(opts, :local_ip, :auto)
+    advertised_ip = Keyword.get(opts, :advertised_ip)
+
     # Monitor the owner process
     owner_monitor = Process.monitor(owner_pid)
 
@@ -274,7 +286,9 @@ defmodule Parrot.Media.MediaSession do
       output_file: output_file,
       input_device_id: input_device_id,
       output_device_id: output_device_id,
-      local_rtp_port: local_rtp_port
+      local_rtp_port: local_rtp_port,
+      local_ip: local_ip,
+      advertised_ip: advertised_ip
     }
 
     # Call media handler init if provided
@@ -611,6 +625,9 @@ defmodule Parrot.Media.MediaSession do
     # Allocate local RTP port
     local_rtp_port = allocate_rtp_port()
 
+    # Get the IP address to use in SDP
+    sdp_ip = get_sdp_ip(data)
+
     # Build media formats based on supported codecs
     formats = Enum.map(data.supported_codecs, &get_codec_payload_type/1)
 
@@ -636,12 +653,12 @@ defmodule Parrot.Media.MediaSession do
         session_id: :os.system_time(:second),
         session_version: :os.system_time(:second),
         network_type: "IN",
-        address: {127, 0, 0, 1}
+        address: sdp_ip
       },
       session_name: "Parrot Media Session",
       connection_data: %ExSDP.ConnectionData{
         network_type: "IN",
-        address: {127, 0, 0, 1}
+        address: sdp_ip
       },
       timing: %ExSDP.Timing{
         start_time: 0,
@@ -672,7 +689,7 @@ defmodule Parrot.Media.MediaSession do
          {:ok, selected_codec, handler_state} <- negotiate_codec(audio_media, data) do
       data_with_handler_state = %{data | handler_state: handler_state}
       local_rtp_port = get_or_allocate_rtp_port(data_with_handler_state)
-      sdp_answer = generate_answer_sdp(local_rtp_port, selected_codec)
+      sdp_answer = generate_answer_sdp(local_rtp_port, selected_codec, data_with_handler_state)
       pipeline_module = get_pipeline_module_for_config(selected_codec, data_with_handler_state)
 
       session_data =
@@ -862,8 +879,11 @@ defmodule Parrot.Media.MediaSession do
     end)
   end
 
-  defp generate_answer_sdp(local_rtp_port, selected_codec) do
+  defp generate_answer_sdp(local_rtp_port, selected_codec, data) do
     {pt, rtpmap} = get_codec_rtpmap(selected_codec)
+    
+    # Get the IP address to use in SDP
+    sdp_ip = get_sdp_ip(data)
 
     sdp = %ExSDP{
       version: 0,
@@ -872,12 +892,12 @@ defmodule Parrot.Media.MediaSession do
         session_id: :os.system_time(:second),
         session_version: :os.system_time(:second),
         network_type: "IN",
-        address: {127, 0, 0, 1}
+        address: sdp_ip
       },
       session_name: "Parrot Media Session",
       connection_data: %ExSDP.ConnectionData{
         network_type: "IN",
-        address: {127, 0, 0, 1}
+        address: sdp_ip
       },
       timing: %ExSDP.Timing{
         start_time: 0,
@@ -1243,6 +1263,38 @@ defmodule Parrot.Media.MediaSession do
 
     Logger.info("MediaSession #{data.id}: Cleaned up resources")
   end
+
+  # Helper function to get the IP address to use in SDP
+  defp get_sdp_ip(data) do
+    # If advertised_ip is set, use that (for NAT scenarios)
+    cond do
+      data.advertised_ip != nil ->
+        normalize_ip(data.advertised_ip)
+
+      data.local_ip == :auto ->
+        # Auto-detect using the existing function
+        Inet.first_ipv4_address()
+
+      data.local_ip != nil ->
+        normalize_ip(data.local_ip)
+
+      true ->
+        # Fallback to auto-detect
+        Inet.first_ipv4_address()
+    end
+  end
+
+  # Helper to normalize IP to tuple format for ExSDP
+  defp normalize_ip(ip) when is_tuple(ip), do: ip
+
+  defp normalize_ip(ip) when is_binary(ip) do
+    case :inet.parse_address(String.to_charlist(ip)) do
+      {:ok, ip_tuple} -> ip_tuple
+      {:error, _} -> {127, 0, 0, 1}  # Fallback to localhost on parse error
+    end
+  end
+
+  defp normalize_ip(_), do: {127, 0, 0, 1}  # Fallback for any other format
 
   defp ensure_pipeline_termination(pipeline_pid, pipeline_module) when is_pid(pipeline_pid) do
     ref = Process.monitor(pipeline_pid)

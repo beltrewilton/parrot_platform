@@ -204,7 +204,11 @@ defmodule ParrotExampleUas do
       owner: self(),
       media_handler: ParrotExampleUas.MediaHandler,
       handler_args: %{},  # No initial configuration needed
-      supported_codecs: [:opus, :pcma]  # Prefer OPUS, fallback to G.711 A-law
+      supported_codecs: [:opus, :pcma],  # Prefer OPUS, fallback to G.711 A-law
+      # IP configuration - defaults to auto-detect
+      # Configure as needed for your network environment:
+      local_ip: :auto  # Use :auto or specify IP like "192.168.1.100"
+      # advertised_ip: "203.0.113.1"  # Uncomment for NAT scenarios
     )
   end
 
