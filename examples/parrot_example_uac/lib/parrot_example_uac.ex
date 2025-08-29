@@ -230,7 +230,7 @@ defmodule ParrotExampleUac do
       role: :uac,
       media_handler: ParrotExampleUac.MediaHandler,
       handler_args: %{},
-      supported_codecs: [:opus, :pcmu]
+      supported_codecs: [:opus, :pcma]
     )
 
     case MediaSession.generate_offer(media_pid) do
