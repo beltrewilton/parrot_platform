@@ -160,23 +160,29 @@ defmodule Parrot.MediaHandler do
   @typedoc """
   Media actions that can be returned from callbacks.
 
+  Actions for file playback:
   - `{:play, file_path}` - Play an audio file
-  - `{:play_sequence, files}` - Play first file from list
-  - `{:play_loop, files}` - Play first file from list
-  - `{:connect_audio_device, input_device, output_device}` - Connect to mic/speakers
-  - `{:set_audio_source, source}` - Set audio source (:file, :device, :bridge, :rtp)
-  - `{:set_audio_sink, sink}` - Set audio sink (:rtp, :device, :file, :bridge, :none)
-  - `:stop` - Stop current media
-  - `:noreply` - No action
+  - `{:play_sequence, files}` - Play multiple files in sequence
+  - `{:play_loop, files}` - Play files in a continuous loop
+
+  Actions for device control:
+  - `{:connect_audio_device, input_device, output_device}` - Connect specific audio
+  devices
+    - Both devices: Full duplex audio (microphone + speaker)
+    - Input only (output nil): Microphone only for recording/sending
+    - Output only (input nil): Speaker only for playback
+    - Both nil: Release all audio devices
+
+  Control actions:
+  - `:stop` - Stop current media playback
+  - `:noreply` - No action needed
   """
   @type media_action ::
           {:play, file_path :: String.t()}
           | {:play_sequence, [String.t()]}
           | {:play_loop, [String.t()]}
-          | {:connect_audio_device, input_device :: String.t() | nil,
-             output_device :: String.t() | nil}
-          | {:set_audio_source, :file | :device | :bridge | :rtp}
-          | {:set_audio_sink, :rtp | :device | :file | :bridge | :none}
+          | {:connect_audio_device, input_device :: String.t() | integer() | nil,
+             output_device :: String.t() | integer() | nil}
           | :stop
           | :noreply
 

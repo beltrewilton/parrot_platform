@@ -27,18 +27,6 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
     end
 
     @impl true
-    def handle_info({:connect_microphone}, state) do
-      {[{:connect_audio_device, "default", nil}, {:set_audio_source, :device}],
-       Map.put(state, :using_microphone, true)}
-    end
-
-    @impl true
-    def handle_info({:connect_speakers}, state) do
-      {[{:connect_audio_device, nil, "default"}, {:set_audio_sink, :device}],
-       Map.put(state, :using_speakers, true)}
-    end
-
-    @impl true
     def handle_info({:connect_audio_devices}, state) do
       actions = [
         {:connect_audio_device, "default", "default"},

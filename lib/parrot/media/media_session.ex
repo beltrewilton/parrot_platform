@@ -378,6 +378,11 @@ defmodule Parrot.Media.MediaSession do
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def idle(:info, msg, data), do: handle_media_message(msg, data)
 
+  def idle(:info, {:use_audio_devices, _opts} = msg, data), do: handle_media_message(msg, data)
+  def idle(:info, {:use_microphone, _device_id} = msg, data), do: handle_media_message(msg, data)
+  def idle(:info, {:use_speaker, _device_id} = msg, data), do: handle_media_message(msg, data)
+  def idle(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
+
   # get_state call
   def idle({:call, from}, :get_state, data), do: reply_with_state(from, :idle, data)
 
@@ -443,6 +448,17 @@ defmodule Parrot.Media.MediaSession do
 
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def negotiating(:info, msg, data), do: handle_media_message(msg, data)
+
+  def negotiating(:info, {:use_audio_devices, _opts} = msg, data),
+    do: handle_media_message(msg, data)
+
+  def negotiating(:info, {:use_microphone, _device_id} = msg, data),
+    do: handle_media_message(msg, data)
+
+  def negotiating(:info, {:use_speaker, _device_id} = msg, data),
+    do: handle_media_message(msg, data)
+
+  def negotiating(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
 
   # get_state call
   def negotiating({:call, from}, :get_state, data), do: reply_with_state(from, :negotiating, data)
@@ -515,6 +531,11 @@ defmodule Parrot.Media.MediaSession do
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def ready(:info, msg, data), do: handle_media_message(msg, data)
 
+  def ready(:info, {:use_audio_devices, _opts} = msg, data), do: handle_media_message(msg, data)
+  def ready(:info, {:use_microphone, _device_id} = msg, data), do: handle_media_message(msg, data)
+  def ready(:info, {:use_speaker, _device_id} = msg, data), do: handle_media_message(msg, data)
+  def ready(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
+
   # get_state call
   def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
 
@@ -552,6 +573,14 @@ defmodule Parrot.Media.MediaSession do
 
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def active(:info, msg, data), do: handle_media_message(msg, data)
+
+  def active(:info, {:use_audio_devices, _opts} = msg, data), do: handle_media_message(msg, data)
+
+  def active(:info, {:use_microphone, _device_id} = msg, data),
+    do: handle_media_message(msg, data)
+
+  def active(:info, {:use_speaker, _device_id} = msg, data), do: handle_media_message(msg, data)
+  def active(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
 
   # get_state call
   def active({:call, from}, :get_state, data), do: reply_with_state(from, :active, data)
@@ -1175,73 +1204,55 @@ defmodule Parrot.Media.MediaSession do
     data
   end
 
-  defp process_media_action({:connect_audio_device, input_device, output_device}, data) do
-    Logger.info(
-      "MediaSession #{data.id}: Connecting audio devices - input: #{inspect(input_device)}, output: #{inspect(output_device)}"
-    )
-
-    updated_data =
-      data
-      |> Map.put(:input_device_id, input_device)
-      |> Map.put(:output_device_id, output_device)
-      |> Map.put(:audio_source, if(input_device, do: :device, else: data.audio_source))
-      |> Map.put(:audio_sink, if(output_device, do: :device, else: data.audio_sink))
-
-    # If pipeline is running, we need to restart it with new configuration
-    if updated_data.pipeline_pid && Process.alive?(updated_data.pipeline_pid) do
-      Logger.info("MediaSession #{data.id}: Restarting pipeline with audio devices")
-      stop_media_pipeline(updated_data)
-      # Pipeline will be restarted when media starts again
-    else
-      updated_data
-    end
+  defp process_media_action({:use_audio_devices, opts}, data) do
+    input = Keyword.get(opts, :input)
+    output = Keyword.get(opts, :output)
+    process_media_action({:connect_audio_device, input, output}, data)
   end
 
-  defp process_media_action({:set_audio_source, source}, data)
-       when source in [:file, :device, :bridge, :rtp] do
-    Logger.info("MediaSession #{data.id}: Setting audio source to #{source}")
-
-    updated_data = Map.put(data, :audio_source, source)
-
-    # Configure device IDs if switching to/from device
-    updated_data =
-      case source do
-        :device ->
-          # Use default device if not specified
-          Map.put_new(updated_data, :input_device_id, "default")
-
-        _ ->
-          # Clear device ID when not using device
-          Map.put(updated_data, :input_device_id, nil)
-      end
-
-    updated_data
+  defp process_media_action({:use_microphone, device_id}, data) do
+    process_media_action({:connect_audio_device, device_id, nil}, data)
   end
 
-  defp process_media_action({:set_audio_sink, sink}, data)
-       when sink in [:rtp, :device, :file, :bridge, :none] do
-    Logger.info("MediaSession #{data.id}: Setting audio sink to #{sink}")
-
-    updated_data = Map.put(data, :audio_sink, sink)
-
-    # Configure device IDs if switching to/from device
-    updated_data =
-      case sink do
-        :device ->
-          # Use default device if not specified
-          Map.put_new(updated_data, :output_device_id, "default")
-
-        _ ->
-          # Clear device ID when not using device
-          Map.put(updated_data, :output_device_id, nil)
-      end
-
-    updated_data
+  defp process_media_action({:use_speaker, device_id}, data) do
+    process_media_action({:connect_audio_device, nil, device_id}, data)
   end
 
-  defp process_media_action({:inject_audio, _audio_data}, data) do
-    Logger.warning("MediaSession #{data.id}: Audio injection not yet implemented")
-    data
+  defp process_media_action(:release_audio_devices, data) do
+    process_media_action({:connect_audio_device, nil, nil}, data)
+  end
+
+  defp process_media_action({:connect_audio_device, nil, nil}, data) do
+    Logger.info("MediaSession #{data.id}: Releasing all audio devices")
+
+    Map.merge(data, %{
+      input_device_id: nil,
+      output_device_id: nil,
+      audio_source: :silence,
+      audio_sink: :none
+    })
+  end
+
+  defp process_media_action({:connect_audio_device, input_device, nil}, data) do
+    Logger.info("MediaSession #{data.id}: Connecting microphone: #{inspect(input_device)}")
+
+    Map.merge(data, %{
+      input_device_id: input_device,
+      output_device_id: nil,
+      audio_source: :device,
+      audio_sink: :none
+    })
+  end
+
+  defp process_media_action({:connect_audio_device, nil, output_device}, data) do
+    Logger.info("MediaSession #{data.id}: Connecting speaker: #{inspect(output_device)}")
+
+    Map.merge(data, %{
+      input_device_id: input_device,
+      output_device: nil,
+      audio_source: :device,
+      audio_sink: :none
+    })
   end
 
   defp process_media_action(:noreply, data), do: data
