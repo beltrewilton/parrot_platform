@@ -203,7 +203,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       
       alias Parrot.Sip.{UAC, Message}
       alias Parrot.Sip.Headers.{From, To, CSeq, CallId, Contact, Via}<%= if @include_audio do %>
-      alias Parrot.Media.{MediaSession, MediaSessionManager, AudioDevices}<% end %>
+      alias Parrot.Media.{MediaSession, MediaSessionSupervisor, AudioDevices}<% end %>
       
       @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
       
@@ -396,21 +396,22 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
         local_tag = generate_tag()
         dialog_id = "\#{call_id}-\#{local_tag}"
         <%= if @include_audio do %>
-        # Step 1: Prepare UAC session using MediaSessionManager
-        Logger.debug("Preparing UAC media session...")
-        case MediaSessionManager.prepare_uac_session(
+        # Step 1: Start MediaSession directly
+        Logger.debug("Starting UAC media session...")
+        {:ok, media_pid} = MediaSessionSupervisor.start_session(
           id: "uac-media-\#{call_id}",
           dialog_id: dialog_id,
-          audio_source: :device,
-          audio_sink: :device,
-          input_device_id: input_device,
-          output_device_id: output_device,
+          role: :uac,
+          media_handler: <%= @module %>.MediaHandler,
+          handler_args: %{},
           supported_codecs: [:pcma]  # G.711 A-law
-        ) do
-          {:ok, media_session, sdp_offer} ->
-            Logger.debug("UAC session prepared with SDP offer")
+        )
+        
+        case MediaSession.generate_offer(media_pid) do
+          {:ok, sdp_offer} ->
+            Logger.debug("Generated SDP offer")
             
-            # Step 2: Create INVITE with the SDP from MediaSessionManager<% else %>
+            # Step 2: Create INVITE with the SDP<% else %>
         # Create INVITE without SDP<% end %>
             headers = %{
               "via" => [Via.new(get_local_ip(), "udp", 5060)],
@@ -439,7 +440,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
               current_call: uri,
               call_id: call_id,
               local_tag: local_tag<%= if @include_audio do %>,
-              media_session: media_session<% end %>
+              media_session: media_pid<% end %>
             }
             
             {:ok, new_state}<%= if @include_audio do %>
@@ -500,9 +501,17 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
                 sdp_answer = response.body
                 Logger.debug("Completing UAC setup with SDP answer...")
                 
-                # Complete UAC setup using MediaSessionManager
-                case MediaSessionManager.complete_uac_setup(state.media_session, sdp_answer) do
+                # Process SDP answer and start media
+                case MediaSession.process_answer(state.media_session, sdp_answer) do
                   :ok ->
+                    MediaSession.start_media(state.media_session)
+                    
+                    # Send device configuration
+                    send(state.media_session, {:use_audio_devices, [
+                      input: state.input_device_id,
+                      output: state.output_device_id
+                    ]})
+                    
                     Logger.info("UAC setup completed successfully, media is flowing")
                     <% else %>
                 Logger.info("Call connected (signaling only)")

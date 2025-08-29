@@ -378,11 +378,6 @@ defmodule Parrot.Media.MediaSession do
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def idle(:info, msg, data), do: handle_media_message(msg, data)
 
-  def idle(:info, {:use_audio_devices, _opts} = msg, data), do: handle_media_message(msg, data)
-  def idle(:info, {:use_microphone, _device_id} = msg, data), do: handle_media_message(msg, data)
-  def idle(:info, {:use_speaker, _device_id} = msg, data), do: handle_media_message(msg, data)
-  def idle(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
-
   # get_state call
   def idle({:call, from}, :get_state, data), do: reply_with_state(from, :idle, data)
 
@@ -448,17 +443,6 @@ defmodule Parrot.Media.MediaSession do
 
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def negotiating(:info, msg, data), do: handle_media_message(msg, data)
-
-  def negotiating(:info, {:use_audio_devices, _opts} = msg, data),
-    do: handle_media_message(msg, data)
-
-  def negotiating(:info, {:use_microphone, _device_id} = msg, data),
-    do: handle_media_message(msg, data)
-
-  def negotiating(:info, {:use_speaker, _device_id} = msg, data),
-    do: handle_media_message(msg, data)
-
-  def negotiating(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
 
   # get_state call
   def negotiating({:call, from}, :get_state, data), do: reply_with_state(from, :negotiating, data)
@@ -531,11 +515,6 @@ defmodule Parrot.Media.MediaSession do
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def ready(:info, msg, data), do: handle_media_message(msg, data)
 
-  def ready(:info, {:use_audio_devices, _opts} = msg, data), do: handle_media_message(msg, data)
-  def ready(:info, {:use_microphone, _device_id} = msg, data), do: handle_media_message(msg, data)
-  def ready(:info, {:use_speaker, _device_id} = msg, data), do: handle_media_message(msg, data)
-  def ready(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
-
   # get_state call
   def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
 
@@ -573,14 +552,6 @@ defmodule Parrot.Media.MediaSession do
 
   # Catch-all ONLY for :info messages (external, unpredictable) - forwards to media handler
   def active(:info, msg, data), do: handle_media_message(msg, data)
-
-  def active(:info, {:use_audio_devices, _opts} = msg, data), do: handle_media_message(msg, data)
-
-  def active(:info, {:use_microphone, _device_id} = msg, data),
-    do: handle_media_message(msg, data)
-
-  def active(:info, {:use_speaker, _device_id} = msg, data), do: handle_media_message(msg, data)
-  def active(:info, :release_audio_devices = msg, data), do: handle_media_message(msg, data)
 
   # get_state call
   def active({:call, from}, :get_state, data), do: reply_with_state(from, :active, data)
@@ -1248,10 +1219,23 @@ defmodule Parrot.Media.MediaSession do
     Logger.info("MediaSession #{data.id}: Connecting speaker: #{inspect(output_device)}")
 
     Map.merge(data, %{
+      input_device_id: nil,
+      output_device_id: output_device,
+      audio_source: :silence,
+      audio_sink: :device
+    })
+  end
+
+  defp process_media_action({:connect_audio_device, input_device, output_device}, data) do
+    Logger.info(
+      "MediaSession #{data.id}: Connecting audio devices - input: #{inspect(input_device)}, output: #{inspect(output_device)}"
+    )
+
+    Map.merge(data, %{
       input_device_id: input_device,
-      output_device: nil,
+      output_device_id: output_device,
       audio_source: :device,
-      audio_sink: :none
+      audio_sink: :device
     })
   end
 

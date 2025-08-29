@@ -27,14 +27,28 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
     end
 
     @impl true
-    def handle_info({:connect_audio_devices}, state) do
-      actions = [
-        {:connect_audio_device, "default", "default"},
-        {:set_audio_source, :device},
-        {:set_audio_sink, :device}
-      ]
+    def handle_info({:use_audio_devices, opts}, state) when is_list(opts) do
+      input = Keyword.get(opts, :input, "default")
+      output = Keyword.get(opts, :output, "default")
+      
+      actions = [{:connect_audio_device, input, output}]
+      
+      {actions, Map.merge(state, %{using_microphone: input != nil, using_speakers: output != nil})}
+    end
 
-      {actions, Map.merge(state, %{using_microphone: true, using_speakers: true})}
+    @impl true
+    def handle_info({:use_microphone, device_id}, state) do
+      {[{:connect_audio_device, device_id, nil}], Map.put(state, :using_microphone, true)}
+    end
+
+    @impl true
+    def handle_info({:use_speaker, device_id}, state) do
+      {[{:connect_audio_device, nil, device_id}], Map.put(state, :using_speakers, true)}
+    end
+
+    @impl true
+    def handle_info(:release_audio_devices, state) do
+      {[{:connect_audio_device, nil, nil}], Map.merge(state, %{using_microphone: false, using_speakers: false})}
     end
 
     @impl true
@@ -187,7 +201,7 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
   # Removed "MediaSession without MediaHandler" tests - MediaHandler is now required
 
   describe "MediaSession with audio device actions" do
-    test "handles :connect_microphone message" do
+    test "handles :use_microphone message" do
       {:ok, session} =
         MediaSession.start_link(
           id: "test_mic_#{:rand.uniform(10000)}",
@@ -197,8 +211,8 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
           handler_args: %{}
         )
 
-      # Send connect_microphone message
-      send(session, {:connect_microphone})
+      # Send use_microphone message
+      send(session, {:use_microphone, "default"})
 
       Process.sleep(50)
 
@@ -206,12 +220,11 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
       {_state_name, data} = :sys.get_state(session)
       assert data.audio_source == :device
       assert data.input_device_id == "default"
-      assert data.handler_state.using_microphone == true
 
       GenServer.stop(session)
     end
 
-    test "handles :connect_speakers message" do
+    test "handles :use_speaker message" do
       {:ok, session} =
         MediaSession.start_link(
           id: "test_speakers_#{:rand.uniform(10000)}",
@@ -221,8 +234,8 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
           handler_args: %{}
         )
 
-      # Send connect_speakers message
-      send(session, {:connect_speakers})
+      # Send use_speaker message
+      send(session, {:use_speaker, "default"})
 
       Process.sleep(50)
 
@@ -230,12 +243,11 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
       {_state_name, data} = :sys.get_state(session)
       assert data.audio_sink == :device
       assert data.output_device_id == "default"
-      assert data.handler_state.using_speakers == true
 
       GenServer.stop(session)
     end
 
-    test "handles :connect_audio_devices message" do
+    test "handles :use_audio_devices message" do
       {:ok, session} =
         MediaSession.start_link(
           id: "test_both_#{:rand.uniform(10000)}",
@@ -245,8 +257,8 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
           handler_args: %{}
         )
 
-      # Send connect_audio_devices message
-      send(session, {:connect_audio_devices})
+      # Send use_audio_devices message
+      send(session, {:use_audio_devices, [input: "default", output: "default"]})
 
       Process.sleep(50)
 

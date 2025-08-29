@@ -32,7 +32,7 @@ defmodule ParrotExampleUac do
   
   alias Parrot.Sip.{UAC, Message}
   alias Parrot.Sip.Headers.{From, To, CSeq, CallId, Contact, Via}
-  alias Parrot.Media.{MediaSession, MediaSessionManager, AudioDevices}
+  alias Parrot.Media.{MediaSession, MediaSessionSupervisor, AudioDevices}
   
   @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
   
@@ -224,16 +224,17 @@ defmodule ParrotExampleUac do
     
     # Step 1: Prepare UAC session using MediaSessionManager
     Logger.debug("Preparing UAC media session...")
-    case MediaSessionManager.prepare_uac_session(
+    {:ok, media_pid} = MediaSessionSupervisor.start_session(
       id: "uac-media-#{call_id}",
       dialog_id: dialog_id,
-      audio_source: :device,
-      audio_sink: :device,
-      input_device_id: input_device,
-      output_device_id: output_device,
-      supported_codecs: [:opus, :pcma]  # Prefer OPUS, fallback to G.711 A-law
-    ) do
-      {:ok, media_session, sdp_offer} ->
+      role: :uac,
+      media_handler: ParrotExampleUac.MediaHandler,
+      handler_args: %{},
+      supported_codecs: [:opus, :pcmu]
+    )
+
+    case MediaSession.generate_offer(media_pid) do
+      {:ok, sdp_offer} ->
         Logger.debug("UAC session prepared with SDP offer")
         
         # Step 2: Create INVITE with the SDP from MediaSessionManager
@@ -264,7 +265,7 @@ defmodule ParrotExampleUac do
           current_call: uri,
           call_id: call_id,
           local_tag: local_tag,
-          media_session: media_session
+          media_session: media_pid
         }
         
         {:ok, new_state}
@@ -324,10 +325,16 @@ defmodule ParrotExampleUac do
             # Extract SDP answer from response
             sdp_answer = response.body
             Logger.debug("Completing UAC setup with SDP answer...")
-            
-            # Complete UAC setup using MediaSessionManager
-            case MediaSessionManager.complete_uac_setup(state.media_session, sdp_answer) do
+ 
+            case MediaSession.process_answer(state.media_session, sdp_answer) do
               :ok ->
+                MediaSession.start_media(state.media_session)
+
+                send(state.media_session, {:use_audio_devices, [
+                  input: state.input_device_id,
+                  output: state.output_device_id
+                ]})
+
                 Logger.info("UAC setup completed successfully, media is flowing")
                 
                 # Start a task to wait for Enter key
