@@ -30,10 +30,11 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
     def handle_info({:use_audio_devices, opts}, state) when is_list(opts) do
       input = Keyword.get(opts, :input, "default")
       output = Keyword.get(opts, :output, "default")
-      
+
       actions = [{:connect_audio_device, input, output}]
-      
-      {actions, Map.merge(state, %{using_microphone: input != nil, using_speakers: output != nil})}
+
+      {actions,
+       Map.merge(state, %{using_microphone: input != nil, using_speakers: output != nil})}
     end
 
     @impl true
@@ -48,7 +49,8 @@ defmodule Parrot.Media.MediaSessionIntegrationTest do
 
     @impl true
     def handle_info(:release_audio_devices, state) do
-      {[{:connect_audio_device, nil, nil}], Map.merge(state, %{using_microphone: false, using_speakers: false})}
+      {[{:connect_audio_device, nil, nil}],
+       Map.merge(state, %{using_microphone: false, using_speakers: false})}
     end
 
     @impl true
