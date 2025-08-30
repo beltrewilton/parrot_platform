@@ -9,6 +9,22 @@ defmodule ParrotExampleUac do
   - Bidirectional G.711 audio streaming
   - Proper call lifecycle management
   
+  ## Architecture
+  
+  This UAC uses two types of handlers with clear separation of concerns:
+  
+  1. **SipHandler** (ParrotExampleUac.SipHandler) - Handles transport-level SIP events
+     - Required by the transport layer but kept minimal for UAC
+     - Just consumes messages to prevent duplicate processing
+  
+  2. **MediaHandler** (ParrotExampleUac.MediaHandler) - Handles media session callbacks
+     - Manages audio streaming lifecycle
+     - Handles codec negotiation
+     - Controls audio device configuration
+  
+  The actual SIP response processing happens via UAC callbacks (create_uac_callback),
+  not in the SipHandler.
+  
   ## Usage
   
       # Start the UAC
@@ -33,6 +49,7 @@ defmodule ParrotExampleUac do
   alias Parrot.Sip.{UAC, Message}
   alias Parrot.Sip.Headers.{From, To, CSeq, CallId, Contact, Via}
   alias Parrot.Media.{MediaSession, MediaSessionSupervisor, AudioDevices}
+  alias ParrotExampleUac.{SipHandler, MediaHandler}
   
   @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
   
@@ -197,9 +214,10 @@ defmodule ParrotExampleUac do
   defp start_transport(opts) do
     listen_port = opts[:listen_port] || 0  # Use ephemeral port
     
-    # Create a simple handler for receiving responses
+    # The SipHandler is required by the transport layer but kept minimal for UAC
+    # since the actual response handling is done via the UAC callback
     handler = Parrot.Sip.Handler.new(
-      __MODULE__.ResponseHandler,
+      SipHandler,
       self(),
       log_level: :debug,
       sip_trace: true
@@ -223,14 +241,19 @@ defmodule ParrotExampleUac do
     dialog_id = "#{call_id}-#{local_tag}"
     
     # Step 1: Prepare UAC session using MediaSessionManager
-    Logger.debug("Preparing UAC media session...")
+    Logger.debug("Preparing UAC media session with audio devices...")
     {:ok, media_pid} = MediaSessionSupervisor.start_session(
       id: "uac-media-#{call_id}",
       dialog_id: dialog_id,
       role: :uac,
-      media_handler: ParrotExampleUac.MediaHandler,
+      media_handler: MediaHandler,
       handler_args: %{},
-      supported_codecs: [:opus, :pcma]
+      supported_codecs: [:opus, :pcma],
+      # Configure audio devices upfront so PortAudioPipeline is selected
+      input_device_id: input_device,
+      output_device_id: output_device,
+      audio_source: if(input_device, do: :device, else: :silence),
+      audio_sink: if(output_device, do: :device, else: :none)
     )
 
     case MediaSession.generate_offer(media_pid) do
@@ -253,10 +276,10 @@ defmodule ParrotExampleUac do
         invite = Message.new_request(:invite, uri, headers)
         |> Message.set_body(sdp_offer)
         
-        # Create UAC handler callback
+        # Create UAC callback that will handle the SIP response
         callback = create_uac_callback(self())
         
-        # Step 3: Send INVITE
+        # Step 3: Send INVITE with callback for response handling
         {:uac_id, transaction} = UAC.request(invite, callback)
         Logger.info("INVITE sent, transaction: #{inspect(transaction)}")
         
@@ -329,12 +352,7 @@ defmodule ParrotExampleUac do
             case MediaSession.process_answer(state.media_session, sdp_answer) do
               :ok ->
                 MediaSession.start_media(state.media_session)
-
-                send(state.media_session, {:use_audio_devices, [
-                  input: state.input_device_id,
-                  output: state.output_device_id
-                ]})
-
+                
                 Logger.info("UAC setup completed successfully, media is flowing")
                 
                 # Start a task to wait for Enter key
@@ -494,34 +512,4 @@ defmodule ParrotExampleUac do
     |> Enum.join(".")
   end
   
-  # Response Handler Module
-  defmodule ResponseHandler do
-    @moduledoc false
-    require Logger
-    
-    # Simple handler that forwards responses to the parent process
-    
-    def transp_request(_msg, _owner_pid) do
-      # We only handle responses in UAC
-      :ignore
-    end
-    
-    def transp_response(msg, owner_pid) do
-      # Forward responses to the GenServer for logging/debugging
-      send(owner_pid, {:uac_response, {:response, msg}})
-      :consume
-    end
-    
-    def transp_error(error, _reason, owner_pid) do
-      send(owner_pid, {:uac_response, {:error, error}})
-      :ok
-    end
-    
-    # Required callbacks we don't use
-    def process_ack(_msg, _state), do: :ignore
-    def transaction(_event, _id, _state), do: :ignore
-    def transaction_stop(_event, _id, _state), do: :ignore
-    def uas_cancel(_msg, _state), do: :ignore
-    def uas_request(_msg, _dialog_id, _state), do: :ignore
-  end
 end
