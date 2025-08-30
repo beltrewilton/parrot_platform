@@ -121,6 +121,41 @@ SIP_TRACE=true mix test
 2. **Fighting gen_statem** - Embrace state machines for transactions/dialogs
 3. **Ignoring media callbacks** - Implement MediaHandler for audio
 4. **Not handling all SIP methods** - Implement handle_request/2 fallback
+5. **Configuring audio devices too late** - Configure devices BEFORE MediaSession starts:
+   ```elixir
+   # WRONG - Configuring after session starts
+   {:ok, pid} = MediaSession.start_link(...)
+   send(pid, {:use_audio_devices, ...})  # Too late!
+   
+   # RIGHT - Configure upfront
+   {:ok, pid} = MediaSession.start_link(
+     input_device_id: 1,
+     output_device_id: 2,
+     audio_source: :device,
+     audio_sink: :device
+   )
+   ```
+6. **Duplicate message handlers** - Don't have multiple handlers sending same messages:
+   ```elixir
+   # WRONG - Both callback and handler send responses
+   def create_uac_callback(pid) do
+     fn resp -> send(pid, {:response, resp}) end
+   end
+   
+   def transp_response(msg, pid) do
+     send(pid, {:response, msg})  # Duplicate!
+   end
+   
+   # RIGHT - Single source of truth
+   def create_uac_callback(pid) do
+     fn resp -> send(pid, {:response, resp}) end
+   end
+   
+   def transp_response(_msg, _pid) do
+     :consume  # Just consume, don't forward
+   end
+   ```
+7. **Adding defensive code instead of fixing root cause** - State machines should crash on invalid transitions to expose bugs
 
 ## Example: Modern IVR with Message-Based Control
 

@@ -145,6 +145,29 @@ This approach:
 - Compile project: `mix compile`
 - Get dependencies: `mix deps.get`
 
+## Debugging Guidelines
+
+### Root Cause Analysis
+**IMPORTANT: Always fix the root cause, not symptoms:**
+- If you encounter duplicate messages or invalid state transitions, trace back to find WHY they're happening
+- Don't add defensive handlers for bad situations - fix the source of the problem
+- State machines should enforce proper transitions and crash on invalid ones to expose bugs
+
+### Handler Architecture
+When working with SIP handlers and media handlers:
+- **Clear naming**: Use descriptive names like `SipHandler` vs `MediaHandler` to clarify responsibilities
+- **Single responsibility**: Each handler should have one clear purpose
+- **Avoid duplication**: Don't have multiple handlers sending the same messages
+- Example: UAC callback handles SIP responses, SipHandler just consumes to prevent duplicates
+
+### Audio Device Configuration
+**Critical timing issue**: Audio devices MUST be configured BEFORE pipeline selection:
+- Configure `input_device_id` and `output_device_id` when creating MediaSession
+- Set `audio_source: :device` and/or `audio_sink: :device` upfront
+- This ensures `PortAudioPipeline` is selected instead of `OpusPipeline`/`AlawPipeline`
+- Wrong: Sending `:use_audio_devices` message after media session starts
+- Right: Pass device configuration in MediaSessionSupervisor.start_session opts
+
 ## Architecture Overview
 
 ### Critical: gen_statem Usage

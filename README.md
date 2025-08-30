@@ -46,7 +46,9 @@ Next steps:
 - [x] create proper silence generator for scenarios where we need it
 - [x] better pattern matching in media modules
 - [x] better pattern matching in examples/generators
-- [ ] refactor media session api to have callbacks :handle_info to play files
+- [x] refactor media session api to have callbacks :handle_info to play files
+- [ ] get multi-file and looping working for playback
+- [ ] implement hold and unhold (SIP signaling and media handling)
 - [ ] verify transactions and dialogs do not return responses when they should not from handlers
 - [ ] implement B2BUA and media "bridge"-ing
 - [ ] load test
