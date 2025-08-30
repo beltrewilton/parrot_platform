@@ -365,10 +365,6 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-  # Media control messages
-  def idle(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
-  def idle(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
-
   # Unknown process DOWN
   def idle(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
     Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
@@ -429,11 +425,6 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-  # Media control messages
-  def negotiating(:info, {:play_files, _files, _opts} = msg, data),
-    do: handle_media_message(msg, data)
-
-  def negotiating(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
 
   # Unknown process DOWN
   def negotiating(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
@@ -502,9 +493,6 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-  # Media control messages
-  def ready(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
-  def ready(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
 
   # Unknown process DOWN
   def ready(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
@@ -517,6 +505,7 @@ defmodule Parrot.Media.MediaSession do
 
   # get_state call
   def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
+
 
   #################
   # State: active #
@@ -540,9 +529,6 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-  # Media control messages
-  def active(:info, {:play_files, _files, _opts} = msg, data), do: handle_media_message(msg, data)
-  def active(:info, :stop_playback = msg, data), do: handle_media_message(msg, data)
 
   # Unknown process DOWN
   def active(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
@@ -1137,15 +1123,16 @@ defmodule Parrot.Media.MediaSession do
   defp process_media_action({:play, file_path, _opts}, data) do
     Logger.info("MediaSession #{data.id}: Playing file: #{file_path}")
     # Update the audio file and restart pipeline if needed
-    %{data | audio_file: file_path}
+    updated_data = %{data | audio_file: file_path, audio_source: :file}
+    restart_pipeline_if_needed(updated_data)
   end
 
   defp process_media_action({:play_sequence, files}, data) when is_list(files) do
     Logger.info("MediaSession #{data.id}: Playing sequence of #{length(files)} files")
-    # Just play the first file for now
     case files do
       [first | _rest] ->
-        %{data | audio_file: first}
+        updated_data = %{data | audio_file: first, audio_source: :file}
+        restart_pipeline_if_needed(updated_data)
 
       [] ->
         data
@@ -1154,10 +1141,10 @@ defmodule Parrot.Media.MediaSession do
 
   defp process_media_action({:play_loop, files}, data) when is_list(files) do
     Logger.info("MediaSession #{data.id}: Playing #{length(files)} files in loop")
-    # Just play the first file for now
     case files do
       [first | _rest] ->
-        %{data | audio_file: first}
+        updated_data = %{data | audio_file: first, audio_source: :file}
+        restart_pipeline_if_needed(updated_data)
 
       [] ->
         data
@@ -1248,6 +1235,24 @@ defmodule Parrot.Media.MediaSession do
   defp process_media_action(action, data) do
     Logger.warning("MediaSession #{data.id}: Unknown media action: #{inspect(action)}")
     data
+  end
+
+  defp restart_pipeline_if_needed(data) do
+    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+      Logger.info("MediaSession #{data.id}: Restarting pipeline with new audio file")
+      stop_media_pipeline(data)
+      
+      case start_media_pipeline(data) do
+        {:ok, new_pipeline_pid} ->
+          %{data | pipeline_pid: new_pipeline_pid}
+        {:error, reason} ->
+          Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")
+          data
+      end
+    else
+      # Pipeline not running yet, just update the data
+      data
+    end
   end
 
   # Forward messages to media handler
@@ -1360,7 +1365,7 @@ defmodule Parrot.Media.MediaSession do
           :exit, _ -> :ok
         end
       else
-        case Membrane.Pipeline.terminate(pipeline_pid) do
+        case Membrane.Pipeline.terminate(pipeline_pid, force?: true) do
           :ok -> :ok
           error -> error
         end
