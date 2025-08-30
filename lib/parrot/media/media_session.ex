@@ -425,7 +425,6 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-
   # Unknown process DOWN
   def negotiating(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
     Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
@@ -493,7 +492,6 @@ defmodule Parrot.Media.MediaSession do
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
 
-
   # Unknown process DOWN
   def ready(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
     Logger.debug("MediaSession #{data.id}: Unknown process down: #{inspect(pid)}")
@@ -505,7 +503,6 @@ defmodule Parrot.Media.MediaSession do
 
   # get_state call
   def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
-
 
   #################
   # State: active #
@@ -528,7 +525,6 @@ defmodule Parrot.Media.MediaSession do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
     {:next_state, :ready, %{data | pipeline_pid: nil}}
   end
-
 
   # Unknown process DOWN
   def active(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
@@ -1129,6 +1125,7 @@ defmodule Parrot.Media.MediaSession do
 
   defp process_media_action({:play_sequence, files}, data) when is_list(files) do
     Logger.info("MediaSession #{data.id}: Playing sequence of #{length(files)} files")
+
     case files do
       [first | _rest] ->
         updated_data = %{data | audio_file: first, audio_source: :file}
@@ -1141,6 +1138,7 @@ defmodule Parrot.Media.MediaSession do
 
   defp process_media_action({:play_loop, files}, data) when is_list(files) do
     Logger.info("MediaSession #{data.id}: Playing #{length(files)} files in loop")
+
     case files do
       [first | _rest] ->
         updated_data = %{data | audio_file: first, audio_source: :file}
@@ -1241,10 +1239,11 @@ defmodule Parrot.Media.MediaSession do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Restarting pipeline with new audio file")
       stop_media_pipeline(data)
-      
+
       case start_media_pipeline(data) do
         {:ok, new_pipeline_pid} ->
           %{data | pipeline_pid: new_pipeline_pid}
+
         {:error, reason} ->
           Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")
           data
