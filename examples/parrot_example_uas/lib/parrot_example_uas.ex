@@ -12,15 +12,19 @@ defmodule ParrotExampleUas do
   
   This UAS uses two separate handler modules:
   
-  1. **SipHandler** (ParrotExampleUas.SipHandler) - Handles SIP protocol events
-     - Processes INVITE requests
-     - Handles ACK, BYE, CANCEL, OPTIONS
-     - Manages SIP dialog state
+  1. **IncomingCallHandler** (ParrotExampleUas.IncomingCallHandler) - Handles incoming SIP calls
+     - Processes INVITE requests and generates SDP answers
+     - Handles ACK to start media playback
+     - Processes BYE to end calls
+     - Responds to OPTIONS, CANCEL, and other SIP methods
   
   2. **MediaHandler** (ParrotExampleUas.MediaHandler) - Handles media session callbacks
-     - Plays welcome audio file
+     - Plays welcome audio file when receiving control messages
      - Manages audio streaming lifecycle
      - Handles codec negotiation
+  
+  The IncomingCallHandler is called by HandlerAdapter.Core, which bridges between
+  the low-level transport layer and our high-level handler logic.
   
   ## Usage
   
@@ -37,7 +41,7 @@ defmodule ParrotExampleUas do
   use GenServer
   require Logger
   
-  alias ParrotExampleUas.{SipHandler}
+  alias ParrotExampleUas.IncomingCallHandler
   
   @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
   
@@ -94,10 +98,10 @@ defmodule ParrotExampleUas do
     Logger.info("Starting ParrotExampleUas on port #{port}")
     Logger.info("Connect your SIP client to sip:service@<your-ip>:#{port}")
     
-    # Start the SIP transport with our SipHandler
+    # Start the SIP transport with our IncomingCallHandler
     handler = Parrot.Sip.Handler.new(
       Parrot.Sip.HandlerAdapter.Core,
-      {SipHandler, %{parent: self()}},
+      {IncomingCallHandler, %{parent: self()}},
       log_level: :info,
       sip_trace: true
     )

@@ -11,19 +11,24 @@ defmodule ParrotExampleUac do
   
   ## Architecture
   
-  This UAC uses two types of handlers with clear separation of concerns:
+  This UAC uses a simpler pattern than UAS:
   
-  1. **SipHandler** (ParrotExampleUac.SipHandler) - Handles transport-level SIP events
-     - Required by the transport layer but kept minimal for UAC
-     - Just consumes messages to prevent duplicate processing
+  1. **UAC Callbacks** - The main module (ParrotExampleUac) handles SIP responses
+     - Uses UAC.request/2 with a callback function
+     - The callback receives SIP responses directly
+     - Processes responses in handle_uac_response/2
   
   2. **MediaHandler** (ParrotExampleUac.MediaHandler) - Handles media session callbacks
      - Manages audio streaming lifecycle
      - Handles codec negotiation
      - Controls audio device configuration
   
-  The actual SIP response processing happens via UAC callbacks (create_uac_callback),
-  not in the SipHandler.
+  3. **Minimal Transport Handler** - Embedded in this module
+     - Required by the transport layer but does minimal work
+     - Just returns :noreply or :ok for all callbacks
+  
+  Unlike UAS which uses HandlerAdapter.Core, UAC primarily uses direct callbacks
+  for response handling, making the architecture simpler for client applications.
   
   ## Usage
   
@@ -46,10 +51,10 @@ defmodule ParrotExampleUac do
   use GenServer
   require Logger
   
-  alias Parrot.Sip.{UAC, Message}
-  alias Parrot.Sip.Headers.{From, To, CSeq, CallId, Contact, Via}
+  alias Parrot.Sip.{UAC, Message, Headers, Dialog}
+  alias Parrot.Sip.Headers.{From, To, CallId}
   alias Parrot.Media.{MediaSession, MediaSessionSupervisor, AudioDevices}
-  alias ParrotExampleUac.{SipHandler, MediaHandler}
+  alias ParrotExampleUac.MediaHandler
   
   @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
   
@@ -214,10 +219,10 @@ defmodule ParrotExampleUac do
   defp start_transport(opts) do
     listen_port = opts[:listen_port] || 0  # Use ephemeral port
     
-    # The SipHandler is required by the transport layer but kept minimal for UAC
+    # Create a minimal handler inline - UAC doesn't need a separate handler module
     # since the actual response handling is done via the UAC callback
     handler = Parrot.Sip.Handler.new(
-      SipHandler,
+      __MODULE__,  # Use this module as the handler
       self(),
       log_level: :debug,
       sip_trace: true
@@ -234,17 +239,43 @@ defmodule ParrotExampleUac do
     end
   end
   
+  # Minimal transport handler callbacks - required by Parrot.Sip.Handler behaviour
+  # For UAC, these just return minimal responses since actual processing
+  # happens via UAC.request callbacks
+  
+  @doc false
+  def transp_request(_msg, _owner_pid), do: :noreply
+  
+  @doc false
+  def transaction(_trans, _sip_msg, _owner_pid), do: :ok
+  
+  @doc false
+  def transaction_stop(_trans, _result, _owner_pid), do: :ok
+  
+  @doc false
+  def uas_request(_uas, _req_sip_msg, _owner_pid), do: :ok
+  
+  @doc false
+  def uas_cancel(_uas_id, _owner_pid), do: :ok
+  
+  @doc false
+  def process_ack(_sip_msg, _owner_pid), do: :ok
+  
   defp do_make_call(uri, input_device, output_device, state) do
-    # Generate call parameters
-    call_id = "uac-#{:rand.uniform(1000000)}@#{get_local_ip()}"
-    local_tag = generate_tag()
-    dialog_id = "#{call_id}-#{local_tag}"
+    # Generate call parameters using library helpers
+    local_ip = get_local_ip()
+    call_id = Headers.generate_call_id(local_ip)
+    local_tag = Headers.generate_tag()
+    
+    # Create dialog ID using library function
+    dialog_id = Dialog.new(call_id, local_tag, nil, :uac)
+    dialog_id_str = Dialog.to_string(dialog_id)
     
     # Step 1: Prepare UAC session using MediaSessionManager
     Logger.debug("Preparing UAC media session with audio devices...")
     {:ok, media_pid} = MediaSessionSupervisor.start_session(
       id: "uac-media-#{call_id}",
-      dialog_id: dialog_id,
+      dialog_id: dialog_id_str,
       role: :uac,
       media_handler: MediaHandler,
       handler_args: %{},
@@ -261,16 +292,18 @@ defmodule ParrotExampleUac do
         Logger.debug("UAC session prepared with SDP offer")
         
         # Step 2: Create INVITE with the SDP from MediaSessionManager
+        # Using library helpers for header creation
         headers = %{
-          "via" => [Via.new(get_local_ip(), "udp", 5060)],
-          "from" => From.new("sip:parrot_uac@#{get_local_ip()}", "Parrot UAC", local_tag),
-          "to" => To.new(uri),
+          "via" => [Headers.new_via_with_branch(local_ip, "udp", 5060)],
+          "from" => Headers.new_from_with_tag("sip:parrot_uac@#{local_ip}", "Parrot UAC"),
+          "to" => Headers.new_to(uri),
           "call-id" => CallId.new(call_id),
-          "cseq" => CSeq.new(1, :invite),
-          "contact" => Contact.new("sip:parrot_uac@#{get_local_ip()}:5060"),
+          "cseq" => Headers.new_cseq(1, :invite),
+          "contact" => Headers.new_contact("sip:parrot_uac@#{local_ip}:5060"),
           "content-type" => "application/sdp",
-          "allow" => "INVITE, ACK, BYE, CANCEL, OPTIONS, INFO",
-          "supported" => "replaces, timer"
+          "allow" => Headers.standard_allow() |> Headers.format_allow(),
+          "supported" => Headers.new_supported(["replaces", "timer"]) |> Headers.format_supported(),
+          "max-forwards" => Headers.default_max_forwards()
         }
         
         invite = Message.new_request(:invite, uri, headers)
@@ -288,6 +321,7 @@ defmodule ParrotExampleUac do
           current_call: uri,
           call_id: call_id,
           local_tag: local_tag,
+          dialog_id: dialog_id,
           media_session: media_pid
         }
         
@@ -305,106 +339,51 @@ defmodule ParrotExampleUac do
     end
   end
   
-  defp handle_uac_response({:response, response}, state) do
-    case response.status_code do
-      code when code >= 100 and code < 200 ->
-        # Provisional response
-        Logger.info("Call progress: #{code} #{response.reason_phrase}")
-        
-        if code == 180 do
-          IO.puts("\n🔔 Ringing...")
-        end
-        
-        state
-        
-      200 ->
-        # Success - check if this is for INVITE or other method
-        case response.headers["cseq"] do
-          %{method: :invite} ->
-            # Success - call answered
-            Logger.info("Call answered!")
-            IO.puts("\n✅ Call connected! Audio devices active.")
-            IO.puts("🎤 Speaking through microphone...")
-            IO.puts("🔊 Listening through speakers...")
-            IO.puts("\nPress Enter to hang up")
-            
-            # Extract remote tag and create dialog ID
-            remote_tag = case response.headers["to"] do
-              %{parameters: %{"tag" => tag}} -> tag
-              _ -> nil
-            end
-            Logger.debug("Remote tag: #{inspect(remote_tag)}")
-            
-            dialog_id = %{
-              call_id: state.call_id,
-              local_tag: state.local_tag,
-              remote_tag: remote_tag
-            }
-            
-            # Send ACK immediately after receiving 200 OK for INVITE
-            Logger.info("Sending ACK for 200 OK...")
-            send_ack(state, response)
-            
-            # Extract SDP answer from response
-            sdp_answer = response.body
-            Logger.debug("Completing UAC setup with SDP answer...")
- 
-            case MediaSession.process_answer(state.media_session, sdp_answer) do
-              :ok ->
-                MediaSession.start_media(state.media_session)
-                
-                Logger.info("UAC setup completed successfully, media is flowing")
-                
-                # Start a task to wait for Enter key
-                Task.start(fn ->
-                  IO.gets("")
-                  GenServer.call(@server_name, :hangup)
-                end)
-                
-                %{state |
-                  dialog_id: dialog_id,
-                  remote_tag: remote_tag
-                }
-                
-              {:error, reason} ->
-                Logger.error("Failed to complete UAC setup: #{inspect(reason)}")
-                IO.puts("\n❌ Failed to establish media: #{inspect(reason)}")
-                # TODO: Send BYE to terminate the call
-                state
-            end
-          
-          %{method: :bye} ->
-            # Success response to BYE - no ACK needed
-            Logger.info("BYE acknowledged")
-            # Clean up already done in do_hangup
-            state
-            
-          _ ->
-            # Other successful response
-            Logger.debug("Success response for #{inspect(response.headers["cseq"])}")
-            state
-        end
-        
-      code when code >= 300 and code < 400 ->
-        # Redirect
-        Logger.info("Call redirected: #{code} #{response.reason_phrase}")
-        IO.puts("\n↪️  Call redirected: #{response.reason_phrase}")
-        state
-        
-      code when code >= 400 ->
-        # Error
-        Logger.error("Call failed: #{code} #{response.reason_phrase}")
-        IO.puts("\n❌ Call failed: #{response.reason_phrase}")
-        
-        # Clean up
-        Process.delete({:call_context, state.call_id})
-        
-        %{state |
-          current_call: nil,
-          call_id: nil,
-          local_tag: nil
-        }
+  defp handle_uac_response({:response, %{status_code: code} = response}, state)
+       when code >= 100 and code < 200 do
+    # Provisional response
+    Logger.info("Call progress: #{code} #{response.reason_phrase}")
+    
+    if code == 180 do
+      IO.puts("\n🔔 Ringing...")
     end
+    
+    state
+  end
+
+  defp handle_uac_response({:response, %{status_code: 200} = response}, state) do
+    # Success - check method using pattern matching
+    handle_200_response(response, state)
+  end
+
+  defp handle_uac_response({:response, %{status_code: code} = response}, state)
+       when code >= 300 and code < 400 do
+    # Redirect
+    Logger.info("Call redirected: #{code} #{response.reason_phrase}")
+    IO.puts("\n↪️  Call redirected: #{response.reason_phrase}")
+    state
+  end
+
+  defp handle_uac_response({:response, %{status_code: code} = response}, state)
+       when code >= 400 do
+    # Error
+    Logger.error("Call failed: #{code} #{response.reason_phrase}")
+    IO.puts("\n❌ Call failed: #{response.reason_phrase}")
+    
+    # Clean up
+    if state.media_session do
+      MediaSession.terminate_session(state.media_session)
+    end
+    
+    Process.delete({:call_context, state.call_id})
+    
+    %{state |
+      current_call: nil,
+      call_id: nil,
+      local_tag: nil,
+      dialog_id: nil,
+      media_session: nil
+    }
   end
   
   defp handle_uac_response({:error, reason}, state) do
@@ -428,6 +407,71 @@ defmodule ParrotExampleUac do
     }
   end
   
+  # Helper for handling 200 OK responses based on method
+  defp handle_200_response(%{headers: %{"cseq" => %{method: :invite}}} = response, state) do
+    # Success - call answered
+    Logger.info("Call answered!")
+    IO.puts("\n✅ Call connected! Audio devices active.")
+    IO.puts("🎤 Speaking through microphone...")
+    IO.puts("🔊 Listening through speakers...")
+    IO.puts("\nPress Enter to hang up")
+    
+    # Extract remote tag and update dialog ID
+    remote_tag = case response.headers["to"] do
+      %{parameters: %{"tag" => tag}} -> tag
+      _ -> nil
+    end
+    Logger.debug("Remote tag: #{inspect(remote_tag)}")
+    
+    # Update dialog with remote tag
+    updated_dialog = Dialog.new(state.call_id, state.local_tag, remote_tag, :uac)
+    
+    # Send ACK immediately after receiving 200 OK for INVITE
+    Logger.info("Sending ACK for 200 OK...")
+    send_ack(state, response)
+    
+    # Extract SDP answer from response
+    sdp_answer = response.body
+    Logger.debug("Completing UAC setup with SDP answer...")
+
+    case MediaSession.process_answer(state.media_session, sdp_answer) do
+      :ok ->
+        MediaSession.start_media(state.media_session)
+        
+        Logger.info("UAC setup completed successfully, media is flowing")
+        
+        # Start a task to wait for Enter key
+        Task.start(fn ->
+          IO.gets("")
+          GenServer.call(@server_name, :hangup)
+        end)
+        
+        %{state |
+          dialog_id: updated_dialog,
+          remote_tag: remote_tag
+        }
+        
+      {:error, reason} ->
+        Logger.error("Failed to complete UAC setup: #{inspect(reason)}")
+        IO.puts("\n❌ Failed to establish media: #{inspect(reason)}")
+        # TODO: Send BYE to terminate the call
+        state
+    end
+  end
+  
+  defp handle_200_response(%{headers: %{"cseq" => %{method: :bye}}}, state) do
+    # Success response to BYE - no ACK needed
+    Logger.info("BYE acknowledged")
+    # Clean up already done in do_hangup
+    state
+  end
+  
+  defp handle_200_response(%{headers: %{"cseq" => cseq}} = _response, state) do
+    # Other successful response
+    Logger.debug("Success response for #{inspect(cseq)}")
+    state
+  end
+  
   defp send_ack(state, response) do
     # Extract remote tag from response
     remote_tag = case response.headers["to"] do
@@ -435,13 +479,16 @@ defmodule ParrotExampleUac do
       _ -> state.remote_tag
     end
     
+    local_ip = get_local_ip()
+    
     headers = %{
-      "via" => [Via.new(get_local_ip(), "udp", 5060)],
-      "from" => From.new("sip:parrot_uac@#{get_local_ip()}", "Parrot UAC", state.local_tag),
+      "via" => [Headers.new_via_with_branch(local_ip, "udp", 5060)],
+      "from" => From.new("sip:parrot_uac@#{local_ip}", "Parrot UAC", state.local_tag),
       "to" => To.new(state.current_call, nil, %{"tag" => remote_tag}),
       "call-id" => CallId.new(state.call_id),
-      "cseq" => CSeq.new(1, :ack),
-      "contact" => Contact.new("sip:parrot_uac@#{get_local_ip()}:5060")
+      "cseq" => Headers.new_cseq(1, :ack),
+      "contact" => Headers.new_contact("sip:parrot_uac@#{local_ip}:5060"),
+      "max-forwards" => Headers.default_max_forwards()
     }
     
     ack = Message.new_request(:ack, state.current_call, headers)
@@ -454,14 +501,17 @@ defmodule ParrotExampleUac do
   defp do_hangup(state) do
     Logger.info("Hanging up call")
     
+    local_ip = get_local_ip()
+    
     # Send BYE
     headers = %{
-      "via" => [Via.new(get_local_ip(), "udp", 5060)],
-      "from" => From.new("sip:parrot_uac@#{get_local_ip()}", "Parrot UAC", state.local_tag),
+      "via" => [Headers.new_via_with_branch(local_ip, "udp", 5060)],
+      "from" => From.new("sip:parrot_uac@#{local_ip}", "Parrot UAC", state.local_tag),
       "to" => To.new(state.current_call, nil, %{"tag" => state.remote_tag}),
       "call-id" => CallId.new(state.call_id),
-      "cseq" => CSeq.new(2, :bye),
-      "contact" => Contact.new("sip:parrot_uac@#{get_local_ip()}:5060")
+      "cseq" => Headers.new_cseq(2, :bye),
+      "contact" => Headers.new_contact("sip:parrot_uac@#{local_ip}:5060"),
+      "max-forwards" => Headers.default_max_forwards()
     }
     
     bye = Message.new_request(:bye, state.current_call, headers)
@@ -489,9 +539,6 @@ defmodule ParrotExampleUac do
     }
   end
   
-  defp generate_tag do
-    :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
-  end
   
   defp get_local_ip do
     {:ok, addrs} = :inet.getifaddrs()

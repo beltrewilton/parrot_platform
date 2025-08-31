@@ -1,9 +1,10 @@
-defmodule ParrotExampleUas.SipHandler do
+defmodule ParrotExampleUas.IncomingCallHandler do
   @moduledoc """
-  SIP Handler for the UAS (User Agent Server).
+  Handler for incoming SIP calls to the UAS (User Agent Server).
   
-  This module handles incoming SIP protocol events for a server that
-  receives calls. It processes INVITE, ACK, BYE, and other SIP methods.
+  This module processes incoming SIP requests (INVITE, ACK, BYE, etc.) when
+  the UAS receives calls. It works with the HandlerAdapter.Core which bridges
+  between the low-level transport layer and this high-level handler.
   
   ## Main Responsibilities
   
@@ -14,55 +15,52 @@ defmodule ParrotExampleUas.SipHandler do
   - Coordinating with MediaHandler for audio playback
   """
   
-  use Parrot.UasHandler
+  # NOTE: This module does NOT use the Parrot.UasHandler behavior.
+  # Instead, it implements callback methods that are called by HandlerAdapter.Core.
+  # The HandlerAdapter manages state, so our callbacks return 5-tuple responses
+  # without state: {:respond, status, reason, headers, body}
   require Logger
   
   alias Parrot.Media.{MediaSession, MediaSessionSupervisor}
   alias ParrotExampleUas.MediaHandler
   
   # Transaction callbacks for INVITE state machine
-  @impl true
   def handle_transaction_invite_trying(_request, _transaction, _state) do
-    Logger.info("[UAS SipHandler] INVITE transaction: trying")
+    Logger.info("[UAS IncomingCallHandler] INVITE transaction: trying")
     :noreply
   end
   
-  @impl true
   def handle_transaction_invite_proceeding(request, _transaction, state) do
-    Logger.info("[UAS SipHandler] INVITE transaction: proceeding")
+    Logger.info("[UAS IncomingCallHandler] INVITE transaction: proceeding")
     # Process the INVITE in the proceeding state
     process_invite(request, state)
   end
   
-  @impl true
   def handle_transaction_invite_completed(_request, _transaction, _state) do
-    Logger.info("[UAS SipHandler] INVITE transaction: completed")
+    Logger.info("[UAS IncomingCallHandler] INVITE transaction: completed")
     :noreply
   end
   
   # Main SIP method handlers
-  @impl true
   def handle_invite(request, state) do
-    Logger.info("[UAS SipHandler] Direct INVITE handler called")
+    Logger.info("[UAS IncomingCallHandler] Direct INVITE handler called")
     process_invite(request, state)
   end
   
-  @impl true
   def handle_ack(nil, _state), do: :noreply
   
   def handle_ack(request, _state) do
-    Logger.info("[UAS SipHandler] ACK received")
+    Logger.info("[UAS IncomingCallHandler] ACK received")
     
     dialog_id = Parrot.Sip.Dialog.from_message(request)
     start_media_for_dialog(dialog_id)
     :noreply
   end
   
-  @impl true
   def handle_bye(nil, _state), do: {:respond, 200, "OK", %{}, ""}
   
   def handle_bye(request, state) do
-    Logger.info("[UAS SipHandler] BYE received, ending call")
+    Logger.info("[UAS IncomingCallHandler] BYE received, ending call")
     
     dialog_id = Parrot.Sip.Dialog.from_message(request)
     cleanup_media_session(dialog_id)
@@ -75,36 +73,32 @@ defmodule ParrotExampleUas.SipHandler do
     {:respond, 200, "OK", %{}, ""}
   end
   
-  @impl true
   def handle_cancel(_request, _state) do
-    Logger.info("[UAS SipHandler] CANCEL received")
+    Logger.info("[UAS IncomingCallHandler] CANCEL received")
     {:respond, 200, "OK", %{}, ""}
   end
   
-  @impl true
   def handle_options(_request, _state) do
-    Logger.info("[UAS SipHandler] OPTIONS received")
+    Logger.info("[UAS IncomingCallHandler] OPTIONS received")
     allow_methods = "INVITE, ACK, BYE, CANCEL, OPTIONS, INFO"
     {:respond, 200, "OK", %{"Allow" => allow_methods}, ""}
   end
   
-  @impl true
   def handle_register(_request, _state) do
-    Logger.info("[UAS SipHandler] REGISTER received")
+    Logger.info("[UAS IncomingCallHandler] REGISTER received")
     {:respond, 200, "OK", %{}, ""}
   end
   
   # This is the SIP INFO method handler
-  @impl true
-  def handle_info(_request, state) do
-    Logger.info("[UAS SipHandler] INFO request received")
-    {:respond, 200, "OK", %{}, "", state}
+  def handle_info(_request, _state) do
+    Logger.info("[UAS IncomingCallHandler] INFO request received")
+    {:respond, 200, "OK", %{}, ""}
   end
   
   # Private functions
   
   defp process_invite(nil, _state) do
-    Logger.error("[UAS SipHandler] Cannot process nil INVITE")
+    Logger.error("[UAS IncomingCallHandler] Cannot process nil INVITE")
     {:respond, 500, "Internal Server Error", %{}, ""}
   end
   
@@ -118,7 +112,7 @@ defmodule ParrotExampleUas.SipHandler do
     with {:ok, media_pid} <- start_media_session(media_session_id, dialog_id_str),
          {:ok, sdp_answer} <- MediaSession.process_offer(media_session_id, request.body) do
       
-      Logger.info("[UAS SipHandler] Call accepted, SDP negotiated")
+      Logger.info("[UAS IncomingCallHandler] Call accepted, SDP negotiated")
       
       # Register the session for later use (e.g., when ACK arrives)
       Registry.register(
@@ -135,18 +129,18 @@ defmodule ParrotExampleUas.SipHandler do
       {:respond, 200, "OK", %{}, sdp_answer}
     else
       {:error, :sdp_negotiation_failed} ->
-        Logger.error("[UAS SipHandler] SDP negotiation failed")
+        Logger.error("[UAS IncomingCallHandler] SDP negotiation failed")
         {:respond, 488, "Not Acceptable Here", %{}, ""}
       
       {:error, reason} ->
-        Logger.error("[UAS SipHandler] Failed to create media session: #{inspect(reason)}")
+        Logger.error("[UAS IncomingCallHandler] Failed to create media session: #{inspect(reason)}")
         {:respond, 500, "Internal Server Error", %{}, ""}
     end
   end
   
   defp log_invite_from(%{headers: %{"from" => from}}) do
     caller = from.display_name || from.uri.user || "Unknown"
-    Logger.info("[UAS SipHandler] Processing INVITE from: #{caller}")
+    Logger.info("[UAS IncomingCallHandler] Processing INVITE from: #{caller}")
   end
   
   defp start_media_session(session_id, dialog_id) do
@@ -165,7 +159,7 @@ defmodule ParrotExampleUas.SipHandler do
   defp start_media_for_dialog(dialog_id) do
     with [{_pid, {media_session_id, media_pid}}] <-
            Registry.lookup(Parrot.Registry, {:uas_media, dialog_id.call_id}) do
-      Logger.info("[UAS SipHandler] Starting media for session: #{media_session_id}")
+      Logger.info("[UAS IncomingCallHandler] Starting media for session: #{media_session_id}")
       
       # Get the audio file path
       priv_dir = :code.priv_dir(:parrot_platform)
@@ -176,12 +170,12 @@ defmodule ParrotExampleUas.SipHandler do
         MediaSession.start_media(media_session_id)
         
         # Send message to play the file
-        Logger.info("[UAS SipHandler] Sending play_files message to media handler")
+        Logger.info("[UAS IncomingCallHandler] Sending play_files message to media handler")
         send(media_pid, {:play_files, [audio_file], loop: true})
       end)
     else
       [] ->
-        Logger.warning("[UAS SipHandler] No media session found for call: #{dialog_id.call_id}")
+        Logger.warning("[UAS IncomingCallHandler] No media session found for call: #{dialog_id.call_id}")
     end
   end
   
@@ -192,18 +186,18 @@ defmodule ParrotExampleUas.SipHandler do
         Registry.unregister(Parrot.Registry, {:uas_media, dialog_id.call_id})
       
       [] ->
-        Logger.info("[UAS SipHandler] No media session found for call: #{dialog_id.call_id}")
+        Logger.info("[UAS IncomingCallHandler] No media session found for call: #{dialog_id.call_id}")
     end
   end
   
   defp terminate_media_session(media_session_id) do
-    Logger.info("[UAS SipHandler] Terminating media session: #{media_session_id}")
+    Logger.info("[UAS IncomingCallHandler] Terminating media session: #{media_session_id}")
     
     try do
       MediaSession.terminate_session(media_session_id)
     rescue
       RuntimeError ->
-        Logger.warning("[UAS SipHandler] Media session #{media_session_id} already terminated")
+        Logger.warning("[UAS IncomingCallHandler] Media session #{media_session_id} already terminated")
     end
   end
 end
