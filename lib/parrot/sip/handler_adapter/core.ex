@@ -131,6 +131,19 @@ defmodule Parrot.Sip.HandlerAdapter.Core do
       "HandlerAdapter instance: init with user_handler_module: #{inspect(user_handler_module)}"
     )
 
+    # Ensure the module is loaded in this process
+    case Code.ensure_loaded(user_handler_module) do
+      {:module, _} ->
+        Logger.debug(
+          "HandlerAdapter instance: Successfully loaded #{inspect(user_handler_module)}"
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "HandlerAdapter instance: Failed to load #{inspect(user_handler_module)}: #{inspect(reason)}"
+        )
+    end
+
     {:ok, :idle,
      %Data{
        handler_module: user_handler_module,

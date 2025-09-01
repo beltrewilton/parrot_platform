@@ -37,6 +37,27 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building real-t
 
 Get started with the Parrot Platform by follow the instructions at https://hexdocs.pm/parrot_platform/overview.html#quick-start
 
+## Running Examples
+
+**IMPORTANT**: Examples are separate Mix projects and must be run from their own directories:
+
+```bash
+# Run the UAS example (receives calls)
+cd examples/parrot_example_uas
+mix deps.get
+iex -S mix
+# Then: ParrotExampleUas.start()
+
+# Run the UAC example (makes calls) - in a different terminal
+cd examples/parrot_example_uac  
+mix deps.get
+iex -S mix
+# Then: ParrotExampleUac.start()
+# Then: ParrotExampleUac.call("sip:service@127.0.0.1:5060")
+```
+
+See [examples/README.md](examples/README.md) for detailed instructions.
+
 ### Brandon's Notes
 
 Next steps:

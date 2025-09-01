@@ -37,15 +37,28 @@ defmodule Parrot.Sip.HandlerAdapter.CallbackHandler do
       "HandlerAdapter: Attempting to call user handler: #{inspect(handler_module)}.#{handler_fun}/2"
     )
 
-    if function_exported?(handler_module, handler_fun, 2) do
-      apply(handler_module, handler_fun, [sip_msg, user_handler_state])
-    else
-      Logger.warning(
-        "HandlerAdapter: User method handler #{handler_fun}/2 not found in #{inspect(handler_module)}. Defaulting."
-      )
+    # ALWAYS ensure the module is loaded first
+    # This is critical because gen_statem spawns new processes
+    # and modules might not be loaded in the new process context
+    case Code.ensure_loaded(handler_module) do
+      {:module, _} ->
+        if function_exported?(handler_module, handler_fun, 2) do
+          Logger.debug("HandlerAdapter: Calling #{inspect(handler_module)}.#{handler_fun}/2")
+          apply(handler_module, handler_fun, [sip_msg, user_handler_state])
+        else
+          Logger.warning(
+            "HandlerAdapter: User method handler #{handler_fun}/2 not found in #{inspect(handler_module)}. Defaulting."
+          )
 
-      # Default response for unhandled methods
-      {:respond, 501, "Not Implemented by User Handler", %{}, ""}
+          {:respond, 501, "Not Implemented by User Handler", %{}, ""}
+        end
+
+      {:error, reason} ->
+        Logger.warning(
+          "HandlerAdapter: Failed to load module #{inspect(handler_module)}: #{inspect(reason)}. Defaulting."
+        )
+
+        {:respond, 501, "Not Implemented by User Handler", %{}, ""}
     end
   end
 

@@ -41,7 +41,7 @@ defmodule ParrotExampleUas do
   use GenServer
   require Logger
   
-  alias ParrotExampleUas.IncomingCallHandler
+  # No alias - use full module name to ensure proper loading
   
   @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
   
@@ -99,9 +99,10 @@ defmodule ParrotExampleUas do
     Logger.info("Connect your SIP client to sip:service@<your-ip>:#{port}")
     
     # Start the SIP transport with our IncomingCallHandler
+    # Use full module name to ensure proper module resolution
     handler = Parrot.Sip.Handler.new(
       Parrot.Sip.HandlerAdapter.Core,
-      {IncomingCallHandler, %{parent: self()}},
+      {ParrotExampleUas.IncomingCallHandler, %{parent: self()}},
       log_level: :info,
       sip_trace: true
     )
