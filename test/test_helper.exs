@@ -1,3 +1,6 @@
+# Root test helper for umbrella project
+# This is for integration tests and SIPp scenarios
+
 # Configure logging based on environment variables before starting tests
 sip_trace = System.get_env("SIP_TRACE", "false") == "true"
 
@@ -7,11 +10,16 @@ default_level = if sip_trace, do: "info", else: "warning"
 log_level = System.get_env("LOG_LEVEL", default_level) |> String.to_existing_atom()
 Logger.configure(level: log_level)
 
-# Also set test configuration
-Application.put_env(:parrot_platform, :test_log_level, log_level)
-Application.put_env(:parrot_platform, :test_sip_trace, sip_trace)
+# Set test configuration for each app
+Application.put_env(:parrot_sip, :test_log_level, log_level)
+Application.put_env(:parrot_sip, :test_sip_trace, sip_trace)
+Application.put_env(:parrot_media, :test_log_level, log_level)
+Application.put_env(:parrot_transport, :test_log_level, log_level)
 
-Application.ensure_all_started(:parrot_platform)
+# Start all umbrella apps for integration testing
+Application.ensure_all_started(:parrot_transport)
+Application.ensure_all_started(:parrot_media)
+Application.ensure_all_started(:parrot_sip)
 
 # Exclude slow tests by default (they cause long delays)
 # Run with: mix test --include sipp
