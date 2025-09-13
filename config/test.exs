@@ -18,10 +18,19 @@ default_level = if sip_trace, do: "info", else: "warning"
 log_level = System.get_env("LOG_LEVEL", default_level) |> String.to_existing_atom()
 config :logger, level: log_level
 
-config :parrot_platform,
+# Configure each umbrella app separately
+config :parrot_sip,
   test_sip_trace: sip_trace,
-  test_log_level: log_level,
-  # SIPp test configuration for CI/CD
+  test_log_level: log_level
+
+config :parrot_media,
+  test_log_level: log_level
+
+config :parrot_transport,
+  test_log_level: log_level
+
+# SIPp test configuration for integration tests
+config :ex_unit,
   sipp_test_timeout: 10_000,
   sipp_test_retries: 3,
   sipp_scenarios_path: Path.join([File.cwd!(), "test", "sipp", "scenarios"]),

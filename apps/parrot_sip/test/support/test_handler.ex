@@ -11,17 +11,6 @@ defmodule ParrotSip.Test.TestHandler do
 
   require Logger
 
-  @doc """
-  Creates a new test handler.
-  """
-  def new do
-    %ParrotSip.Handler{
-      module: __MODULE__,
-      args: %{},
-      log_level: :warning,
-      sip_trace: false
-    }
-  end
 
   @impl ParrotSip.Handler
   def transp_request(_msg, _args) do

@@ -1,29 +1,82 @@
-defmodule ParrotPlatform.MixProject do
+defmodule Parrot.MixProject do
   use Mix.Project
 
   def project do
     [
-      apps_path: "apps",
-      version: "0.0.1-alpha.4",
+      app: :parrot_platform,
+      version: "0.0.1-alpha.3",
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
+      releases: releases(),
       aliases: aliases(),
       preferred_cli_env: preferred_cli_env(),
-      
+
       # Hex.pm metadata
       name: "Parrot Platform",
       description:
         "Elixir libraries and OTP behaviours for building telecom applications with SIP protocol and media handling",
-      
+      package: package(),
+
       # Documentation
       docs: docs()
     ]
   end
 
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:dev), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
+  # Set preferred environments for custom mix tasks
+  defp preferred_cli_env do
+    [
+      "test.sipp": :test,
+      "test.all": :test
+    ]
+  end
+
+  # Run "mix help compile.app" to learn about applications.
+  def application do
+    [
+      extra_applications: [:logger, :inets],
+      mod: {Parrot.Application, []}
+    ]
+  end
+
+  # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # Umbrella-wide deps only (like ex_doc)
+      {:nimble_parsec, "~> 1.3"},
+      # Membrane Core and plugins
+      {:membrane_core, "~> 1.0"},
+      {:membrane_rtp_plugin, "~> 0.31.0"},
+      {:membrane_rtp_format, "~> 0.11.0"},
+      {:membrane_file_plugin, "~> 0.17"},
+      {:membrane_udp_plugin, "~> 0.14"},
+      {:membrane_g711_plugin, "~> 0.1"},
+      {:membrane_rtp_g711_plugin,
+       github: "byoungdale/membrane_rtp_g711_plugin", branch: "byoungdale/update-rtp-format"},
+      {:ex_sdp, "~> 0.17.0"},
+      {:membrane_wav_plugin, "~> 0.10"},
+      {:membrane_mp3_mad_plugin, "~> 0.18"},
+      {:membrane_ffmpeg_swresample_plugin, "~> 0.20"},
+      {:membrane_realtimer_plugin, "~> 0.10.1"},
+      {:membrane_portaudio_plugin, "~> 0.19.2"},
+      {:membrane_opus_plugin, "~> 0.20.3"},
+      {:membrane_rtp_opus_plugin, "~> 0.10.1"},
+
+      # Documentation
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
+    ]
+  end
+
+  defp releases do
+    [
+      parrot: [
+        include_executables_for: [:unix],
+        applications: [runtime_tools: :permanent]
+      ]
     ]
   end
 
@@ -33,13 +86,6 @@ defmodule ParrotPlatform.MixProject do
       "test.sipp": &run_sipp_tests/1,
       "test.all": &run_all_tests/1,
       docs: ["docs", &copy_images/1]
-    ]
-  end
-
-  defp preferred_cli_env do
-    [
-      "test.sipp": :test,
-      "test.all": :test
     ]
   end
 
@@ -80,7 +126,7 @@ defmodule ParrotPlatform.MixProject do
     # Run all tests with excluded tags included
     Mix.Task.run("test", ["--include", "sipp", "--include", "slow" | args])
   end
-  
+
   defp copy_images(_) do
     # Ensure doc directory exists
     File.mkdir_p!("doc/assets")
@@ -94,7 +140,20 @@ defmodule ParrotPlatform.MixProject do
         Mix.shell().error("Failed to copy #{file}: #{inspect(reason)}")
     end
   end
-  
+
+  defp package do
+    [
+      licenses: ["GPL-2.0-or-later"],
+      links: %{
+        "GitHub" => "https://github.com/parrot-platform/parrot_platform"
+      },
+      maintainers: ["Brandon Youngdale"],
+      files:
+        ~w(lib priv .formatter.exs mix.exs README* LICENSE* CHANGELOG* guides assets usage-rules.md usage-rules),
+      source_url: "https://github.com/parrot-platform/parrot_platform"
+    ]
+  end
+
   defp docs do
     [
       # The main page in the docs
@@ -125,19 +184,22 @@ defmodule ParrotPlatform.MixProject do
           Parrot.MediaHandler
         ],
         "SIP Stack": [
-          ParrotSip.Message,
-          ParrotSip.Transaction,
-          ParrotSip.Dialog,
-          ParrotSip.UAC,
-          ParrotSip.UAS
+          Parrot.Sip.Message,
+          Parrot.Sip.Transaction,
+          Parrot.Sip.Dialog,
+          Parrot.Sip.Transport,
+          Parrot.Sip.UAC,
+          Parrot.Sip.UAS
         ],
-        "Transport Layer": [
-          ParrotTransport,
-          ParrotTransport.Udp,
-          ParrotTransport.Connection
+        "SIP Headers": [
+          ~r/^Parrot\.Sip\.Headers\./
         ],
         "Media Handling": [
-          ~r/^ParrotMedia\./
+          ~r/^Parrot\.Media\./
+        ],
+        Handlers: [
+          ~r/^Parrot\.Sip\.Handlers\./,
+          ~r/^Parrot\.Sip\.HandlerAdapter\./
         ]
       ],
 

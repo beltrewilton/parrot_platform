@@ -11,28 +11,6 @@ defmodule ParrotSip do
   """
   
   @doc """
-  Starts a UAC (User Agent Client).
-  
-  ## Options
-    * `:handler` - Handler module or callback function
-    * `:transport` - Transport configuration
-  """
-  def start_uac(opts) do
-    ParrotSip.UAC.start_link(opts)
-  end
-  
-  @doc """
-  Starts a UAS (User Agent Server).
-  
-  ## Options
-    * `:handler` - Handler module or callback function
-    * `:transport` - Transport configuration
-  """
-  def start_uas(opts) do
-    ParrotSip.UAS.start_link(opts)
-  end
-  
-  @doc """
   Sends a SIP request.
   """
   def send_request(uac, request) do

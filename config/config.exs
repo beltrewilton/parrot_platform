@@ -1,14 +1,19 @@
 import Config
 
-config :parrot_platform,
-  log_transactions: false,
-  # This will be set by init/0
-  allowed_methods: nil,
-  # This will be set by init/0
-  uas_options: nil
+# Shared Registry Configuration
+# This is the ONLY place where apps know about each other
+config :parrot_transport,
+  registry: Parrot.Registry,
+  sip_handler_key: :sip_receiver
 
-config :logger, :console,
-  format: {Parrot.ParrotLogger, :format},
-  metadata: [:file, :line, :function, :state, :call_id, :transaction_id, :dialog_id],
-  inspect: [limit: 1000, printable_limit: 4096, pretty: false],
-  level: :debug
+config :parrot_sip,
+  registry: Parrot.Registry,
+  transport_key: :sip_transport,
+  media_key_prefix: :media_session
+
+config :parrot_media,
+  registry: Parrot.Registry,
+  sip_key_prefix: :sip_dialog
+
+# Import environment specific config
+import_config "#{config_env()}.exs"

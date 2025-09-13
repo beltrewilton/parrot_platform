@@ -95,7 +95,7 @@ defmodule ParrotTransport.Connection do
   
   # State: disconnected
   
-  def disconnected(:enter, _old_state, data) do
+  def disconnected(:enter, _old_state, _data) do
     Logger.debug("Connection entered disconnected state")
     :keep_state_and_data
   end
@@ -118,7 +118,7 @@ defmodule ParrotTransport.Connection do
   
   # State: connecting
   
-  def connecting(:enter, _old_state, data) do
+  def connecting(:enter, _old_state, _data) do
     Logger.debug("Connection entering connecting state")
     
     # Simulate connection establishment (in real implementation, this would
