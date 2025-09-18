@@ -8,6 +8,8 @@ defmodule ParrotSip.Application do
     children = [
       # Registry for SIP process discovery
       {Registry, keys: :unique, name: ParrotSip.Registry},
+      # Transport handler for message-based communication with transport layer
+      {ParrotSip.TransportHandler, [name: ParrotSip.TransportHandler]},
       # Transaction supervisor
       ParrotSip.Transaction.Supervisor,
       # Dialog supervisor

@@ -463,6 +463,88 @@ defmodule ParrotSip.DialogTest do
     end
   end
 
+  describe "create_from_invite/2" do
+    test "creates dialog from INVITE request as UAC" do
+      invite = %Message{
+        type: :request,
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        headers: %{
+          "from" => %From{
+            uri: Uri.parse!("sip:alice@alice.com"),
+            parameters: %{"tag" => "1928301774"}
+          },
+          "to" => %To{
+            uri: Uri.parse!("sip:bob@example.com"),
+            parameters: %{}
+          },
+          "call-id" => "a84b4c76e66710@pc33.atlanta.com",
+          "cseq" => %CSeq{number: 314159, method: :invite}
+        }
+      }
+      
+      {:ok, dialog} = Dialog.create_from_invite(invite, :uac)
+      
+      assert dialog.call_id == "a84b4c76e66710@pc33.atlanta.com"
+      assert dialog.local_tag == "1928301774"
+      assert dialog.remote_tag == nil
+      assert dialog.state == :early
+      assert dialog.role == :uac
+    end
+    
+    test "creates dialog from INVITE request as UAS" do
+      invite = %Message{
+        type: :request,
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        headers: %{
+          "from" => %From{
+            uri: Uri.parse!("sip:alice@alice.com"),
+            parameters: %{"tag" => "1928301774"}
+          },
+          "to" => %To{
+            uri: Uri.parse!("sip:bob@example.com"),
+            parameters: %{}
+          },
+          "call-id" => "a84b4c76e66710@pc33.atlanta.com",
+          "cseq" => %CSeq{number: 314159, method: :invite}
+        }
+      }
+      
+      {:ok, dialog} = Dialog.create_from_invite(invite, :uas)
+      
+      assert dialog.call_id == "a84b4c76e66710@pc33.atlanta.com"
+      assert dialog.local_tag != nil  # UAS generates a tag
+      assert dialog.remote_tag == "1928301774"
+      assert dialog.state == :early
+      assert dialog.role == :uas
+    end
+    
+    test "returns error for non-INVITE message" do
+      bye = %Message{
+        type: :request,
+        method: :bye,
+        request_uri: "sip:bob@example.com",
+        headers: %{}
+      }
+      
+      assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite(bye, :uac)
+    end
+    
+    test "returns error for invalid role" do
+      invite = %Message{
+        type: :request,
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        headers: %{
+          "call-id" => "test-call-id"
+        }
+      }
+      
+      assert {:error, "Role must be :uac or :uas"} = Dialog.create_from_invite(invite, :invalid)
+    end
+  end
+
   describe "generate_id/4" do
     test "generates consistent dialog ID" do
       id = Dialog.generate_id(:uac, "call-123", "local-456", "remote-789")

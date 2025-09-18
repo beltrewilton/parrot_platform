@@ -311,7 +311,7 @@ defmodule ParrotSip.TransactionStatem do
           cancelled: false
         },
         timers: %{},
-        log: Parrot.Config.log_transactions(),
+        log: false,  # TODO: Make configurable
         logbranch: branch
       }
 
@@ -319,8 +319,8 @@ defmodule ParrotSip.TransactionStatem do
         "trans: client: #{method} #{request_uri}; call-id: #{call_id}; branch: #{branch}"
       )
 
-      # Send the initial request
-      ParrotSip.Transport.send_request(sip_msg)
+      # Send the initial request via transport handler
+      send_via_transport_handler(:send_request, sip_msg, nil)
 
       # Start in calling state for client transactions
       {:ok, :calling, state}
@@ -341,7 +341,7 @@ defmodule ParrotSip.TransactionStatem do
           auto_resp: 500
         },
         timers: %{},
-        log: Parrot.Config.log_transactions(),
+        log: false,  # TODO: Make configurable
         logbranch: branch
       }
 
@@ -376,7 +376,7 @@ defmodule ParrotSip.TransactionStatem do
 
         if source do
           Logger.debug("[process_actions] Sending response using source: #{inspect(source)}")
-          ParrotSip.Transport.send_response(response, source)
+          send_via_transport_handler(:send_response, response, source)
         else
           require Logger
 
@@ -393,7 +393,7 @@ defmodule ParrotSip.TransactionStatem do
 
       {:send_request, request} ->
         Logger.debug("[process_actions] Action is :send_request. Request: #{inspect(request)}")
-        ParrotSip.Transport.send_request(request)
+        send_via_transport_handler(:send_request, request, nil)
 
         Logger.debug(
           "[process_actions] Finished :send_request action, processing rest: #{inspect(rest)}"
@@ -445,9 +445,9 @@ defmodule ParrotSip.TransactionStatem do
           source = extract_source(data, last_response)
 
           if source do
-            ParrotSip.Transport.send_response(last_response, source)
+            send_via_transport_handler(:send_response, last_response, source)
           else
-            ParrotSip.Transport.send_response(last_response)
+            send_via_transport_handler(:send_response, last_response, nil)
           end
         else
           Logger.debug("[process_actions] No last response to retransmit.")
@@ -731,7 +731,7 @@ defmodule ParrotSip.TransactionStatem do
     # In completed state, we can only retransmit the last response
     if transaction.last_response do
       Logger.debug("Retransmitting last response in completed state")
-      ParrotSip.Transport.send_response(transaction.last_response, transaction.source)
+      send_via_transport_handler(:send_response, transaction.last_response, transaction.source)
     end
 
     {:keep_state, state}
@@ -745,7 +745,7 @@ defmodule ParrotSip.TransactionStatem do
     # For client transactions, retransmit last response if available
     if last = get_in(state, [:data, :transaction, :last_response]) do
       source = get_in(state, [:data, :transaction, :source])
-      ParrotSip.Transport.send_response(last, source)
+      send_via_transport_handler(:send_response, last, source)
     end
 
     {:keep_state, state}
@@ -1043,6 +1043,34 @@ defmodule ParrotSip.TransactionStatem do
 
       {:error, _} = error ->
         Logger.error("server failed to create transaction: #{inspect(error, @inspect_opts)}")
+    end
+  end
+  
+  # Helper function to send messages via transport handler
+  defp send_via_transport_handler(action, message, destination_or_source) do
+    # Try to find the transport handler
+    # First try the registered name
+    transport_handler = case Process.whereis(ParrotSip.TransportHandler) do
+      nil ->
+        # Try to find via Registry
+        case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
+          [{_pid, handler_pid}] -> handler_pid
+          _ -> nil
+        end
+      pid -> pid
+    end
+    
+    if transport_handler do
+      case action do
+        :send_request ->
+          ParrotSip.TransportHandler.send_request(transport_handler, message, destination_or_source)
+        :send_response ->
+          ParrotSip.TransportHandler.send_response(transport_handler, message, destination_or_source)
+        _ ->
+          Logger.error("Unknown transport action: #{action}")
+      end
+    else
+      Logger.warning("No transport handler available - message not sent")
     end
   end
 end

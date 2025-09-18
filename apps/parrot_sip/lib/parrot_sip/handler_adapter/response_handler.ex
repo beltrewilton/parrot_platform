@@ -145,7 +145,7 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
 
     # Add Record-Route if INVITE
     if req2.method == :invite do
-      local_uri = ParrotSip.Transport.local_uri()
+      local_uri = Application.get_env(:parrot_sip, :local_uri, "sip:localhost:5060")
       record_route_hdr = ParrotSip.Headers.RecordRoute.new(local_uri)
 
       existing_routes =

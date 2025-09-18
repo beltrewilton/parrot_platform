@@ -35,7 +35,7 @@ defmodule ParrotSip do
   Serializes a SIP message to a binary string.
   """
   def serialize_message(message) do
-    ParrotSip.Serializer.serialize(message)
+    ParrotSip.Serializer.encode(message)
   end
   
   @doc """

@@ -236,6 +236,171 @@ defmodule ParrotSip.Transaction do
   # @timer_t4 5000
 
   @doc """
+  Processes an incoming SIP message by routing it to the appropriate transaction.
+  
+  This function:
+  1. Extracts the transaction ID from the message
+  2. Looks up existing transaction or creates a new one
+  3. Routes the message to the transaction state machine
+  
+  ## Parameters
+  
+  - `message`: The parsed SIP message to process
+  
+  ## Returns
+  
+  - `:ok` if the message was successfully processed by a transaction
+  - `{:error, :no_transaction}` if no transaction handles this message
+  - `{:error, reason}` for other errors
+  """
+  @spec process_message(Message.t()) :: :ok | {:error, term()}
+  def process_message(%Message{} = message) do
+    # Determine if this is a request or response
+    case message.type do
+      :request ->
+        process_request(message)
+      :response ->
+        process_response(message)
+      _ ->
+        {:error, :invalid_message_type}
+    end
+  end
+  
+  defp process_request(request) do
+    # Generate transaction ID
+    transaction_id = generate_id(request)
+    
+    # Check if transaction exists
+    case lookup_transaction(transaction_id) do
+      {:ok, pid} ->
+        # Existing transaction - send message to it
+        send(pid, {:sip_request, request})
+        :ok
+        
+      {:error, :not_found} ->
+        # New transaction - check if we should create one
+        if should_create_transaction?(request) do
+          # Start new server transaction
+          start_server_transaction_for_request(request)
+        else
+          # Not a transaction-creating request (e.g., ACK for 2xx)
+          {:error, :no_transaction}
+        end
+    end
+  end
+  
+  defp process_response(response) do
+    # Extract transaction ID from Via branch
+    case get_branch_from_response(response) do
+      {:ok, branch} ->
+        cseq_method = Message.cseq_method(response)
+        transaction_id = "#{branch}_#{cseq_method}"
+        
+        case lookup_transaction(transaction_id) do
+          {:ok, pid} ->
+            # Send response to transaction
+            send(pid, {:sip_response, response})
+            :ok
+            
+          {:error, :not_found} ->
+            # No matching transaction
+            Logger.debug("No transaction found for response: #{transaction_id}")
+            {:error, :no_transaction}
+        end
+        
+      {:error, reason} ->
+        Logger.warning("Could not extract branch from response: #{reason}")
+        {:error, :no_transaction}
+    end
+  end
+  
+  defp should_create_transaction?(request) do
+    # ACK for 2xx responses don't create transactions
+    # All other requests do
+    not (request.method == :ack)
+  end
+  
+  defp start_server_transaction_for_request(request) do
+    # Create the appropriate transaction based on method
+    transaction_result = case request.method do
+      :invite -> create_invite_server(request)
+      _ -> create_non_invite_server(request)
+    end
+    
+    case transaction_result do
+      {:ok, transaction} ->
+        # Start the transaction state machine
+        case ParrotSip.Transaction.Supervisor.start_child([transaction]) do
+          {:ok, _pid} ->
+            :ok
+          {:error, reason} ->
+            Logger.error("Failed to start server transaction: #{inspect(reason)}")
+            {:error, reason}
+        end
+      {:error, reason} ->
+        Logger.error("Failed to create server transaction: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+  
+  defp get_branch_from_response(response) do
+    case Map.get(response.headers, "via") do
+      [via | _] ->
+        # Parse Via header to get branch
+        if String.contains?(via, "branch=") do
+          branch = via
+            |> String.split(";")
+            |> Enum.find(&String.starts_with?(&1, "branch="))
+            |> String.replace("branch=", "")
+            |> String.trim()
+          {:ok, branch}
+        else
+          {:error, :no_branch}
+        end
+      _ ->
+        {:error, :no_via}
+    end
+  end
+  
+  defp lookup_transaction(transaction_id) do
+    # Look up in Registry
+    case Registry.lookup(ParrotSip.Registry, {:transaction, transaction_id}) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> {:error, :not_found}
+    end
+  end
+  
+  @doc """
+  Gets the current state of a transaction.
+  
+  ## Parameters
+  
+  - `transaction_id`: The transaction identifier
+  
+  ## Returns
+  
+  - `{:ok, state}` where state is the current transaction state
+  - `{:error, :not_found}` if transaction doesn't exist
+  """
+  @spec get_state(String.t()) :: {:ok, transaction_state()} | {:error, :not_found}
+  def get_state(transaction_id) do
+    case lookup_transaction(transaction_id) do
+      {:ok, pid} ->
+        # Query the transaction process for its state
+        try do
+          state = GenServer.call(pid, :get_state, 5000)
+          {:ok, state}
+        catch
+          :exit, _ ->
+            {:error, :not_found}
+        end
+        
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
   Creates a new client transaction for an INVITE request.
 
   ## Parameters

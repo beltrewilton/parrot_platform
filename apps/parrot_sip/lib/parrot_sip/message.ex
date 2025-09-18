@@ -622,6 +622,44 @@ defmodule ParrotSip.Message do
   def cseq(message) do
     get_header(message, "cseq")
   end
+  
+  @doc """
+  Gets the CSeq number from a message.
+  
+  ## Examples
+  
+      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
+      iex> cseq = %ParrotSip.Headers.CSeq{sequence: 42, method: :invite}
+      iex> message = ParrotSip.Message.set_header(message, "CSeq", cseq)
+      iex> ParrotSip.Message.cseq_number(message)
+      42
+  """
+  @spec cseq_number(t()) :: integer() | nil
+  def cseq_number(message) do
+    case cseq(message) do
+      %CSeq{number: num} -> num
+      nil -> nil
+    end
+  end
+  
+  @doc """
+  Gets the CSeq method from a message.
+  
+  ## Examples
+  
+      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
+      iex> cseq = %ParrotSip.Headers.CSeq{sequence: 42, method: :invite}
+      iex> message = ParrotSip.Message.set_header(message, "CSeq", cseq)
+      iex> ParrotSip.Message.cseq_method(message)
+      :invite
+  """
+  @spec cseq_method(t()) :: atom() | nil
+  def cseq_method(message) do
+    case cseq(message) do
+      %CSeq{method: method} -> method
+      nil -> nil
+    end
+  end
 
   @doc """
   Gets the From header from a message.
@@ -638,6 +676,25 @@ defmodule ParrotSip.Message do
   def from(message) do
     get_header(message, "from")
   end
+  
+  @doc """
+  Gets the From tag from a message.
+  
+  ## Examples
+  
+      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
+      iex> from = %ParrotSip.Headers.From{uri: "sip:alice@example.com", parameters: %{"tag" => "abc123"}}
+      iex> message = ParrotSip.Message.set_header(message, "From", from)
+      iex> ParrotSip.Message.from_tag(message)
+      "abc123"
+  """
+  @spec from_tag(t()) :: String.t() | nil
+  def from_tag(message) do
+    case from(message) do
+      %From{parameters: %{"tag" => tag}} -> tag
+      _ -> nil
+    end
+  end
 
   @doc """
   Gets the To header from a message.
@@ -653,6 +710,25 @@ defmodule ParrotSip.Message do
   @spec to(t()) :: To.t() | nil
   def to(message) do
     get_header(message, "to")
+  end
+  
+  @doc """
+  Gets the To tag from a message.
+  
+  ## Examples
+  
+      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
+      iex> to = %ParrotSip.Headers.To{uri: "sip:bob@example.com", parameters: %{"tag" => "xyz789"}}
+      iex> message = ParrotSip.Message.set_header(message, "To", to)
+      iex> ParrotSip.Message.to_tag(message)
+      "xyz789"
+  """
+  @spec to_tag(t()) :: String.t() | nil
+  def to_tag(message) do
+    case to(message) do
+      %To{parameters: %{"tag" => tag}} -> tag
+      _ -> nil
+    end
   end
 
   @doc """

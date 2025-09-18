@@ -82,12 +82,8 @@ defmodule ParrotSip.UAC do
     case extract_destination_from_request_uri(sip_msg.request_uri) do
       {:ok, host, port} ->
         # Create outbound request map for Transport
-        out_req = %{
-          message: sip_msg,
-          destination: {host, port}
-        }
-
-        ParrotSip.Transport.Udp.send_request(out_req)
+        # Send ACK via transport handler
+        send_via_transport_handler(sip_msg, {host, port})
 
       {:error, reason} ->
         require Logger
@@ -168,6 +164,27 @@ defmodule ParrotSip.UAC do
 
       error ->
         error
+    end
+  end
+  
+  # Helper function to send messages via transport handler
+  defp send_via_transport_handler(message, destination) do
+    # Try to find the transport handler
+    transport_handler = case Process.whereis(ParrotSip.TransportHandler) do
+      nil ->
+        # Try to find via Registry
+        case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
+          [{_pid, handler_pid}] -> handler_pid
+          _ -> nil
+        end
+      pid -> pid
+    end
+    
+    if transport_handler do
+      ParrotSip.TransportHandler.send_request(transport_handler, message, destination)
+    else
+      require Logger
+      Logger.warning("No transport handler available - ACK not sent")
     end
   end
 end
