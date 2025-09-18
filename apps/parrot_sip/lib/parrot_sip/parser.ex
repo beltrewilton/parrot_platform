@@ -587,7 +587,7 @@ defmodule ParrotSip.Parser do
       event: Map.get(headers, "event"),
       subscription_state: Map.get(headers, "subscription-state"),
       refer_to: Map.get(headers, "refer-to"),
-      subject: get_string_value(Map.get(headers, "subject"))
+      subject: Map.get(headers, "subject")
     }
     
     # Build other_headers map with unknown headers

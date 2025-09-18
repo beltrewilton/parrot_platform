@@ -66,9 +66,9 @@ defmodule ParrotSip.ParserTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :register
-      assert message.headers["supported"] == ["path", "100rel"]
+      assert message.supported == ["path", "100rel"]
       # Allow header now uses a method set struct
-      allow_methods = message.headers["allow"]
+      allow_methods = message.allow
       assert Enum.member?(allow_methods, :invite)
       assert Enum.member?(allow_methods, :ack)
       assert Enum.member?(allow_methods, :cancel)
@@ -91,9 +91,9 @@ defmodule ParrotSip.ParserTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      assert message.headers["via"]
-      assert message.headers["from"]
-      assert message.headers["content-length"].value == 0
+      assert message.via
+      assert message.from
+      assert message.content_length == 0
     end
 
     test "parses request with custom headers" do
@@ -114,9 +114,9 @@ defmodule ParrotSip.ParserTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :subscribe
-      assert message.headers["event"].event == "presence"
-      assert message.headers["expires"] == 3600
-      assert message.headers["x-custom-header"] == "CustomValue"
+      assert message.event.event == "presence"
+      assert message.expires == 3600
+      assert message.other_headers["x-custom-header"] == "CustomValue"
     end
 
     test "handles empty header values" do
@@ -136,7 +136,7 @@ defmodule ParrotSip.ParserTest do
 
       assert message.method == :options
       # Empty subject header is parsed into a Subject struct with empty value
-      assert message.headers["subject"].value == ""
+      assert message.subject.value == ""
     end
 
     test "handles whitespace in header values" do
@@ -154,8 +154,8 @@ defmodule ParrotSip.ParserTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :invite
-      assert message.headers["call-id"] == "a84b4c76e66710"
-      assert message.headers["cseq"].number == 1
+      assert message.call_id == "a84b4c76e66710"
+      assert message.cseq.number == 1
     end
 
     test "handles folded header values" do
@@ -176,7 +176,7 @@ defmodule ParrotSip.ParserTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :invite
-      assert message.headers["subject"].value == "This is a folded header value"
+      assert message.subject.value == "This is a folded header value"
     end
 
     test "handles complex display names in address headers" do
@@ -194,11 +194,11 @@ defmodule ParrotSip.ParserTest do
       {:ok, message} = Parser.parse(raw_message)
 
       # Display name might include quotes in the internal representation
-      assert String.replace(message.headers["to"].display_name, "\"", "") ==
+      assert String.replace(message.to.display_name, "\"", "") ==
                "User Name (with parentheses)"
 
       # For from header with escaped quotes, we need to handle differently
-      from_display = message.headers["from"].display_name
+      from_display = message.from.display_name
       # Remove surrounding quotes if present
       from_display = String.replace(from_display, ~r/^"|"$/, "")
       assert from_display == "Caller \"with quotes\""

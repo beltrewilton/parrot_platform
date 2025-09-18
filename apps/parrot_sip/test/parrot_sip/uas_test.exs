@@ -42,10 +42,10 @@ defmodule ParrotSip.UASTest do
       assert response.direction == :outgoing
 
       # Should copy headers from request
-      assert response.headers["call-id"] == req_msg.headers["call-id"]
-      assert response.headers["cseq"] == req_msg.headers["cseq"]
-      assert response.headers["via"] == req_msg.headers["via"]
-      assert response.headers["from"] == req_msg.headers["from"]
+      assert response.call_id == req_msg.call_id
+      assert response.cseq == req_msg.cseq
+      assert response.via == req_msg.via
+      assert response.from == req_msg.from
     end
 
     test "adds tag to To header in response" do
@@ -54,7 +54,7 @@ defmodule ParrotSip.UASTest do
 
       response = UAS.make_reply(200, "OK", uas, req_msg)
 
-      to_header = response.headers["to"]
+      to_header = response.to
       # Verify that a tag was added to the To header
       assert Map.has_key?(to_header.parameters, "tag")
       assert to_header.parameters["tag"] != nil
@@ -282,7 +282,7 @@ defmodule ParrotSip.UASTest do
   end
 
   defp get_branch_from_message(msg) do
-    case msg.headers["via"] do
+    case msg.via do
       [%{params: %{"branch" => branch}} | _] -> branch
       _ -> "z9hG4bK" <> Base.encode16(:crypto.strong_rand_bytes(8))
     end

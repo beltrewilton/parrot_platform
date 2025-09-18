@@ -176,13 +176,13 @@ defmodule ParrotSip.MessageTest do
       |> Message.put_contact(Contact.new("sip:alice@192.168.1.1:5060"))
       
       # Direct field access (no more Message.from/1, Message.to/1, etc.)
-      assert message.from.uri == "sip:alice@example.com"
-      assert message.to.uri == "sip:bob@example.com"
+      assert ParrotSip.Uri.to_string(message.from.uri) == "sip:alice@example.com"
+      assert ParrotSip.Uri.to_string(message.to.uri) == "sip:bob@example.com"
       assert message.call_id == "call123@example.com"
       assert message.cseq.number == 42
       assert message.cseq.method == :invite
       assert message.via.host == "example.com"
-      assert message.contact.uri == "sip:alice@192.168.1.1:5060"
+      assert ParrotSip.Uri.to_string(message.contact.uri) == "sip:alice@192.168.1.1:5060"
       
       # Extract branch using pattern matching instead of Message.branch/1
       %Message{via: %Via{parameters: %{"branch" => branch}}} = message

@@ -64,7 +64,7 @@ defmodule ParrotSip.MessageCreationTest do
       assert message.to.display_name == "Bob"
       assert message.call_id == "call123@example.com"
       assert message.cseq.number == 1
-      assert message.contact.uri == "sip:alice@192.168.1.1:5060"
+      assert ParrotSip.Uri.to_string(message.contact.uri) == "sip:alice@192.168.1.1:5060"
       assert message.max_forwards == 70
       assert message.other_headers["user-agent"] == "ParrotSip/1.0"
       assert message.body == "v=0\r\no=..."
@@ -160,10 +160,10 @@ defmodule ParrotSip.MessageCreationTest do
       assert message.via.host == "example.com"
       
       message = Message.put_from(message, From.new("sip:alice@example.com"))
-      assert message.from.uri == "sip:alice@example.com"
+      assert ParrotSip.Uri.to_string(message.from.uri) == "sip:alice@example.com"
       
       message = Message.put_to(message, To.new("sip:bob@example.com"))
-      assert message.to.uri == "sip:bob@example.com"
+      assert ParrotSip.Uri.to_string(message.to.uri) == "sip:bob@example.com"
       
       message = Message.put_call_id(message, "call123")
       assert message.call_id == "call123"
@@ -172,7 +172,7 @@ defmodule ParrotSip.MessageCreationTest do
       assert message.cseq.number == 1
       
       message = Message.put_contact(message, Contact.new("sip:alice@host.com"))
-      assert message.contact.uri == "sip:alice@host.com"
+      assert ParrotSip.Uri.to_string(message.contact.uri) == "sip:alice@host.com"
       
       message = Message.put_max_forwards(message, 70)
       assert message.max_forwards == 70

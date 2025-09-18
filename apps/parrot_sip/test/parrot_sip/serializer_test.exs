@@ -28,11 +28,11 @@ defmodule ParrotSip.SerializerTest do
     test "encodes a simple request" do
       request = Message.new_request(:invite, "sip:bob@example.com")
       # Add required headers for request
-      request = Message.set_header(request, "from", "<sip:alice@atlanta.com>;tag=1928301774")
-      request = Message.set_header(request, "to", "<sip:bob@biloxi.com>")
-      request = Message.set_header(request, "call-id", "a84b4c76e66710@pc33.atlanta.com")
-      request = Message.set_header(request, "cseq", "314159 INVITE")
-      request = Message.set_header(request, "max-forwards", 70)
+      request = Message.put_header(request, "from", "<sip:alice@atlanta.com>;tag=1928301774")
+      request = Message.put_header(request, "to", "<sip:bob@biloxi.com>")
+      request = Message.put_header(request, "call-id", "a84b4c76e66710@pc33.atlanta.com")
+      request = Message.put_header(request, "cseq", "314159 INVITE")
+      request = Message.put_header(request, "max-forwards", 70)
 
       encoded = Serializer.encode(request)
 
@@ -61,15 +61,12 @@ defmodule ParrotSip.SerializerTest do
     end
 
     test "encodes a request with headers" do
-      headers = %{
-        "from" => "<sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "<sip:bob@biloxi.com>",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "max-forwards" => 70
-      }
-
-      request = Message.new_request(:invite, "sip:bob@example.com", headers)
+      request = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_header("from", "<sip:alice@atlanta.com>;tag=1928301774")
+        |> Message.put_header("to", "<sip:bob@biloxi.com>")
+        |> Message.put_header("call-id", "a84b4c76e66710@pc33.atlanta.com")
+        |> Message.put_header("cseq", "314159 INVITE")
+        |> Message.put_header("max-forwards", 70)
       encoded = Serializer.encode(request)
 
       assert encoded =~ ~r{^INVITE sip:bob@example.com SIP/2.0\r\n}
@@ -102,15 +99,12 @@ defmodule ParrotSip.SerializerTest do
     end
 
     test "encodes a response with headers" do
-      headers = %{
-        "from" => "<sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "<sip:bob@biloxi.com>;tag=a6c85cf",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "via" => "SIP/2.0/UDP pc33.atlanta.com:5060;branch=z9hG4bK776asdhds"
-      }
-
-      response = Message.new_response(200, "OK", headers)
+      response = Message.new_response(200, "OK", [])
+        |> Message.put_from(ParrotSip.Headers.parse_from("<sip:alice@atlanta.com>;tag=1928301774"))
+        |> Message.put_to(ParrotSip.Headers.parse_to("<sip:bob@biloxi.com>;tag=a6c85cf"))
+        |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
+        |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
+        |> Message.put_via(ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com:5060;branch=z9hG4bK776asdhds"))
       encoded = Serializer.encode(response)
 
       assert encoded =~ ~r{^SIP/2.0 200 OK\r\n}
@@ -124,8 +118,8 @@ defmodule ParrotSip.SerializerTest do
     end
 
     test "ensures correct Content-Length even when one is provided" do
-      headers = %{"content-length" => 100}
-      request = Message.new_request(:invite, "sip:bob@example.com", headers)
+      request = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_header("content-length", 100)
       request = Message.set_body(request, "This is a test body")
       encoded = Serializer.encode(request)
 
@@ -157,7 +151,7 @@ defmodule ParrotSip.SerializerTest do
       assert message.body == ""
 
       # Check headers
-      assert Message.get_header(message, "max-forwards") == 70
+      assert message.max_forwards == 70
       assert Message.to(message) != nil
       assert Message.from(message) != nil
       assert Message.call_id(message) != nil
@@ -187,10 +181,10 @@ defmodule ParrotSip.SerializerTest do
       assert message.body == ""
 
       # Check headers
-      assert Message.to(message) != nil
-      assert Message.from(message) != nil
-      assert Message.call_id(message) != nil
-      assert Message.cseq(message) != nil
+      assert message.to != nil
+      assert message.from != nil
+      assert message.call_id != nil
+      assert message.cseq != nil
 
       # Check multiple Via headers
       vias = Message.all_vias(message)
@@ -218,8 +212,8 @@ defmodule ParrotSip.SerializerTest do
 
       assert message.method == :invite
       assert message.body == body
-      assert Message.get_header(message, "content-length").value == byte_size(body)
-      assert Message.get_header(message, "content-type") == "application/sdp"
+      assert message.content_length == byte_size(body)
+      assert message.content_type == "application/sdp"
     end
 
     test "adds source information when provided" do
@@ -280,7 +274,7 @@ defmodule ParrotSip.SerializerTest do
 
       # Parser is now lenient with Content-Length mismatches
       {:ok, message} = Serializer.decode(raw_data)
-      assert message.headers["content-length"].value == 100
+      assert message.content_length == 100
       assert byte_size(message.body) == 26
     end
   end
@@ -288,17 +282,14 @@ defmodule ParrotSip.SerializerTest do
   describe "round-trip encoding/decoding" do
     test "message remains unchanged after encode-decode cycle" do
       # Create a request with all headers
-      headers = %{
-        "from" => "<sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "<sip:bob@biloxi.com>",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "max-forwards" => 70,
-        "contact" => "<sip:alice@pc33.atlanta.com>",
-        "content-type" => "application/sdp"
-      }
-
-      original = Message.new_request(:invite, "sip:bob@example.com", headers)
+      original = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_from(ParrotSip.Headers.parse_from("<sip:alice@atlanta.com>;tag=1928301774"))
+        |> Message.put_to(ParrotSip.Headers.parse_to("<sip:bob@biloxi.com>"))
+        |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
+        |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
+        |> Message.put_max_forwards(70)
+        |> Message.put_contact(ParrotSip.Headers.parse_contact("<sip:alice@pc33.atlanta.com>"))
+        |> Message.put_content_type(ParrotSip.Headers.parse_content_type("application/sdp"))
 
       original =
         Message.set_body(
@@ -319,22 +310,19 @@ defmodule ParrotSip.SerializerTest do
       # Direction changes on decode - outgoing becomes incoming
       assert decoded.direction == :incoming
       assert decoded.body == original.body
-      assert Message.call_id(decoded) == Message.call_id(original)
-      assert Message.from(decoded) != nil
-      assert Message.to(decoded) != nil
+      assert decoded.call_id == original.call_id
+      assert decoded.from != nil
+      assert decoded.to != nil
     end
 
     test "quoted header values remain properly escaped" do
       # Create a request with quoted header values
-      headers = %{
-        "from" => "\"Alice Smith\" <sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "\"Bob Jones\" <sip:bob@biloxi.com>",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "max-forwards" => 70
-      }
-
-      original = Message.new_request(:invite, "sip:bob@example.com", headers)
+      original = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_from(ParrotSip.Headers.parse_from("\"Alice Smith\" <sip:alice@atlanta.com>;tag=1928301774"))
+        |> Message.put_to(ParrotSip.Headers.parse_to("\"Bob Jones\" <sip:bob@biloxi.com>"))
+        |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
+        |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
+        |> Message.put_max_forwards(70)
 
       # Encode
       encoded = Serializer.encode(original)
@@ -343,7 +331,7 @@ defmodule ParrotSip.SerializerTest do
       {:ok, decoded} = Serializer.decode(encoded)
 
       # Compare quoted values - check for display name in the struct
-      from_header = Message.get_header(decoded, "from")
+      from_header = decoded.from
       assert is_map(from_header)
       # Display name might include quotes in the struct representation
       assert String.replace(from_header.display_name, "\"", "") == "Alice Smith"
@@ -352,7 +340,7 @@ defmodule ParrotSip.SerializerTest do
       assert from_header.uri.host == "atlanta.com"
       assert from_header.parameters["tag"] == "1928301774"
 
-      to_header = Message.get_header(decoded, "to")
+      to_header = decoded.to
       assert is_map(to_header)
       # Display name might include quotes in the struct representation
       assert String.replace(to_header.display_name, "\"", "") == "Bob Jones"
@@ -413,17 +401,14 @@ defmodule ParrotSip.SerializerTest do
       # 100 characters
       long_value = String.duplicate("abcdefghij", 10)
 
-      headers = %{
-        "from" => "<sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "<sip:bob@biloxi.com>",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "max-forwards" => 70,
-        "via" => "SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds",
-        "user-agent" => long_value
-      }
-
-      request = Message.new_request(:invite, "sip:bob@example.com", headers)
+      request = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_from(ParrotSip.Headers.parse_from("<sip:alice@atlanta.com>;tag=1928301774"))
+        |> Message.put_to(ParrotSip.Headers.parse_to("<sip:bob@biloxi.com>"))
+        |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
+        |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
+        |> Message.put_max_forwards(70)
+        |> Message.put_via(ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds"))
+        |> Message.put_header("user-agent", long_value)
       encoded = Serializer.encode(request)
 
       # Test that the user-agent header is present in the encoded message
@@ -433,7 +418,7 @@ defmodule ParrotSip.SerializerTest do
 
       # Test that folding works by checking if a long header gets decoded correctly
       {:ok, decoded} = Serializer.decode(encoded)
-      assert Message.get_header(decoded, "user-agent") == long_value
+      assert decoded.other_headers["user-agent"] == long_value
     end
 
     test "decodes folded headers in received messages" do
@@ -459,7 +444,7 @@ defmodule ParrotSip.SerializerTest do
       {:ok, message} = Serializer.decode(raw_data)
 
       # Check that folded headers were properly unfolded
-      from_header = Message.get_header(message, "from")
+      from_header = message.from
       assert is_map(from_header)
       assert from_header.display_name == "Alice"
       assert from_header.uri.scheme == "sip"
@@ -467,7 +452,7 @@ defmodule ParrotSip.SerializerTest do
       assert from_header.uri.host == "atlanta.com"
       assert from_header.parameters["tag"] == "1928301774"
 
-      assert Message.get_header(message, "user-agent") ==
+      assert message.other_headers["user-agent"] ==
                "SIP Client Deluxe Version 1.0 with Extended Feature Set"
     end
   end
@@ -489,30 +474,27 @@ defmodule ParrotSip.SerializerTest do
       {:ok, message} = Serializer.decode(raw_data)
 
       # Verify headers were correctly expanded
-      assert Message.get_header(message, "via") != nil
-      assert Message.get_header(message, "contact") != nil
-      assert Message.get_header(message, "from") != nil
-      assert Message.get_header(message, "to") != nil
-      assert Message.get_header(message, "call-id") != nil
-      assert Message.get_header(message, "content-type") == "application/sdp"
-      assert Message.get_header(message, "content-length").value == 0
+      assert message.via != nil
+      assert message.contact != nil
+      assert message.from != nil
+      assert message.to != nil
+      assert message.call_id != nil
+      assert message.content_type == "application/sdp"
+      assert message.content_length == 0
     end
   end
 
   describe "multipart body handling" do
     test "decodes a multipart body" do
       # Create a SIP message with a multipart body
-      headers = %{
-        "from" => "<sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "<sip:bob@biloxi.com>",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "max-forwards" => 70,
-        "via" => "SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds",
-        "content-type" => "multipart/mixed;boundary=boundary1"
-      }
-
-      request = Message.new_request(:invite, "sip:bob@example.com", headers)
+      request = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_from(ParrotSip.Headers.parse_from("<sip:alice@atlanta.com>;tag=1928301774"))
+        |> Message.put_to(ParrotSip.Headers.parse_to("<sip:bob@biloxi.com>"))
+        |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
+        |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
+        |> Message.put_max_forwards(70)
+        |> Message.put_via(ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds"))
+        |> Message.put_content_type(ParrotSip.Headers.parse_content_type("multipart/mixed;boundary=boundary1"))
       request = Message.set_body(request, @sample_multipart)
 
       # Encode and decode
@@ -520,7 +502,7 @@ defmodule ParrotSip.SerializerTest do
       {:ok, decoded} = Serializer.decode(encoded)
 
       # Check that multipart parts were correctly parsed
-      parts = Map.get(decoded.headers, "multipart-parts")
+      parts = Map.get(decoded.other_headers, "multipart-parts")
       assert is_list(parts)
       assert length(parts) == 2
 
@@ -546,17 +528,14 @@ defmodule ParrotSip.SerializerTest do
 
     test "round-trip with multipart body" do
       # Create a SIP message with a multipart body
-      headers = %{
-        "from" => "<sip:alice@atlanta.com>;tag=1928301774",
-        "to" => "<sip:bob@biloxi.com>",
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => "314159 INVITE",
-        "max-forwards" => 70,
-        "via" => "SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds",
-        "content-type" => "multipart/mixed;boundary=boundary1"
-      }
-
-      original = Message.new_request(:invite, "sip:bob@example.com", headers)
+      original = Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_from(ParrotSip.Headers.parse_from("<sip:alice@atlanta.com>;tag=1928301774"))
+        |> Message.put_to(ParrotSip.Headers.parse_to("<sip:bob@biloxi.com>"))
+        |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
+        |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
+        |> Message.put_max_forwards(70)
+        |> Message.put_via(ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds"))
+        |> Message.put_content_type(ParrotSip.Headers.parse_content_type("multipart/mixed;boundary=boundary1"))
       original = Message.set_body(original, @sample_multipart)
 
       # Encode and decode
@@ -570,8 +549,8 @@ defmodule ParrotSip.SerializerTest do
 
       # Compare content-type - structure might be different between original and decoded
       # Extract the parts of the content-type to compare
-      decoded_ct = Message.get_header(decoded, "content-type")
-      original_ct = Message.get_header(original, "content-type")
+      decoded_ct = decoded.content_type
+      original_ct = original.content_type
 
       # Check if they're both strings (old format) or both structs (new format)
       if is_binary(decoded_ct) && is_binary(original_ct) do
@@ -585,7 +564,7 @@ defmodule ParrotSip.SerializerTest do
       end
 
       # Check that multipart parts were parsed
-      parts = Map.get(decoded.headers, "multipart-parts")
+      parts = Map.get(decoded.other_headers, "multipart-parts")
       assert is_list(parts)
     end
   end

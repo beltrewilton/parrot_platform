@@ -18,32 +18,32 @@ defmodule ParrotSip.SimpleHeaderTest do
     {:ok, message} = Parser.parse(raw_message)
 
     # Check that headers are maps with expected keys
-    via = message.headers["via"]
+    via = message.via
     assert is_map(via)
     assert via.host == "pc33.atlanta.com"
     assert via.transport == :udp
 
-    from = message.headers["from"]
+    from = message.from
     assert is_map(from)
     assert from.display_name == "Alice"
     assert from.uri.scheme == "sip"
     assert from.uri.user == "alice"
     assert from.uri.host == "atlanta.com"
 
-    to = message.headers["to"]
+    to = message.to
     assert is_map(to)
     assert to.display_name == "Bob"
     assert to.uri.scheme == "sip"
     assert to.uri.user == "bob"
     assert to.uri.host == "biloxi.com"
 
-    cseq = message.headers["cseq"]
+    cseq = message.cseq
     assert is_map(cseq)
     assert cseq.number == 314_159
     assert cseq.method == :invite
 
     # Primitives should be directly accessible
-    assert message.headers["call-id"] == "a84b4c76e66710@pc33.atlanta.com"
-    assert message.headers["content-length"].value == 0
+    assert message.call_id == "a84b4c76e66710@pc33.atlanta.com"
+    assert message.content_length == 0
   end
 end

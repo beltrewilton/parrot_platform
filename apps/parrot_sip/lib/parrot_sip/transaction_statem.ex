@@ -218,7 +218,7 @@ defmodule ParrotSip.TransactionStatem do
 
         # For responses, extract method from CSeq header
         method =
-          case sip_msg.headers["cseq"] do
+          case sip_msg.cseq do
             %{method: m} ->
               m
 
@@ -272,7 +272,7 @@ defmodule ParrotSip.TransactionStatem do
     request_uri = sip_msg.request_uri
     transaction_id = transaction.id
     branch = transaction.branch
-    call_id = sip_msg.headers["call-id"]
+    call_id = sip_msg.call_id
 
     # Register with the full transaction ID, not just the branch
     Registry.register(ParrotSip.Registry, transaction_id, nil)
@@ -531,8 +531,8 @@ defmodule ParrotSip.TransactionStatem do
 
       # Try to build from Via header
       Map.has_key?(data, :origmsg) and is_map(data.origmsg) and
-        Map.has_key?(data.origmsg, :headers) and Map.has_key?(data.origmsg.headers, "via") ->
-        via = data.origmsg.headers["via"]
+        Map.has_key?(data.origmsg, :via) and not is_nil(data.origmsg.via) ->
+        via = data.origmsg.via
         Logger.debug("[extract_source] Built source from Via header: #{inspect(via)}")
         %ParrotSip.Source{remote: {via.host, via.port}, transport: via.transport}
 
@@ -626,19 +626,20 @@ defmodule ParrotSip.TransactionStatem do
   def trying(:cast, :cancel, %{data: %{cancelled: false, outreq: out_req} = data} = state) do
     Logger.debug("trans: canceling client transaction. state: #{inspect(state, @inspect_opts)}")
     # Generate CANCEL request from original request
-    cancel_req = %{
+    cancel_req = %Message{
+      type: :request,
       method: :cancel,
       request_uri: out_req.request_uri,
-      headers: %{
-        "call-id" => out_req.headers["call-id"],
-        "from" => out_req.headers["from"],
-        "to" => out_req.headers["to"],
-        "cseq" => %{number: out_req.headers["cseq"].number, method: :cancel},
-        "via" => out_req.headers["via"]
-      }
+      call_id: out_req.call_id,
+      from: out_req.from,
+      to: out_req.to,
+      cseq: %{number: out_req.cseq.number, method: :cancel},
+      via: out_req.via,
+      other_headers: %{}
     }
 
-    _ = client_new(cancel_req, %{}, fn _ -> :ok end)
+    {:ok, cancel_transaction} = Transaction.create_non_invite_client(cancel_req)
+    _ = client_new(cancel_transaction, %{}, fn _ -> :ok end)
     # Schedule cancel timeout
     {:keep_state, %{state | data: %{data | cancelled: true}},
      [{:state_timeout, 32_000, :cancel_timeout}]}
@@ -937,7 +938,7 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   defp log_response_info(sip_msg, data) do
-    call_id = sip_msg.headers["call-id"] || "unknown"
+    call_id = sip_msg.call_id || "unknown"
     branch = data.logbranch
     method = to_string(sip_msg.method || :unknown)
 

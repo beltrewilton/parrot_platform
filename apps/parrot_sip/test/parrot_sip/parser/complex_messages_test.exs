@@ -50,21 +50,21 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       assert message.request_uri == "sip:user@example.com"
 
       # Check standard headers
-      assert String.replace(message.headers["to"].display_name, "\"", "") == "Display Name"
-      assert String.replace(message.headers["from"].display_name, "\"", "") == "Caller"
-      assert message.headers["call-id"] == "a84b4c76e66710@pc33.atlanta.com"
-      assert message.headers["cseq"].number == 314_159
-      assert message.headers["max-forwards"] == 70
+      assert String.replace(message.to.display_name, "\"", "") == "Display Name"
+      assert String.replace(message.from.display_name, "\"", "") == "Caller"
+      assert message.call_id == "a84b4c76e66710@pc33.atlanta.com"
+      assert message.cseq.number == 314_159
+      assert message.max_forwards == 70
 
       # Check extended headers
-      assert message.headers["subject"].value == "Conference Call"
-      assert message.headers["supported"] == ["100rel", "path"]
-      assert message.headers["user-agent"] == "My SIP Client/1.0"
+      assert message.subject.value == "Conference Call"
+      assert message.supported == ["100rel", "path"]
+      assert message.other_headers["user-agent"] == "My SIP Client/1.0"
 
-      assert message.headers["p-asserted-identity"] ==
+      assert message.other_headers["p-asserted-identity"] ==
                "\"Asserted Caller\" <sip:caller@example.net>"
 
-      assert message.headers["x-custom-header"] == "Custom Value"
+      assert message.other_headers["x-custom-header"] == "Custom Value"
 
       # Check body
       assert message.body =~ "v=0"
@@ -90,28 +90,28 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       assert message.method == :refer
 
       # Check that the Refer-To header was parsed into a struct
-      assert %ParrotSip.Headers.ReferTo{} = message.headers["refer-to"]
+      assert %ParrotSip.Headers.ReferTo{} = message.refer_to
 
-      assert is_struct(message.headers["refer-to"].uri, ParrotSip.Uri)
-      assert message.headers["refer-to"].uri.scheme == "sip"
-      assert message.headers["refer-to"].uri.user == "referee"
-      assert message.headers["refer-to"].uri.host == "example.org"
+      assert is_struct(message.refer_to.uri, ParrotSip.Uri)
+      assert message.refer_to.uri.scheme == "sip"
+      assert message.refer_to.uri.user == "referee"
+      assert message.refer_to.uri.host == "example.org"
 
-      assert message.headers["refer-to"].uri.headers == %{
+      assert message.refer_to.uri.headers == %{
                "Replaces" => "12345%40192.168.0.1%3Bto-tag%3D12345%3Bfrom-tag%3D54321"
              }
 
       # Extract and verify the Replaces parameter
-      replaces = ParrotSip.Headers.ReferTo.replaces(message.headers["refer-to"])
+      replaces = ParrotSip.Headers.ReferTo.replaces(message.refer_to)
       assert replaces == "12345@192.168.0.1;to-tag=12345;from-tag=54321"
 
       # Parse the Replaces parameter into components
-      replaces_parts = ParrotSip.Headers.ReferTo.parse_replaces(message.headers["refer-to"])
+      replaces_parts = ParrotSip.Headers.ReferTo.parse_replaces(message.refer_to)
       assert replaces_parts["call_id"] == "12345@192.168.0.1"
       assert replaces_parts["to_tag"] == "12345"
       assert replaces_parts["from_tag"] == "54321"
 
-      assert message.headers["referred-by"] == "<sip:referrer@example.com>"
+      assert message.other_headers["referred-by"] == "<sip:referrer@example.com>"
     end
 
     test "parses message with advanced authentication headers" do
@@ -132,8 +132,8 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :register
-      assert message.headers["authorization"] =~ "Digest username=\"user\""
-      assert message.headers["authorization"] =~ "response=\"6629fae49393a05397450978507c4ef1\""
+      assert message.other_headers["authorization"] =~ "Digest username=\"user\""
+      assert message.other_headers["authorization"] =~ "response=\"6629fae49393a05397450978507c4ef1\""
     end
 
     test "parses subscription with complex event package" do
@@ -155,14 +155,14 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :subscribe
-      assert message.headers["event"].event == "presence"
+      assert message.event.event == "presence"
       # Accept headers now use structs
-      accept_header = message.headers["accept"]
+      accept_header = message.accept
       # For this test, the parser might return a single struct instead of a list
       assert accept_header.type == "application"
       assert accept_header.subtype == "pidf+xml, application/cpim-pidf+xml"
 
-      assert message.headers["expires"] == 3600
+      assert message.expires == 3600
     end
 
     test "parses message with Content-Encoding and Content-Disposition" do
@@ -184,11 +184,11 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :message
-      assert message.headers["content-type"].type == "text"
-      assert message.headers["content-type"].subtype == "plain"
-      assert message.headers["content-type"].parameters["charset"] == "utf-8"
-      assert message.headers["content-encoding"] == "gzip"
-      assert message.headers["content-disposition"] == "render;handling=optional"
+      assert message.content_type.type == "text"
+      assert message.content_type.subtype == "plain"
+      assert message.content_type.parameters["charset"] == "utf-8"
+      assert message.other_headers["content-encoding"] == "gzip"
+      assert message.other_headers["content-disposition"] == "render;handling=optional"
       assert message.body == "Compressed message\n"
     end
 
@@ -233,12 +233,12 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :notify
-      assert message.headers["event"].event == "presence"
-      assert message.headers["subscription-state"].state == :active
-      assert message.headers["subscription-state"].parameters["expires"] == "3600"
-      assert message.headers["content-type"].type == "multipart"
-      assert message.headers["content-type"].subtype == "related"
-      assert message.headers["content-type"].parameters["boundary"] == "\"boundary1\""
+      assert message.event.event == "presence"
+      assert message.subscription_state.state == :active
+      assert message.subscription_state.parameters["expires"] == "3600"
+      assert message.content_type.type == "multipart"
+      assert message.content_type.subtype == "related"
+      assert message.content_type.parameters["boundary"] == "\"boundary1\""
 
       # Check the body content
       assert message.body =~ "--boundary1"
@@ -274,8 +274,8 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :publish
-      assert message.headers["event"].event == "presence"
-      assert message.headers["sip-if-match"] == "abcdef123456"
+      assert message.event.event == "presence"
+      assert message.other_headers["sip-if-match"] == "abcdef123456"
       assert message.body =~ "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
       assert message.body =~ "<presence xmlns=\"urn:ietf:params:xml:ns:pidf\""
     end
@@ -302,7 +302,7 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       assert message.reason_phrase == "OK"
 
       # Allow header now uses a method set struct
-      allow_methods = message.headers["allow"]
+      allow_methods = message.allow
       assert Enum.member?(allow_methods, :invite)
       assert Enum.member?(allow_methods, :ack)
       assert Enum.member?(allow_methods, :cancel)
@@ -315,7 +315,7 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
       assert Enum.member?(allow_methods, :publish)
       assert Enum.member?(allow_methods, :message)
 
-      assert message.headers["supported"] == ["path", "100rel", "timer", "replaces", "norefersub"]
+      assert message.supported == ["path", "100rel", "timer", "replaces", "norefersub"]
     end
   end
 end

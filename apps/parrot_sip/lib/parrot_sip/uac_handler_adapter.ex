@@ -171,7 +171,7 @@ defmodule ParrotSip.UacHandlerAdapter do
 
   defp is_invite_response?(response, original_request) do
     # Check CSeq header to see if this is response to INVITE
-    case response.headers["cseq"] do
+    case response.cseq do
       %CSeq{method: "INVITE"} -> true
       %{"method" => "INVITE"} -> true
       cseq when is_binary(cseq) -> String.contains?(cseq, "INVITE")
@@ -354,7 +354,7 @@ defmodule ParrotSip.UacHandlerAdapter do
   end
 
   defp extract_redirect_uri(response) do
-    case response.headers["contact"] do
+    case response.contact do
       %Contact{uri: uri} ->
         {:ok, uri}
 

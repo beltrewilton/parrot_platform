@@ -352,8 +352,15 @@ defmodule ParrotSip.Transaction do
   
   defp get_branch_from_response(response) do
     case response.via do
-      [via | _] ->
-        # Parse Via header to get branch
+      [%{parameters: %{"branch" => branch}} | _] ->
+        {:ok, branch}
+      [%{parameters: params} | _] when is_map(params) ->
+        case Map.get(params, "branch") do
+          nil -> {:error, :no_branch}
+          branch -> {:ok, branch}
+        end
+      [via | _] when is_binary(via) ->
+        # Fallback for legacy string-based Via headers
         if String.contains?(via, "branch=") do
           branch = via
             |> String.split(";")

@@ -20,7 +20,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      via = message.headers["via"]
+      via = message.via
       assert is_map(via)
       assert via.host == "pc33.atlanta.com"
       assert via.transport == :udp
@@ -43,7 +43,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      from = message.headers["from"]
+      from = message.from
       assert is_map(from)
       assert from.display_name == "Alice"
       assert from.uri.scheme == "sip"
@@ -68,7 +68,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      to = message.headers["to"]
+      to = message.to
       assert is_map(to)
       assert to.display_name == "Bob"
       assert to.uri.scheme == "sip"
@@ -92,7 +92,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      cseq = message.headers["cseq"]
+      cseq = message.cseq
       assert is_map(cseq)
       assert cseq.number == 314_159
       assert cseq.method == :invite
@@ -114,7 +114,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      contact = message.headers["contact"]
+      contact = message.contact
       assert is_map(contact)
       assert contact.uri.scheme == "sip"
       assert contact.uri.user == "alice"
@@ -137,7 +137,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       # Parser is now lenient with Content-Length mismatches for UDP
       {:ok, message} = Parser.parse(raw_message)
-      assert message.headers["content-length"].value == 123
+      assert message.content_length == 123
       assert byte_size(message.body) == 0
     end
 
@@ -157,7 +157,7 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      via_list = message.headers["via"]
+      via_list = message.via
       assert is_list(via_list)
       assert length(via_list) == 2
 

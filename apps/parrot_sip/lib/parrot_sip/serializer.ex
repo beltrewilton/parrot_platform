@@ -591,9 +591,33 @@ defmodule ParrotSip.Serializer do
 
   # Checks if a specific header is present in the message
   defp has_header?(message, header_name) do
-    header_value = Message.get_header(message, header_name)
-
-    header_value != nil && header_value != ""
+    downcased = String.downcase(header_name)
+    
+    case downcased do
+      "via" -> not is_nil(message.via)
+      "from" -> not is_nil(message.from)
+      "to" -> not is_nil(message.to)
+      "call-id" -> not is_nil(message.call_id)
+      "cseq" -> not is_nil(message.cseq)
+      "contact" -> not is_nil(message.contact)
+      "route" -> not is_nil(message.route)
+      "record-route" -> not is_nil(message.record_route)
+      "max-forwards" -> not is_nil(message.max_forwards)
+      "content-type" -> not is_nil(message.content_type)
+      "content-length" -> not is_nil(message.content_length)
+      "expires" -> not is_nil(message.expires)
+      "allow" -> not is_nil(message.allow)
+      "supported" -> not is_nil(message.supported)
+      "accept" -> not is_nil(message.accept)
+      "event" -> not is_nil(message.event)
+      "subscription-state" -> not is_nil(message.subscription_state)
+      "refer-to" -> not is_nil(message.refer_to)
+      "subject" -> not is_nil(message.subject)
+      # For other headers, check in other_headers
+      _ ->
+        header_value = Message.get_header(message, header_name)
+        header_value != nil && header_value != ""
+    end
   end
 
   # Gets a list of missing required headers

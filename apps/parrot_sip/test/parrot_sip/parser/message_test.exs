@@ -112,36 +112,36 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.direction == :incoming
 
       # Check headers
-      assert message.headers["via"].host == "pc33.atlanta.com"
-      assert message.headers["via"].parameters["branch"] == "z9hG4bK776asdhds"
+      assert message.via.host == "pc33.atlanta.com"
+      assert message.via.parameters["branch"] == "z9hG4bK776asdhds"
 
-      assert message.headers["from"].display_name == "Alice"
+      assert message.from.display_name == "Alice"
       # URI is now a struct
-      assert message.headers["from"].uri.scheme == "sip"
-      assert message.headers["from"].uri.user == "alice"
-      assert message.headers["from"].uri.host == "atlanta.com"
-      assert message.headers["from"].parameters["tag"] == "1928301774"
+      assert message.from.uri.scheme == "sip"
+      assert message.from.uri.user == "alice"
+      assert message.from.uri.host == "atlanta.com"
+      assert message.from.parameters["tag"] == "1928301774"
 
-      assert message.headers["to"].display_name == "Bob"
+      assert message.to.display_name == "Bob"
       # URI is now a struct
-      assert message.headers["to"].uri.scheme == "sip"
-      assert message.headers["to"].uri.user == "bob"
-      assert message.headers["to"].uri.host == "biloxi.com"
+      assert message.to.uri.scheme == "sip"
+      assert message.to.uri.user == "bob"
+      assert message.to.uri.host == "biloxi.com"
 
-      assert message.headers["call-id"] == "a84b4c76e66710@pc33.atlanta.com"
+      assert message.call_id == "a84b4c76e66710@pc33.atlanta.com"
 
-      assert message.headers["cseq"].number == 314_159
-      assert message.headers["cseq"].method == :invite
+      assert message.cseq.number == 314_159
+      assert message.cseq.method == :invite
 
-      assert message.headers["content-type"].type == "application"
-      assert message.headers["content-type"].subtype == "sdp"
-      assert message.headers["content-length"].value == content_length
+      assert message.content_type.type == "application"
+      assert message.content_type.subtype == "sdp"
+      assert message.content_length == content_length
 
       # Check body content
       assert message.body =~ "v=0"
       assert message.body =~ "m=audio 49172 RTP/AVP 0"
       # Verify exact content length match
-      assert byte_size(message.body) == message.headers["content-length"].value
+      assert byte_size(message.body) == message.content_length
       assert byte_size(message.body) == content_length
     end
 
@@ -165,24 +165,24 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.method == :register
       assert message.request_uri == "sip:registrar.example.com"
 
-      assert message.headers["to"].display_name == "Bob"
-      assert message.headers["to"].uri.scheme == "sip"
-      assert message.headers["to"].uri.user == "bob"
-      assert message.headers["to"].uri.host == "example.com"
+      assert message.to.display_name == "Bob"
+      assert message.to.uri.scheme == "sip"
+      assert message.to.uri.user == "bob"
+      assert message.to.uri.host == "example.com"
 
-      assert message.headers["from"].display_name == "Bob"
-      assert message.headers["from"].uri.scheme == "sip"
-      assert message.headers["from"].uri.user == "bob"
-      assert message.headers["from"].uri.host == "example.com"
-      assert message.headers["from"].parameters["tag"] == "a73kszlfl"
+      assert message.from.display_name == "Bob"
+      assert message.from.uri.scheme == "sip"
+      assert message.from.uri.user == "bob"
+      assert message.from.uri.host == "example.com"
+      assert message.from.parameters["tag"] == "a73kszlfl"
 
-      assert message.headers["expires"] == 3600
-      assert message.headers["call-id"] == "1j9FpLxk3uxtm8tn@192.0.2.1"
+      assert message.expires == 3600
+      assert message.call_id == "1j9FpLxk3uxtm8tn@192.0.2.1"
 
-      assert message.headers["cseq"].number == 1
-      assert message.headers["cseq"].method == :register
+      assert message.cseq.number == 1
+      assert message.cseq.method == :register
 
-      assert message.headers["content-length"].value == 0
+      assert message.content_length == 0
       assert message.body == ""
     end
 
@@ -206,19 +206,19 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.method == :options
       assert message.request_uri == "sip:bob@example.com"
 
-      assert message.headers["to"].display_name == nil
-      assert message.headers["to"].uri.scheme == "sip"
-      assert message.headers["to"].uri.user == "bob"
-      assert message.headers["to"].uri.host == "example.com"
+      assert message.to.display_name == nil
+      assert message.to.uri.scheme == "sip"
+      assert message.to.uri.user == "bob"
+      assert message.to.uri.host == "example.com"
 
-      assert message.headers["from"].display_name == nil
-      assert message.headers["from"].uri.scheme == "sip"
-      assert message.headers["from"].uri.user == "alice"
-      assert message.headers["from"].uri.host == "example.com"
+      assert message.from.display_name == nil
+      assert message.from.uri.scheme == "sip"
+      assert message.from.uri.user == "alice"
+      assert message.from.uri.host == "example.com"
 
-      assert message.headers["accept"].type == "application"
-      assert message.headers["accept"].subtype == "sdp"
-      assert message.headers["content-length"].value == 0
+      assert message.accept.type == "application"
+      assert message.accept.subtype == "sdp"
+      assert message.content_length == 0
       assert message.body == ""
     end
   end
@@ -256,7 +256,7 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.direction == :incoming
 
       # Check Via headers (should be a list)
-      via_list = message.headers["via"]
+      via_list = message.via
       assert length(via_list) == 3
       [via1, via2, via3] = via_list
 
@@ -267,18 +267,18 @@ defmodule ParrotSip.Parser.MessageTest do
       assert via2.host == "bigbox3.site3.atlanta.com"
       assert via3.host == "pc33.atlanta.com"
 
-      assert message.headers["to"].display_name == "Bob"
-      assert message.headers["to"].uri.scheme == "sip"
-      assert message.headers["to"].uri.user == "bob"
-      assert message.headers["to"].uri.host == "biloxi.com"
-      assert message.headers["to"].parameters["tag"] == "a6c85cf"
+      assert message.to.display_name == "Bob"
+      assert message.to.uri.scheme == "sip"
+      assert message.to.uri.user == "bob"
+      assert message.to.uri.host == "biloxi.com"
+      assert message.to.parameters["tag"] == "a6c85cf"
 
-      assert message.headers["cseq"].number == 314_159
-      assert message.headers["cseq"].method == :invite
+      assert message.cseq.number == 314_159
+      assert message.cseq.method == :invite
 
-      assert message.headers["content-type"].type == "application"
-      assert message.headers["content-type"].subtype == "sdp"
-      assert message.headers["content-length"].value == 121
+      assert message.content_type.type == "application"
+      assert message.content_type.subtype == "sdp"
+      assert message.content_length == 121
 
       assert message.body =~ "v=0"
       assert message.body =~ "m=audio 3456 RTP/AVP 0"
@@ -306,19 +306,19 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.type == :response
       assert message.direction == :incoming
 
-      via_list = message.headers["via"]
+      via_list = message.via
       assert length(via_list) == 3
 
-      assert message.headers["to"].display_name == "Bob"
-      assert message.headers["to"].parameters["tag"] == "a6c85cf"
+      assert message.to.display_name == "Bob"
+      assert message.to.parameters["tag"] == "a6c85cf"
 
-      assert message.headers["from"].display_name == "Alice"
-      assert message.headers["from"].parameters["tag"] == "1928301774"
+      assert message.from.display_name == "Alice"
+      assert message.from.parameters["tag"] == "1928301774"
 
-      assert message.headers["cseq"].number == 314_159
-      assert message.headers["cseq"].method == :invite
+      assert message.cseq.number == 314_159
+      assert message.cseq.method == :invite
 
-      assert message.headers["content-length"].value == 0
+      assert message.content_length == 0
       assert message.body == ""
     end
 
@@ -341,11 +341,11 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.type == :response
       assert message.direction == :incoming
 
-      assert message.headers["to"].display_name == "Bob"
-      assert message.headers["to"].parameters["tag"] == "a6c85cf"
+      assert message.to.display_name == "Bob"
+      assert message.to.parameters["tag"] == "a6c85cf"
 
-      assert message.headers["cseq"].number == 314_159
-      assert message.headers["cseq"].method == :invite
+      assert message.cseq.number == 314_159
+      assert message.cseq.method == :invite
     end
   end
 
@@ -427,9 +427,9 @@ defmodule ParrotSip.Parser.MessageTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :invite
-      assert message.headers["content-type"].type == "multipart"
-      assert message.headers["content-type"].subtype == "mixed"
-      assert message.headers["content-type"].parameters["boundary"] == "boundary42"
+      assert message.content_type.type == "multipart"
+      assert message.content_type.subtype == "mixed"
+      assert message.content_type.parameters["boundary"] == "boundary42"
 
       # Body parsing details would depend on your implementation
       assert message.body =~ "--boundary42"

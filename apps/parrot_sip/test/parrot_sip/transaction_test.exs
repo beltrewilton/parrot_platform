@@ -258,9 +258,9 @@ defmodule ParrotSip.TransactionTest do
       request = create_invite_request()
       response = create_response(request, 200, "OK")
       # Modify the response's Via branch
-      via = response.headers["via"]
+      via = response.via
       via = %{via | parameters: Map.put(via.parameters, "branch", "different")}
-      response = %{response | headers: Map.put(response.headers, "via", via)}
+      response = %{response | via: via}
 
       {:ok, transaction} = Transaction.create_invite_client(request)
 
@@ -280,12 +280,12 @@ defmodule ParrotSip.TransactionTest do
       request = create_invite_request()
       modified_request = request
       # Modify the request's Via branch
-      via = modified_request.headers["via"]
+      via = modified_request.via
       via = %{via | parameters: Map.put(via.parameters, "branch", "different")}
 
       modified_request = %{
         modified_request
-        | headers: Map.put(modified_request.headers, "via", via)
+        | via: via
       }
 
       {:ok, transaction} = Transaction.create_invite_server(request)

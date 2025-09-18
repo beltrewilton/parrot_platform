@@ -458,8 +458,8 @@ defmodule ParrotSip.Headers.Via do
       %ParrotSip.Headers.Via{host: "host1", ...}
   """
   @spec topmost(map()) :: t() | nil
-  def topmost(%{headers: %{"via" => vias}}) when is_list(vias), do: List.first(vias)
-  def topmost(%{headers: %{"via" => via}}), do: via
+  def topmost(%{via: vias}) when is_list(vias), do: List.first(vias)
+  def topmost(%{via: via}), do: via
   def topmost(_), do: nil
 
   @doc """
@@ -472,9 +472,9 @@ defmodule ParrotSip.Headers.Via do
 
   """
   @spec take_topmost(map()) :: {t(), [t()] | nil} | {t(), nil} | {nil, nil}
-  def take_topmost(%{headers: %{"via" => [first | rest]}}),
+  def take_topmost(%{via: [first | rest]}),
     do: {first, (rest == [] && nil) || rest}
 
-  def take_topmost(%{headers: %{"via" => via}}) when not is_list(via), do: {via, nil}
+  def take_topmost(%{via: via}) when not is_list(via), do: {via, nil}
   def take_topmost(_), do: {nil, nil}
 end

@@ -136,14 +136,14 @@ defmodule ParrotSip.SerializerIntegrationTest do
 
       # Check Contact headers
       contact = received_ok.contact
-      assert contact.uri == "sip:bob@192.0.2.4"
+      assert ParrotSip.Uri.to_string(contact.uri) == "sip:bob@192.0.2.4"
 
       # Verify Record-Route headers are preserved in order
       record_routes = received_ok.record_route || []
       assert length(record_routes) >= 2
       [record_route1, record_route2 | _] = record_routes
-      assert record_route1.uri == "sip:proxy1.atlanta.com;lr"
-      assert record_route2.uri == "sip:proxy2.biloxi.com;lr"
+      assert ParrotSip.Uri.to_string(record_route1.uri) == "sip:proxy1.atlanta.com;lr"
+      assert ParrotSip.Uri.to_string(record_route2.uri) == "sip:proxy2.biloxi.com;lr"
 
       # Step 7: UAC sends ACK to complete the dialog establishment
       # --------------------------------------
@@ -183,8 +183,8 @@ defmodule ParrotSip.SerializerIntegrationTest do
       routes = received_ack.route || []
       assert length(routes) == 2
       [route1, route2] = routes
-      assert route1.uri == "sip:proxy2.biloxi.com;lr"
-      assert route2.uri == "sip:proxy1.atlanta.com;lr"
+      assert ParrotSip.Uri.to_string(route1.uri) == "sip:proxy2.biloxi.com;lr"
+      assert ParrotSip.Uri.to_string(route2.uri) == "sip:proxy1.atlanta.com;lr"
     end
 
     test "handles NAT traversal with received and rport parameters" do
@@ -287,9 +287,9 @@ defmodule ParrotSip.SerializerIntegrationTest do
       assert decoded.method == message.method
       assert decoded.request_uri == message.request_uri
       assert decoded.from.display_name == "Alice"
-      assert decoded.from.uri == "sip:alice@atlanta.com"
+      assert ParrotSip.Uri.to_string(decoded.from.uri) == "sip:alice@atlanta.com"
       assert decoded.to.display_name == "Bob"
-      assert decoded.contact.uri == "sip:alice@pc33.atlanta.com"
+      assert ParrotSip.Uri.to_string(decoded.contact.uri) == "sip:alice@pc33.atlanta.com"
       assert decoded.contact.parameters["expires"] == "3600"
       assert decoded.expires == 7200
     end

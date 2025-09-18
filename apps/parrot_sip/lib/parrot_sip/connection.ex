@@ -157,7 +157,7 @@ defmodule ParrotSip.Connection do
   # Process the Via header in a request
   @spec process_request_via(Message.t(), t()) :: {:ok, Message.t()} | {:error, term()}
   defp process_request_via(message, conn) do
-    case Message.get_header(message, "via") do
+    case message.via do
       nil ->
         {:error, :no_via}
 

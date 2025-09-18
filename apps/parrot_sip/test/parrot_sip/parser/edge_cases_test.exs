@@ -40,7 +40,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
       {:ok, message} = Parser.parse(raw_message) |> fix_content_length_validation_error()
 
       assert message.body == ""
-      assert message.headers["content-length"].value == 0
+      assert message.content_length == 0
     end
 
     test "handles missing Content-Length header gracefully" do
@@ -82,8 +82,8 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
       {:ok, message} = result
 
       assert normalize_body(message.body) == "Line 1\n\nLine 3"
-      assert message.headers["content-type"].type == "text"
-      assert message.headers["content-type"].subtype == "plain"
+      assert message.content_type.type == "text"
+      assert message.content_type.subtype == "plain"
     end
 
     test "parses message with multiple headers of the same name" do
@@ -104,7 +104,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       # We expect the first Accept header to be "application/sdp"
-      accept_headers = message.headers["accept"]
+      accept_headers = message.accept
       assert is_list(accept_headers)
 
       # Check for the application/sdp in the Accept headers
@@ -128,22 +128,22 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      assert message.headers["to"].uri.scheme == "sip"
-      assert message.headers["to"].uri.user == "user"
-      assert message.headers["to"].uri.host == "example.com"
-      assert message.headers["to"].uri.parameters["transport"] == "tcp"
+      assert message.to.uri.scheme == "sip"
+      assert message.to.uri.user == "user"
+      assert message.to.uri.host == "example.com"
+      assert message.to.uri.parameters["transport"] == "tcp"
 
-      assert message.headers["from"].uri.scheme == "sip"
-      assert message.headers["from"].uri.user == "caller"
-      assert message.headers["from"].uri.host == "example.net"
-      assert message.headers["from"].uri.parameters["transport"] == "udp"
+      assert message.from.uri.scheme == "sip"
+      assert message.from.uri.user == "caller"
+      assert message.from.uri.host == "example.net"
+      assert message.from.uri.parameters["transport"] == "udp"
 
-      assert message.headers["contact"].uri.scheme == "sip"
-      assert message.headers["contact"].uri.user == "caller"
-      assert message.headers["contact"].uri.host == "192.168.1.1"
-      assert message.headers["contact"].uri.port == 5060
-      assert message.headers["contact"].uri.parameters["transport"] == "udp"
-      assert message.headers["contact"].uri.parameters["ob"] == ""
+      assert message.contact.uri.scheme == "sip"
+      assert message.contact.uri.user == "caller"
+      assert message.contact.uri.host == "192.168.1.1"
+      assert message.contact.uri.port == 5060
+      assert message.contact.uri.parameters["transport"] == "udp"
+      assert message.contact.uri.parameters["ob"] == ""
     end
 
     test "handles escaped characters in display names" do
@@ -162,7 +162,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       # Our implementation may preserve quotes in the display name
       # The important thing is that the display name is functionally correct
-      display_name = message.headers["to"].display_name
+      display_name = message.to.display_name
       # Check that it contains the key part we're looking for
       assert String.contains?(display_name, "User")
       assert String.contains?(display_name, "with quotes")
@@ -182,12 +182,12 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      assert message.headers["to"].uri.scheme == "sip"
-      assert message.headers["to"].uri.user == "user"
-      assert message.headers["to"].uri.host == "example.com"
-      assert message.headers["to"].uri.parameters["transport"] == "tcp"
-      assert message.headers["to"].uri.headers["priority"] == "urgent"
-      assert message.headers["to"].uri.headers["param"] == "value"
+      assert message.to.uri.scheme == "sip"
+      assert message.to.uri.user == "user"
+      assert message.to.uri.host == "example.com"
+      assert message.to.uri.parameters["transport"] == "tcp"
+      assert message.to.uri.headers["priority"] == "urgent"
+      assert message.to.uri.headers["param"] == "value"
     end
 
     test "handles reason phrase with special characters" do
@@ -241,7 +241,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      assert message.headers["contact"].parameters["+sip.instance"] ==
+      assert message.contact.parameters["+sip.instance"] ==
                "\"<urn:uuid:00000000-0000-1000-8000-AABBCCDDEEFF>\""
     end
 
@@ -271,10 +271,10 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       assert message.method == :invite
-      assert message.headers["content-type"].type == "application"
-      assert message.headers["content-type"].subtype == "sdp"
+      assert message.content_type.type == "application"
+      assert message.content_type.subtype == "sdp"
       # Use the actual body size
-      assert message.headers["content-length"].value == body_length
+      assert message.content_length == body_length
       assert message.body =~ "v=0"
       assert message.body =~ "o=alice"
     end
@@ -295,7 +295,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      assert message.headers["contact"].wildcard == true
+      assert message.contact.wildcard == true
     end
 
     test "accepts message with Content-Length mismatch (lenient for UDP)" do
@@ -318,7 +318,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       # Our parser is now lenient with Content-Length mismatches for UDP
       {:ok, message} = Parser.parse(raw_message)
-      assert message.headers["content-length"].value == 120
+      assert message.content_length == 120
       # Actual body is smaller than declared
       assert byte_size(message.body) < 120
     end
@@ -339,8 +339,8 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
       {:ok, message} = Parser.parse(raw_message)
 
       # Empty Allow header is now represented as an empty method set
-      assert message.headers["allow"] != nil
-      assert Enum.empty?(message.headers["allow"])
+      assert message.allow != nil
+      assert Enum.empty?(message.allow)
     end
   end
 
@@ -466,7 +466,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
 
       {:ok, message} = Parser.parse(raw_message)
       assert message.body == body
-      assert message.headers["content-length"].value == body_length
+      assert message.content_length == body_length
 
       # Test with a Content-Length larger than the body - now accepted with lenient parsing
       larger_length_message =
@@ -477,7 +477,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
         )
 
       {:ok, larger_message} = Parser.parse(larger_length_message)
-      assert larger_message.headers["content-length"].value == body_length + 5
+      assert larger_message.content_length == body_length + 5
       assert byte_size(larger_message.body) == body_length
 
       # Test with a Content-Length smaller than the body - now accepted with lenient parsing
@@ -485,7 +485,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
       extended_body = body <> "extra"
       smaller_length_message = headers <> extended_body
       {:ok, smaller_message} = Parser.parse(smaller_length_message)
-      assert smaller_message.headers["content-length"].value == body_length
+      assert smaller_message.content_length == body_length
       assert byte_size(smaller_message.body) == byte_size(extended_body)
     end
   end
