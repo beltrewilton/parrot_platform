@@ -102,9 +102,9 @@ defmodule ParrotSip.Dialog do
   @spec create_from_invite(Message.t(), :uac | :uas) :: {:ok, String.t()} | {:error, term()}
   def create_from_invite(%Message{method: :invite} = invite_message, role) when role in [:uac, :uas] do
     # Extract dialog components using Message helper functions
-    call_id = Message.call_id(invite_message)
-    from_tag = Message.from_tag(invite_message)
-    to_tag = Message.to_tag(invite_message)
+    call_id = invite_message.call_id
+    from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
+    to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil
     
     # Validate required fields
     with {:call_id, call_id} when not is_nil(call_id) <- {:call_id, call_id},
@@ -129,8 +129,8 @@ defmodule ParrotSip.Dialog do
         local_uri: extract_local_uri(invite_message, role),
         remote_uri: extract_remote_uri(invite_message, role),
         remote_target: extract_contact_uri(invite_message),
-        local_seq: if(role == :uac, do: Message.cseq_number(invite_message), else: 0),
-        remote_seq: if(role == :uas, do: Message.cseq_number(invite_message), else: 0),
+        local_seq: if(role == :uac, do: invite_message.cseq && invite_message.cseq.number, else: 0),
+        remote_seq: if(role == :uas, do: invite_message.cseq && invite_message.cseq.number, else: 0),
         route_set: extract_route_set_from_message(invite_message),
         secure: is_secure_dialog?(invite_message)
       }
@@ -339,9 +339,9 @@ defmodule ParrotSip.Dialog do
   """
   @spec from_message(Message.t()) :: map()
   def from_message(%Message{type: type, direction: flow_direction} = message) do
-    call_id = Message.get_header(message, "call-id")
-    from_header = Message.get_header(message, "from")
-    to_header = Message.get_header(message, "to")
+    call_id = message.call_id
+    from_header = message.from
+    to_header = message.to
 
     from_tag = if from_header, do: From.tag(from_header), else: nil
     to_tag = if to_header, do: To.tag(to_header), else: nil
@@ -455,28 +455,28 @@ defmodule ParrotSip.Dialog do
   @spec uas_create(Message.t(), Message.t()) :: {:ok, t()}
   def uas_create(request, response) do
     # Extract necessary headers
-    call_id = request.headers["call-id"]
-    remote_tag = request.headers["from"].parameters["tag"]
-    local_tag = response.headers["to"].parameters["tag"]
+    call_id = request.call_id
+    remote_tag = request.from.parameters["tag"]
+    local_tag = response.to.parameters["tag"]
 
     # Extract URIs
-    to_uri = request.headers["to"].uri
+    to_uri = request.to.uri
     local_uri = if is_binary(to_uri), do: to_uri, else: Uri.to_string(to_uri)
 
-    from_uri = request.headers["from"].uri
+    from_uri = request.from.uri
     remote_uri = if is_binary(from_uri), do: from_uri, else: Uri.to_string(from_uri)
 
     # Extract the remote target from the Contact header in the request
     remote_target =
-      if Map.has_key?(request.headers, "contact") do
-        contact_uri = request.headers["contact"].uri
+      if request.contact do
+        contact_uri = request.contact.uri
         if is_binary(contact_uri), do: contact_uri, else: Uri.to_string(contact_uri)
       else
         remote_uri
       end
 
     # Get sequence numbers from CSeq
-    remote_seq = request.headers["cseq"].number
+    remote_seq = request.cseq.number
     local_seq = 0
 
     # Determine if secure based on the request URI scheme
@@ -526,28 +526,28 @@ defmodule ParrotSip.Dialog do
   @spec uac_create(Message.t(), Message.t()) :: {:ok, t()}
   def uac_create(request, response) do
     # Extract necessary headers
-    call_id = request.headers["call-id"]
-    local_tag = request.headers["from"].parameters["tag"]
-    remote_tag = response.headers["to"].parameters["tag"]
+    call_id = request.call_id
+    local_tag = request.from.parameters["tag"]
+    remote_tag = response.to.parameters["tag"]
 
     # Extract URIs
-    from_uri = request.headers["from"].uri
+    from_uri = request.from.uri
     local_uri = if is_binary(from_uri), do: from_uri, else: Uri.to_string(from_uri)
 
-    to_uri = request.headers["to"].uri
+    to_uri = request.to.uri
     remote_uri = if is_binary(to_uri), do: to_uri, else: Uri.to_string(to_uri)
 
     # Get the remote target from the Contact header in the response
     remote_target =
-      if Map.has_key?(response.headers, "contact") do
-        contact_uri = response.headers["contact"].uri
+      if response.contact do
+        contact_uri = response.contact.uri
         if is_binary(contact_uri), do: contact_uri, else: Uri.to_string(contact_uri)
       else
         remote_uri
       end
 
     # Get sequence numbers from CSeq
-    local_seq = request.headers["cseq"].number
+    local_seq = request.cseq.number
     remote_seq = 0
 
     # Determine if secure based on the request URI scheme
@@ -623,7 +623,7 @@ defmodule ParrotSip.Dialog do
   @spec uas_process(Message.t(), t()) :: {:ok, t()}
   def uas_process(request, dialog) do
     # Update remote sequence number
-    remote_seq = request.headers["cseq"].number
+    remote_seq = request.cseq.number
 
     # Handle BYE request (terminates the dialog)
     state = if request.method == :bye, do: :terminated, else: dialog.state
@@ -678,22 +678,21 @@ defmodule ParrotSip.Dialog do
       type: :request,
       direction: :outgoing,
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Headers.Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          # This would typically be configurable
-          host: "pc33.atlanta.com",
-          parameters: %{"branch" => Headers.generate_branch()}
-        },
-        "from" => from,
-        "to" => to,
-        "call-id" => dialog.call_id,
-        "cseq" => cseq,
-        "max-forwards" => 70
+      via: %Headers.Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        # This would typically be configurable
+        host: "pc33.atlanta.com",
+        parameters: %{"branch" => Headers.generate_branch()}
       },
-      body: ""
+      from: from,
+      to: to,
+      call_id: dialog.call_id,
+      cseq: cseq,
+      max_forwards: 70,
+      body: "",
+      other_headers: %{}
     }
 
     # Update the dialog with the new sequence number
@@ -718,7 +717,7 @@ defmodule ParrotSip.Dialog do
   """
   @spec uac_response(Message.t(), t()) :: {:ok, t()}
   def uac_response(response, dialog) do
-    cseq = response.headers["cseq"]
+    cseq = response.cseq
 
     # Handle transitioning from early to confirmed for INVITE responses
     state =

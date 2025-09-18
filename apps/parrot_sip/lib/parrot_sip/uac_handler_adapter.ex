@@ -215,13 +215,13 @@ defmodule ParrotSip.UacHandlerAdapter do
 
   defp build_ack_request(response, extra_headers, body) do
     # Extract key headers from response
-    to = response.headers["to"]
-    from = response.headers["from"]
-    call_id = response.headers["call-id"]
+    to = response.to
+    from = response.from
+    call_id = response.call_id
 
     # Get Contact from response for Request-URI
     request_uri =
-      case response.headers["contact"] do
+      case response.contact do
         %Contact{uri: uri} ->
           uri
 
@@ -236,53 +236,45 @@ defmodule ParrotSip.UacHandlerAdapter do
       end
 
     # Build CSeq for ACK
-    cseq =
-      case response.headers["cseq"] do
+    cseq_for_ack =
+      case response.cseq do
         %CSeq{number: seq} ->
-          "#{seq} ACK"
+          %CSeq{number: seq, method: :ack}
 
-        %{"number" => seq} ->
-          "#{seq} ACK"
-
-        cseq_str when is_binary(cseq_str) ->
-          [seq | _] = String.split(cseq_str, " ")
-          "#{seq} ACK"
+        _ ->
+          %CSeq{number: 1, method: :ack}
       end
 
-    # Build base headers
-    base_headers = %{
-      "to" => to,
-      "from" => from,
-      "call-id" => call_id,
-      "cseq" => cseq,
-      # Will be added by transport
-      "via" => [],
-      "max-forwards" => "70",
-      "content-length" => "#{byte_size(body)}"
+    # Build ACK message
+    ack = %Message{
+      type: :request,
+      method: :ack,
+      request_uri: request_uri,
+      body: body,
+      to: to,
+      from: from,
+      call_id: call_id,
+      cseq: cseq_for_ack,
+      via: [],  # Will be added by transport
+      max_forwards: 70,
+      content_length: byte_size(body),
+      other_headers: %{}
     }
 
     # Add content-type if body present
-    headers =
+    ack =
       if body != "" do
-        Map.put(
-          base_headers,
-          "content-type",
-          Map.get(extra_headers, "content-type", "application/sdp")
-        )
+        %{ack | content_type: %ParrotSip.Headers.ContentType{
+          type: "application",
+          subtype: "sdp",
+          parameters: %{}
+        }}
       else
-        base_headers
+        ack
       end
 
-    # Merge with extra headers
-    headers = Map.merge(headers, extra_headers)
-
-    %Message{
-      type: :request,
-      method: "ACK",
-      request_uri: request_uri,
-      headers: headers,
-      body: body
-    }
+    # Add any extra headers to other_headers
+    %{ack | other_headers: extra_headers}
   end
 
   defp extract_uri_from_to(to) when is_binary(to) do

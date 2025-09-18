@@ -3,7 +3,7 @@ defmodule ParrotSip.Transaction.ProcessTest do
   
   alias ParrotSip.Transaction
   alias ParrotSip.Message
-  alias ParrotSip.Headers.{Via, CSeq}
+  alias ParrotSip.Headers.{Via, CSeq, From, To}
   
   describe "process_message/1" do
     test "processes a new INVITE request and creates server transaction" do
@@ -11,20 +11,19 @@ defmodule ParrotSip.Transaction.ProcessTest do
         type: :request,
         method: :invite,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "via" => [%Via{
-            protocol: "SIP",
-            version: "2.0",
-            transport: :udp,
-            host: "alice.com",
-            port: 5060,
-            parameters: %{"branch" => "z9hG4bK776asdhds"}
-          }],
-          "from" => ["Alice <sip:alice@alice.com>;tag=1928301774"],
-          "to" => ["Bob <sip:bob@example.com>"],
-          "call-id" => ["a84b4c76e66710@pc33.alice.com"],
-          "cseq" => %CSeq{number: 314159, method: :invite}
-        }
+        via: [%Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "alice.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK776asdhds"}
+        }],
+        from: %From{uri: "sip:alice@alice.com", display_name: "Alice", parameters: %{"tag" => "1928301774"}},
+        to: %To{uri: "sip:bob@example.com", display_name: "Bob", parameters: %{}},
+        call_id: "a84b4c76e66710@pc33.alice.com",
+        cseq: %CSeq{number: 314159, method: :invite},
+        other_headers: %{}
       }
       
       result = Transaction.process_message(invite)
@@ -38,20 +37,19 @@ defmodule ParrotSip.Transaction.ProcessTest do
         type: :request,
         method: :ack,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "via" => [%Via{
-            protocol: "SIP",
-            version: "2.0",
-            transport: :udp,
-            host: "alice.com",
-            port: 5060,
-            parameters: %{"branch" => "z9hG4bK776asdhds"}
-          }],
-          "from" => ["Alice <sip:alice@alice.com>;tag=1928301774"],
-          "to" => ["Bob <sip:bob@example.com>;tag=xyz789"],
-          "call-id" => ["a84b4c76e66710@pc33.alice.com"],
-          "cseq" => %CSeq{number: 314159, method: :ack}
-        }
+        via: [%Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "alice.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK776asdhds"}
+        }],
+        from: %From{uri: "sip:alice@alice.com", display_name: "Alice", parameters: %{"tag" => "1928301774"}},
+        to: %To{uri: "sip:bob@example.com", display_name: "Bob", parameters: %{"tag" => "xyz789"}},
+        call_id: "a84b4c76e66710@pc33.alice.com",
+        cseq: %CSeq{number: 314159, method: :ack},
+        other_headers: %{}
       }
       
       result = Transaction.process_message(ack)

@@ -114,10 +114,8 @@ defmodule ParrotSip.TransactionStatem do
         case sip_msg do
           # Handle in-dialog requests (both From and To have tags)
           %Message{
-            headers: %{
-              "from" => %{parameters: %{"tag" => _from_tag}},
-              "to" => %{parameters: %{"tag" => _to_tag}}
-            }
+            from: %{parameters: %{"tag" => _from_tag}},
+            to: %{parameters: %{"tag" => _to_tag}}
           } = in_dialog_msg ->
             Logger.debug("Processing in-dialog request: #{in_dialog_msg.method}")
             handle_in_dialog_request(in_dialog_msg, handler)
@@ -1025,7 +1023,7 @@ defmodule ParrotSip.TransactionStatem do
   defp generate_cancel_transaction_id(%Message{} = cancel_msg) do
     # CANCEL uses same transaction ID as the INVITE it's cancelling
     # but with INVITE method instead of CANCEL
-    invite_cseq = %{Message.cseq(cancel_msg) | method: :invite}
+    invite_cseq = %{cancel_msg.cseq | method: :invite}
 
     invite_msg = %{
       cancel_msg

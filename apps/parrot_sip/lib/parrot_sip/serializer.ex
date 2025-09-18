@@ -513,8 +513,7 @@ defmodule ParrotSip.Serializer do
   # Ensures the Content-Length header is present and accurate in a message struct
   defp ensure_content_length(%Message{} = message) do
     body_size = if message.body, do: byte_size(message.body), else: 0
-    updated_headers = Map.put(message.headers, "content-length", body_size)
-    %{message | headers: updated_headers}
+    %{message | content_length: body_size}
   end
 
   # Generate a random branch ID for Via headers

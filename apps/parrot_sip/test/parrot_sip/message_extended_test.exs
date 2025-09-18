@@ -10,7 +10,12 @@ defmodule ParrotSip.MessageExtendedTest do
       assert response.status_code == 200
       assert response.reason_phrase == "OK"
       assert response.version == "SIP/2.0"
-      assert response.headers == %{}
+      # No more headers map - check individual fields
+      assert response.via == nil
+      assert response.from == nil
+      assert response.to == nil
+      assert response.call_id == nil
+      assert response.cseq == nil
       assert response.body == ""
       assert response.direction == :outgoing
       assert response.dialog_id == nil
@@ -46,26 +51,36 @@ defmodule ParrotSip.MessageExtendedTest do
       assert resp_486.transaction_id == nil
     end
 
-    test "creates a response with initial headers" do
-      headers = %{"via" => %Via{host: "example.com"}}
-      response = Message.new_response(200, "OK", headers, [])
+    test "creates a response with initial field values" do
+      response = %Message{
+        status_code: 200,
+        reason_phrase: "OK",
+        type: :response,
+        via: %Via{host: "example.com"},
+        dialog_id: nil,
+        transaction_id: nil
+      }
 
       assert response.status_code == 200
       assert response.reason_phrase == "OK"
-      assert response.headers == headers
+      assert response.via.host == "example.com"
       assert response.dialog_id == nil
       assert response.transaction_id == nil
     end
 
-    test "creates a response with initial headers and ids" do
-      headers = %{"via" => %Via{host: "example.com"}}
-
-      response =
-        Message.new_response(200, "OK", headers, dialog_id: "dlg999", transaction_id: "txn888")
+    test "creates a response with initial field values and ids" do
+      response = %Message{
+        status_code: 200,
+        reason_phrase: "OK",
+        type: :response,
+        via: %Via{host: "example.com"},
+        dialog_id: "dlg999",
+        transaction_id: "txn888"
+      }
 
       assert response.status_code == 200
       assert response.reason_phrase == "OK"
-      assert response.headers == headers
+      assert response.via.host == "example.com"
       assert response.dialog_id == "dlg999"
       assert response.transaction_id == "txn888"
     end
@@ -73,30 +88,34 @@ defmodule ParrotSip.MessageExtendedTest do
 
   describe "reply/2" do
     test "creates a response from a request with standard reason phrase" do
-      request =
-        Message.new_request(:invite, "sip:bob@example.com", %{},
-          dialog_id: "dlg-req",
-          transaction_id: "txn-req"
-        )
-        |> Message.set_header("from", %From{
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        type: :request,
+        dialog_id: "dlg-req",
+        transaction_id: "txn-req",
+        from: %From{
           uri: "sip:alice@example.com",
           parameters: %{"tag" => "123"}
-        })
-        |> Message.set_header("to", %To{uri: "sip:bob@example.com"})
-        |> Message.set_header("call-id", "abc123@example.com")
-        |> Message.set_header("via", %Via{host: "example.com"})
-        |> Message.set_header("cseq", %CSeq{number: 1, method: :invite})
+        },
+        to: %To{uri: "sip:bob@example.com"},
+        call_id: "abc123@example.com",
+        via: %Via{host: "example.com"},
+        cseq: %CSeq{number: 1, method: :invite},
+        version: "SIP/2.0"
+      }
 
       response = Message.reply(request, 200)
 
       assert response.status_code == 200
       assert response.reason_phrase == "OK"
       assert response.version == request.version
-      assert response.headers["via"] == request.headers["via"]
-      assert response.headers["from"] == request.headers["from"]
-      assert response.headers["to"] == request.headers["to"]
-      assert response.headers["call-id"] == request.headers["call-id"]
-      assert response.headers["cseq"] == request.headers["cseq"]
+      # Headers are now copied as struct fields
+      assert response.via == request.via
+      assert response.from == request.from
+      assert response.to == request.to
+      assert response.call_id == request.call_id
+      assert response.cseq == request.cseq
       assert response.direction == :outgoing
 
       # reply/2 propagates dialog_id/transaction_id from the request

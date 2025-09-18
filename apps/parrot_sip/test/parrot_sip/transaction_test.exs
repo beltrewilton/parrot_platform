@@ -344,39 +344,38 @@ defmodule ParrotSip.TransactionTest do
     %Message{
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
-      direction: :request,
+      type: :request,
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Headers.Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKnashds8"}
-        },
-        "from" => %Headers.From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        "to" => %Headers.To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{}
-        },
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => %Headers.CSeq{
-          number: 314_159,
-          method: :invite
-        },
-        "contact" => %Headers.Contact{
-          display_name: nil,
-          uri: "sip:alice@pc33.atlanta.com",
-          parameters: %{}
-        }
+      via: %Headers.Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "pc33.atlanta.com",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKnashds8"}
       },
-      body: ""
+      from: %Headers.From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %Headers.To{
+        display_name: "Bob",
+        uri: "sip:bob@biloxi.com",
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %Headers.CSeq{
+        number: 314_159,
+        method: :invite
+      },
+      contact: %Headers.Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      body: "",
+      other_headers: %{}
     }
   end
 
@@ -384,39 +383,38 @@ defmodule ParrotSip.TransactionTest do
     %Message{
       method: :register,
       request_uri: "sip:registrar.biloxi.com",
-      direction: :request,
+      type: :request,
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Headers.Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKnashds8"}
-        },
-        "from" => %Headers.From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        "to" => %Headers.To{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{}
-        },
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => %Headers.CSeq{
-          number: 314_159,
-          method: :register
-        },
-        "contact" => %Headers.Contact{
-          display_name: nil,
-          uri: "sip:alice@pc33.atlanta.com",
-          parameters: %{}
-        }
+      via: %Headers.Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "pc33.atlanta.com",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKnashds8"}
       },
-      body: ""
+      from: %Headers.From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %Headers.To{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %Headers.CSeq{
+        number: 314_159,
+        method: :register
+      },
+      contact: %Headers.Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      body: "",
+      other_headers: %{}
     }
   end
 
@@ -424,15 +422,12 @@ defmodule ParrotSip.TransactionTest do
     %{
       original_request
       | method: :ack,
-        headers:
-          Map.update!(original_request.headers, "cseq", fn cseq ->
-            %{cseq | method: :ack}
-          end)
+        cseq: %{original_request.cseq | method: :ack}
     }
   end
 
   defp create_response(request, status_code, reason) do
-    to = request.headers["to"]
+    to = request.to
 
     to_with_tag =
       if Map.has_key?(to.parameters, "tag") do
@@ -444,21 +439,20 @@ defmodule ParrotSip.TransactionTest do
     %Message{
       status_code: status_code,
       reason_phrase: reason,
-      direction: :response,
+      type: :response,
       version: "SIP/2.0",
-      headers: %{
-        "via" => request.headers["via"],
-        "from" => request.headers["from"],
-        "to" => to_with_tag,
-        "call-id" => request.headers["call-id"],
-        "cseq" => request.headers["cseq"],
-        "contact" => %Headers.Contact{
-          display_name: nil,
-          uri: "sip:bob@192.0.2.4",
-          parameters: %{}
-        }
+      via: request.via,
+      from: request.from,
+      to: to_with_tag,
+      call_id: request.call_id,
+      cseq: request.cseq,
+      contact: %Headers.Contact{
+        display_name: nil,
+        uri: "sip:bob@192.0.2.4",
+        parameters: %{}
       },
-      body: ""
+      body: "",
+      other_headers: %{}
     }
   end
 end

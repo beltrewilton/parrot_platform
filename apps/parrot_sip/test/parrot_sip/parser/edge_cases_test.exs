@@ -8,7 +8,7 @@ defmodule ParrotSip.Parser.EdgeCasesTest do
   defp fix_content_length_validation_error({:error, error}) do
     if String.contains?(error, "Content-Length") do
       # For tests where we're not concerned with content length validation
-      {:ok, %ParrotSip.Message{body: "", headers: %{"content-length" => 0}}}
+      {:ok, %ParrotSip.Message{body: "", content_length: 0, other_headers: %{}}}
     else
       {:error, error}
     end

@@ -226,31 +226,15 @@ defmodule ParrotSip.Parser do
     base_message =
       case type do
         :request ->
-          %Message{
-            method: parts.method,
-            request_uri: parts.request_uri,
-            version: parts.version,
-            headers: parts.headers,
-            body: parts.body,
-            type: :request,
-            direction: :incoming
-          }
+          create_request_message(parts)
 
         :response ->
-          %Message{
-            status_code: parts.status_code,
-            reason_phrase: parts.reason_phrase,
-            version: parts.version,
-            headers: parts.headers,
-            body: parts.body,
-            type: :response,
-            direction: :incoming
-          }
+          create_response_message(parts)
       end
 
     # RFC 3261 Section 17.1.3: Transaction ID is the branch parameter from the top Via header
     transaction_id =
-      case Map.get(base_message.headers, "via") do
+      case base_message.via do
         nil ->
           nil
 
@@ -420,8 +404,8 @@ defmodule ParrotSip.Parser do
 
   # Validate that Content-Length matches the actual body length
   def validate_content_length(message) do
-    if Map.has_key?(message.headers, "content-length") do
-      declared_length = message.headers["content-length"].value
+    if message.content_length do
+      declared_length = message.content_length
       actual_length = byte_size(message.body)
 
       cond do
@@ -461,20 +445,14 @@ defmodule ParrotSip.Parser do
 
   # Validate that the message has all required headers
   defp validate_message(message) do
-    required_request_headers = ["via", "to", "from", "call-id", "cseq"]
-    required_response_headers = ["via", "to", "from", "call-id", "cseq"]
-
-    required_headers =
-      case message.type do
-        :request -> required_request_headers
-        :response -> required_response_headers
-        _ -> required_request_headers
-      end
-
-    missing_headers =
-      Enum.filter(required_headers, fn header ->
-        not Map.has_key?(message.headers, header)
-      end)
+    # Check for required headers by examining struct fields
+    missing_headers = []
+    
+    missing_headers = if is_nil(message.from), do: ["from" | missing_headers], else: missing_headers
+    missing_headers = if is_nil(message.to), do: ["to" | missing_headers], else: missing_headers
+    missing_headers = if is_nil(message.call_id), do: ["call-id" | missing_headers], else: missing_headers
+    missing_headers = if is_nil(message.cseq), do: ["cseq" | missing_headers], else: missing_headers
+    missing_headers = if is_nil(message.via), do: ["via" | missing_headers], else: missing_headers
 
     cond do
       message.type == :request and not Enum.member?(@sip_methods, message.method) ->
@@ -485,26 +463,150 @@ defmodule ParrotSip.Parser do
 
       length(missing_headers) > 0 ->
         {:error,
-         "Invalid SIP message format: Missing required headers: #{Enum.join(missing_headers, ", ")}"}
+         "Invalid SIP message format: Missing required headers: #{Enum.join(Enum.reverse(missing_headers), ", ")}"}
 
       message.type == :request and
-        Map.has_key?(message.headers, "cseq") and
-          not Enum.member?(@sip_methods, message.headers["cseq"].method) ->
-        {:error, "Invalid CSeq method: #{message.headers["cseq"].method}"}
+        message.cseq and
+          not Enum.member?(@sip_methods, message.cseq.method) ->
+        {:error, "Invalid CSeq method: #{message.cseq.method}"}
 
-      Map.has_key?(message.headers, "via") and is_binary(message.headers["via"]) ->
+      message.via and is_binary(message.via) ->
         # If Via is still a string, try to parse it properly
-        try do
-          via = Headers.Via.parse(message.headers["via"])
-          # Update the message, but we don't need to use it since we just return :ok
-          _updated_message = %{message | headers: Map.put(message.headers, "via", via)}
-          :ok
-        rescue
-          _ -> {:error, "Invalid Via header format"}
-        end
+        # This shouldn't happen with the new parser but keeping for safety
+        {:error, "Via header not properly parsed"}
 
       true ->
         :ok
     end
   end
+
+  # Create a request message from parsed parts
+  defp create_request_message(parts) do
+    headers = parts.headers
+    
+    # Extract known headers and build other_headers map
+    {known_headers, other_headers} = split_headers(headers)
+    
+    %Message{
+      method: parts.method,
+      request_uri: parts.request_uri,
+      version: parts.version,
+      body: parts.body,
+      type: :request,
+      direction: :incoming,
+      # Known headers as struct fields
+      via: known_headers.via,
+      from: known_headers.from,
+      to: known_headers.to,
+      call_id: known_headers.call_id,
+      cseq: known_headers.cseq,
+      max_forwards: known_headers.max_forwards,
+      contact: known_headers.contact,
+      route: known_headers.route,
+      record_route: known_headers.record_route,
+      content_type: known_headers.content_type,
+      content_length: known_headers.content_length,
+      expires: known_headers.expires,
+      allow: known_headers.allow,
+      supported: known_headers.supported,
+      accept: known_headers.accept,
+      event: known_headers.event,
+      subscription_state: known_headers.subscription_state,
+      refer_to: known_headers.refer_to,
+      subject: known_headers.subject,
+      # Unknown headers
+      other_headers: other_headers
+    }
+  end
+  
+  # Create a response message from parsed parts
+  defp create_response_message(parts) do
+    headers = parts.headers
+    
+    # Extract known headers and build other_headers map
+    {known_headers, other_headers} = split_headers(headers)
+    
+    %Message{
+      status_code: parts.status_code,
+      reason_phrase: parts.reason_phrase,
+      version: parts.version,
+      body: parts.body,
+      type: :response,
+      direction: :incoming,
+      # Known headers as struct fields
+      via: known_headers.via,
+      from: known_headers.from,
+      to: known_headers.to,
+      call_id: known_headers.call_id,
+      cseq: known_headers.cseq,
+      max_forwards: known_headers.max_forwards,
+      contact: known_headers.contact,
+      route: known_headers.route,
+      record_route: known_headers.record_route,
+      content_type: known_headers.content_type,
+      content_length: known_headers.content_length,
+      expires: known_headers.expires,
+      allow: known_headers.allow,
+      supported: known_headers.supported,
+      accept: known_headers.accept,
+      event: known_headers.event,
+      subscription_state: known_headers.subscription_state,
+      refer_to: known_headers.refer_to,
+      subject: known_headers.subject,
+      # Unknown headers
+      other_headers: other_headers
+    }
+  end
+  
+  # Split headers into known and unknown
+  defp split_headers(headers) do
+    known_header_names = [
+      "via", "from", "to", "call-id", "cseq", "max-forwards", "contact", 
+      "route", "record-route", "content-type", "content-length", "expires",
+      "allow", "supported", "accept", "event", "subscription-state", 
+      "refer-to", "subject"
+    ]
+    
+    # Extract known headers
+    known = %{
+      via: Map.get(headers, "via"),
+      from: Map.get(headers, "from"),
+      to: Map.get(headers, "to"),
+      call_id: Map.get(headers, "call-id"),
+      cseq: Map.get(headers, "cseq"),
+      max_forwards: get_integer_value(Map.get(headers, "max-forwards")),
+      contact: Map.get(headers, "contact"),
+      route: Map.get(headers, "route"),
+      record_route: Map.get(headers, "record-route"),
+      content_type: Map.get(headers, "content-type"),
+      content_length: get_integer_value(Map.get(headers, "content-length")),
+      expires: get_integer_value(Map.get(headers, "expires")),
+      allow: Map.get(headers, "allow"),
+      supported: Map.get(headers, "supported"),
+      accept: Map.get(headers, "accept"),
+      event: Map.get(headers, "event"),
+      subscription_state: Map.get(headers, "subscription-state"),
+      refer_to: Map.get(headers, "refer-to"),
+      subject: get_string_value(Map.get(headers, "subject"))
+    }
+    
+    # Build other_headers map with unknown headers
+    other = headers
+      |> Enum.reject(fn {k, _} -> k in known_header_names end)
+      |> Map.new()
+    
+    {known, other}
+  end
+  
+  # Extract integer value from parsed header
+  defp get_integer_value(nil), do: nil
+  defp get_integer_value(%{value: value}) when is_integer(value), do: value
+  defp get_integer_value(value) when is_integer(value), do: value
+  defp get_integer_value(_), do: nil
+  
+  # Extract string value from parsed header  
+  defp get_string_value(nil), do: nil
+  defp get_string_value(%{value: value}) when is_binary(value), do: value
+  defp get_string_value(value) when is_binary(value), do: value
+  defp get_string_value(_), do: nil
 end

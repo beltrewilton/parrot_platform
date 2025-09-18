@@ -96,7 +96,7 @@ defmodule ParrotSip.UAS do
     response = Message.reply(req_sip_msg, code, reason_phrase)
 
     # For dialog-creating responses (2xx to INVITE/SUBSCRIBE), add a To tag if not present
-    case {response.headers["to"], code, req_sip_msg.method} do
+    case {response.to, code, req_sip_msg.method} do
       {%{parameters: params} = to_header, status_code, method}
       when status_code >= 200 and status_code < 300 and
              method in [:invite, :subscribe] ->
@@ -107,7 +107,7 @@ defmodule ParrotSip.UAS do
           # Generate and add To tag for dialog-creating responses
           tag = generate_tag()
           updated_to = %{to_header | parameters: Map.put(params, "tag", tag)}
-          %{response | headers: Map.put(response.headers, "to", updated_to)}
+          %{response | to: updated_to}
         end
 
       _ ->
@@ -150,10 +150,10 @@ defmodule ParrotSip.UAS do
   # Create 405 Method Not Allowed response
   @spec make_method_not_allowed_response(Message.t(), [atom()]) :: Message.t()
   defp make_method_not_allowed_response(req_msg, allowed_methods) do
-    allow_header = Enum.map(allowed_methods, &to_string/1) |> Enum.join(", ")
+    allow_header = Enum.map(allowed_methods, &to_string/1)
 
     response = Message.reply(req_msg, 405, "Method Not Allowed")
-    %{response | headers: Map.put(response.headers, "allow", allow_header)}
+    %{response | allow: allow_header}
   end
 
   @spec do_process(

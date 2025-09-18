@@ -111,7 +111,7 @@ defmodule ParrotSip.Transaction do
   defp get_cseq_method(message) do
     cond do
       is_map(message) && Map.get(message, :headers, %{})["cseq"] ->
-        cseq = message.headers["cseq"]
+        cseq = message.cseq
         if is_map(cseq), do: cseq.method, else: :unknown
 
       true ->
@@ -149,14 +149,21 @@ defmodule ParrotSip.Transaction do
     end
   end
 
-  # Temporary helper function until Message.has_header? is implemented
+  # Helper function to check if a message has a header
   defp has_header?(message, header_name) do
-    cond do
-      is_map(message) && Map.has_key?(message, :headers) ->
-        Map.has_key?(message.headers, header_name)
-
-      true ->
-        false
+    downcased = String.downcase(header_name)
+    
+    case downcased do
+      "via" -> not is_nil(message.via)
+      "from" -> not is_nil(message.from)
+      "to" -> not is_nil(message.to)
+      "call-id" -> not is_nil(message.call_id)
+      "cseq" -> not is_nil(message.cseq)
+      "contact" -> not is_nil(message.contact)
+      "max-forwards" -> not is_nil(message.max_forwards)
+      "content-length" -> not is_nil(message.content_length)
+      "content-type" -> not is_nil(message.content_type)
+      _ -> Map.has_key?(message.other_headers || %{}, downcased)
     end
   end
 
@@ -293,7 +300,7 @@ defmodule ParrotSip.Transaction do
     # Extract transaction ID from Via branch
     case get_branch_from_response(response) do
       {:ok, branch} ->
-        cseq_method = Message.cseq_method(response)
+        cseq_method = if response.cseq, do: response.cseq.method, else: nil
         transaction_id = "#{branch}_#{cseq_method}"
         
         case lookup_transaction(transaction_id) do
@@ -344,7 +351,7 @@ defmodule ParrotSip.Transaction do
   end
   
   defp get_branch_from_response(response) do
-    case Map.get(response.headers, "via") do
+    case response.via do
       [via | _] ->
         # Parse Via header to get branch
         if String.contains?(via, "branch=") do
@@ -605,8 +612,8 @@ defmodule ParrotSip.Transaction do
     case type do
       :invite_client -> "#{branch}:invite:client"
       :non_invite_client -> "#{branch}:#{request.method}:client"
-      :invite_server -> "#{branch}:#{request.method}:#{request.headers["cseq"].number}"
-      :non_invite_server -> "#{branch}:#{request.method}:#{request.headers["cseq"].number}"
+      :invite_server -> "#{branch}:#{request.method}:#{request.cseq.number}"
+      :non_invite_server -> "#{branch}:#{request.method}:#{request.cseq.number}"
     end
   end
 
@@ -895,7 +902,7 @@ defmodule ParrotSip.Transaction do
   def matches_response?(transaction, response) do
     # Extract the top Via header from the response
     via =
-      case response.headers["via"] do
+      case response.via do
         %Headers.Via{} = via -> via
         [via | _] when is_struct(via, Headers.Via) -> via
         _ -> nil
@@ -909,7 +916,7 @@ defmodule ParrotSip.Transaction do
 
       # Match based on branch, method, and CSeq
       response_branch == transaction.branch &&
-        response.headers["cseq"].method == transaction.method &&
+        response.cseq && response.cseq.method == transaction.method &&
         is_client_transaction?(transaction)
     end
   end
@@ -930,7 +937,7 @@ defmodule ParrotSip.Transaction do
   def matches_request?(transaction, request) do
     # Extract the top Via header from the request
     via =
-      case request.headers["via"] do
+      case request.via do
         %Headers.Via{} = via -> via
         [via | _] when is_struct(via, Headers.Via) -> via
         _ -> nil
@@ -1044,7 +1051,7 @@ defmodule ParrotSip.Transaction do
   # Get the branch parameter from a request's Via header
   defp get_branch(request) do
     via =
-      case request.headers["via"] do
+      case request.via do
         %Headers.Via{} = via -> via
         [via | _] when is_struct(via, Headers.Via) -> via
         _ -> raise ArgumentError, "Request must have a Via header"

@@ -30,8 +30,6 @@ defmodule ParrotSip.Message do
     :reason_phrase,
     # String, typically "SIP/2.0"
     :version,
-    # Map of header name to header struct
-    :headers,
     # Binary string
     :body,
     # Source information for transport
@@ -43,7 +41,33 @@ defmodule ParrotSip.Message do
     # transaction_id
     :transaction_id,
     # dialog_id
-    :dialog_id
+    :dialog_id,
+    
+    # Core headers as struct fields (RFC 3261 mandatory/common)
+    :via,           # Via.t() | [Via.t()]
+    :from,          # From.t()
+    :to,            # To.t()
+    :call_id,       # String.t() | CallId.t()
+    :cseq,          # CSeq.t()
+    :max_forwards,  # integer()
+    :contact,       # Contact.t() | [Contact.t()] | nil
+    :route,         # [Route.t()] | nil
+    :record_route,  # [RecordRoute.t()] | nil
+    
+    # Common optional headers
+    :content_type,   # ContentType.t() | nil
+    :content_length, # integer()
+    :expires,        # integer() | nil
+    :allow,          # [String.t()] | nil
+    :supported,      # [String.t()] | nil
+    :accept,         # Accept.t() | nil
+    :event,          # Event.t() | nil
+    :subscription_state, # SubscriptionState.t() | nil
+    :refer_to,       # ReferTo.t() | nil
+    :subject,        # String.t() | nil
+    
+    # Catch-all for unknown/extension headers
+    :other_headers   # map() - for headers we don't have parsers for
   ]
 
   @type t :: %__MODULE__{
@@ -52,13 +76,34 @@ defmodule ParrotSip.Message do
           status_code: integer() | nil,
           reason_phrase: String.t() | nil,
           version: String.t(),
-          headers: map(),
           body: String.t(),
           source: map() | nil,
           type: :request | :response | nil,
           direction: :incoming | :outgoing | nil,
           transaction_id: String.t() | nil,
-          dialog_id: String.t() | nil
+          dialog_id: String.t() | nil,
+          
+          # Header fields
+          via: Via.t() | [Via.t()] | nil,
+          from: From.t() | nil,
+          to: To.t() | nil,
+          call_id: String.t() | CallId.t() | nil,
+          cseq: CSeq.t() | nil,
+          max_forwards: integer() | nil,
+          contact: Contact.t() | [Contact.t()] | nil,
+          route: [ParrotSip.Headers.Route.t()] | nil,
+          record_route: [ParrotSip.Headers.RecordRoute.t()] | nil,
+          content_type: ParrotSip.Headers.ContentType.t() | nil,
+          content_length: integer() | nil,
+          expires: integer() | nil,
+          allow: [String.t()] | nil,
+          supported: [String.t()] | nil,
+          accept: ParrotSip.Headers.Accept.t() | nil,
+          event: ParrotSip.Headers.Event.t() | nil,
+          subscription_state: ParrotSip.Headers.SubscriptionState.t() | nil,
+          refer_to: ParrotSip.Headers.ReferTo.t() | nil,
+          subject: String.t() | nil,
+          other_headers: map()
         }
 
   @default_reason_phrases %{
@@ -168,18 +213,18 @@ defmodule ParrotSip.Message do
         direction: :outgoing
       }
   """
-  @spec new_request(Method.t(), String.t(), map(), keyword()) :: t()
-  def new_request(method, request_uri, headers \\ %{}, opts \\ []) do
+  @spec new_request(Method.t(), String.t(), keyword()) :: t()
+  def new_request(method, request_uri, opts \\ []) do
     %__MODULE__{
       method: method,
       request_uri: request_uri,
       version: "SIP/2.0",
-      headers: headers,
       body: "",
       type: :request,
       direction: :outgoing,
       dialog_id: Keyword.get(opts, :dialog_id, nil),
-      transaction_id: Keyword.get(opts, :transaction_id, nil)
+      transaction_id: Keyword.get(opts, :transaction_id, nil),
+      other_headers: %{}
     }
   end
 
@@ -204,18 +249,18 @@ defmodule ParrotSip.Message do
         direction: :outgoing
       }
   """
-  @spec new_response(integer(), String.t(), map(), keyword()) :: t()
-  def new_response(status_code, reason_phrase, headers, opts) do
+  @spec new_response(integer(), String.t(), keyword()) :: t()
+  def new_response(status_code, reason_phrase, opts) do
     %__MODULE__{
       status_code: status_code,
       reason_phrase: reason_phrase,
       version: "SIP/2.0",
-      headers: headers,
       body: "",
       type: :response,
       direction: :outgoing,
       dialog_id: Keyword.get(opts, :dialog_id, nil),
-      transaction_id: Keyword.get(opts, :transaction_id, nil)
+      transaction_id: Keyword.get(opts, :transaction_id, nil),
+      other_headers: %{}
     }
   end
 
@@ -240,23 +285,18 @@ defmodule ParrotSip.Message do
   @spec new_response(integer()) :: t()
   def new_response(status_code) do
     reason_phrase = Map.get(@default_reason_phrases, status_code, "Unknown")
-    new_response(status_code, reason_phrase, %{}, [])
+    new_response(status_code, reason_phrase, [])
   end
 
   @spec new_response(integer(), String.t()) :: t()
   def new_response(status_code, reason_phrase) when is_binary(reason_phrase) do
-    new_response(status_code, reason_phrase, %{}, [])
+    new_response(status_code, reason_phrase, [])
   end
 
   @spec new_response(integer(), keyword()) :: t()
   def new_response(status_code, opts) when is_list(opts) do
     reason_phrase = Map.get(@default_reason_phrases, status_code, "Unknown")
-    new_response(status_code, reason_phrase, %{}, opts)
-  end
-
-  @spec new_response(integer(), String.t(), map()) :: t()
-  def new_response(status_code, reason_phrase, headers) do
-    new_response(status_code, reason_phrase, headers, [])
+    new_response(status_code, reason_phrase, opts)
   end
 
   @doc """
@@ -280,31 +320,28 @@ defmodule ParrotSip.Message do
   """
   @spec reply(t(), integer(), String.t()) :: t()
   def reply(request, status_code, reason_phrase) when request.type == :request do
-    # Copy headers from request to response with proper manipulation
-    resp_headers = %{}
-    # Add via headers from request
-    resp_headers = Map.put(resp_headers, "via", request.headers["via"])
-    # Add to/from headers
-    resp_headers = Map.put(resp_headers, "to", request.headers["to"])
-    resp_headers = Map.put(resp_headers, "from", request.headers["from"])
-    # Add call-id
-    resp_headers = Map.put(resp_headers, "call-id", request.headers["call-id"])
-    # Add CSeq
-    resp_headers = Map.put(resp_headers, "cseq", request.headers["cseq"])
-
     %__MODULE__{
       method: request.method,
       request_uri: request.request_uri,
       status_code: status_code,
       reason_phrase: reason_phrase,
       version: request.version,
-      headers: resp_headers,
       body: Map.get(request, :body, ""),
       source: request.source,
       type: :response,
       direction: :outgoing,
       dialog_id: Map.get(request, :dialog_id),
-      transaction_id: Map.get(request, :transaction_id)
+      transaction_id: Map.get(request, :transaction_id),
+      # Copy header fields from request
+      via: request.via,
+      from: request.from,
+      to: request.to,
+      call_id: request.call_id,
+      cseq: request.cseq,
+      contact: request.contact,
+      route: request.route,
+      record_route: request.record_route,
+      other_headers: Map.get(request, :other_headers, %{})
     }
   end
 
@@ -325,159 +362,67 @@ defmodule ParrotSip.Message do
   end
 
   @doc """
-  Gets a header from the message by name.
-
-  Header names are case-insensitive as per RFC 3261.
-  If the header is a map, it will be converted to the appropriate struct.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> message = ParrotSip.Message.set_header(message, "Via", %{protocol: "SIP", version: "2.0", transport: "udp"})
-      iex> ParrotSip.Message.get_header(message, "via")
-      %ParrotSip.Headers.Via{protocol: "SIP", version: "2.0", transport: :udp}
+  Sets a header in other_headers map for unknown/extension headers.
+  For known headers, use the specific put_* functions instead.
   """
+  @spec put_header(t(), String.t(), any()) :: t()
+  def put_header(%__MODULE__{} = message, name, value) do
+    downcased = String.downcase(name)
+    other_headers = Map.put(message.other_headers || %{}, downcased, value)
+    %{message | other_headers: other_headers}
+  end
+  
   @spec get_header(t(), String.t()) :: any()
-  # Get Via header using direct pattern matching
-  def get_header(message, "Via"), do: get_via_header(message)
-  def get_header(message, "via"), do: get_via_header(message)
-  def get_header(message, "v"), do: get_via_header(message)
-
-  # Regular get_header function for other headers
-  def get_header(message, name) do
-    downcased = String.downcase(name)
-
-    # Resolve compact headers to their full forms using the Serializer's function
-    full_name = ParrotSip.Serializer.expand_compact_header(downcased)
-
-    # Get the value
-    value = Map.get(message.headers, full_name)
-
-    # Return nil if not found
-    if is_nil(value) do
-      nil
-    else
-      # Special case for content-type when accessed directly
-      if full_name == "content-type" && is_struct(value, ParrotSip.Headers.ContentType) &&
-           downcased == "content-type" do
-        ParrotSip.Headers.ContentType.format(value)
-      else
-        # Return the value as-is (it should already be a proper struct or primitive value)
-        value
-      end
-    end
+  def get_header(%__MODULE__{} = message, name) do
+    Map.get(message.other_headers || %{}, String.downcase(name))
   end
+  
+  # New setter functions for pattern matching convenience
+  @spec put_via(t(), Via.t() | [Via.t()]) :: t()
+  def put_via(%__MODULE__{} = msg, via), do: %{msg | via: via}
+  
+  @spec put_from(t(), From.t()) :: t()
+  def put_from(%__MODULE__{} = msg, from), do: %{msg | from: from}
+  
+  @spec put_to(t(), To.t()) :: t()
+  def put_to(%__MODULE__{} = msg, to), do: %{msg | to: to}
+  
+  @spec put_call_id(t(), String.t() | CallId.t()) :: t()
+  def put_call_id(%__MODULE__{} = msg, call_id), do: %{msg | call_id: call_id}
+  
+  @spec put_cseq(t(), CSeq.t()) :: t()
+  def put_cseq(%__MODULE__{} = msg, cseq), do: %{msg | cseq: cseq}
+  
+  @spec put_contact(t(), Contact.t() | [Contact.t()] | nil) :: t()
+  def put_contact(%__MODULE__{} = msg, contact), do: %{msg | contact: contact}
+  
+  @spec put_max_forwards(t(), integer()) :: t()
+  def put_max_forwards(%__MODULE__{} = msg, max_forwards), do: %{msg | max_forwards: max_forwards}
+  
+  @spec put_route(t(), [ParrotSip.Headers.Route.t()]) :: t()
+  def put_route(%__MODULE__{} = msg, route), do: %{msg | route: route}
+  
+  @spec put_record_route(t(), [ParrotSip.Headers.RecordRoute.t()]) :: t()
+  def put_record_route(%__MODULE__{} = msg, record_route), do: %{msg | record_route: record_route}
+  
+  @spec put_content_type(t(), ParrotSip.Headers.ContentType.t()) :: t()
+  def put_content_type(%__MODULE__{} = msg, content_type), do: %{msg | content_type: content_type}
+  
+  @spec put_expires(t(), integer()) :: t()
+  def put_expires(%__MODULE__{} = msg, expires), do: %{msg | expires: expires}
+  
+  # Helper to add to list headers (Via, Route, Record-Route)
+  @spec add_via(t(), Via.t()) :: t()
+  def add_via(%__MODULE__{via: nil} = msg, via), do: %{msg | via: via}
+  def add_via(%__MODULE__{via: vias} = msg, via) when is_list(vias), 
+    do: %{msg | via: [via | vias]}
+  def add_via(%__MODULE__{via: existing} = msg, via), 
+    do: %{msg | via: [via, existing]}
 
   @doc """
-  Gets all headers of a given name. Returns a list, even if only one header is present.
+  Sets the body of the message and updates the content_length field.
 
-  Useful for headers that can appear multiple times like Record-Route or Via.
-  """
-  @spec get_headers(t(), String.t()) :: [any()]
-  def get_headers(message, name) do
-    downcased = String.downcase(name)
-    full_name = ParrotSip.Serializer.expand_compact_header(downcased)
-
-    values = Map.get(message.headers, full_name)
-
-    cond do
-      is_nil(values) ->
-        []
-
-      is_list(values) ->
-        Enum.map(values, fn
-          v when is_struct(v) ->
-            v
-
-          v when is_map(v) ->
-            struct_for_header(full_name, v)
-
-          v ->
-            v
-        end)
-
-      true ->
-        [get_header(message, name)]
-    end
-  end
-
-  # Extracted helper
-  # Headers are now parsed as structs during the initial parsing process,
-  # so this function is no longer needed. However, we keep it for backward compatibility
-  # with any code that might still rely on it.
-  defp struct_for_header("record-route", v) when is_map(v) and not is_struct(v),
-    do: struct(ParrotSip.Headers.RecordRoute, v)
-
-  defp struct_for_header("route", v) when is_map(v) and not is_struct(v),
-    do: struct(ParrotSip.Headers.Route, v)
-
-  defp struct_for_header("via", v) when is_map(v) and not is_struct(v),
-    do: struct(ParrotSip.Headers.Via, v)
-
-  defp struct_for_header("contact", v) when is_map(v) and not is_struct(v),
-    do: struct(ParrotSip.Headers.Contact, v)
-
-  defp struct_for_header(_, v), do: v
-
-  # Helper function to handle Via header logic
-  defp get_via_header(message) do
-    value = Map.get(message.headers, "via")
-
-    cond do
-      is_nil(value) ->
-        nil
-
-      is_struct(value) ->
-        value
-
-      is_binary(value) ->
-        ParrotSip.Headers.Via.parse(value)
-
-      is_list(value) && Enum.all?(value, &is_binary/1) ->
-        Enum.map(value, &ParrotSip.Headers.Via.parse/1)
-
-      is_list(value) && Enum.all?(value, &is_struct/1) ->
-        Enum.map(value, fn via_struct ->
-          if is_struct(via_struct, ParrotSip.Headers.Via) do
-            via_struct
-          else
-            struct(ParrotSip.Headers.Via, via_struct)
-          end
-        end)
-
-      is_list(value) ->
-        Enum.map(value, fn via ->
-          struct(ParrotSip.Headers.Via, via)
-        end)
-
-      true ->
-        struct(ParrotSip.Headers.Via, value)
-    end
-  end
-
-  @doc """
-  Sets a header in the message.
-
-  Header names are converted to lowercase for consistent storage and retrieval.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> from_header = %ParrotSip.Headers.From{}
-      iex> message = ParrotSip.Message.set_header(message, "From", from_header)
-      iex> message.headers["from"] == from_header
-      true
-  """
-  @spec set_header(t(), String.t(), any()) :: t()
-  def set_header(message, name, value) do
-    downcased = String.downcase(name)
-    %{message | headers: Map.put(message.headers, downcased, value)}
-  end
-
-  @doc """
-  Sets the body of the message and updates the Content-Length header.
-
-  This function automatically calculates and sets the Content-Length header
+  This function automatically calculates and sets the content_length field
   based on the body's length.
 
   ## Examples
@@ -486,13 +431,12 @@ defmodule ParrotSip.Message do
       iex> message = ParrotSip.Message.set_body(message, "Hello, world!")
       iex> message.body
       "Hello, world!"
-      iex> message.headers["content-length"]
+      iex> message.content_length
       13
   """
   @spec set_body(t(), String.t()) :: t()
   def set_body(message, body) do
-    headers = Map.put(message.headers, "content-length", byte_size(body))
-    %{message | body: body, headers: headers}
+    %{message | body: body, content_length: byte_size(body)}
   end
 
   @doc """
@@ -519,7 +463,7 @@ defmodule ParrotSip.Message do
         "#{message.version} #{message.status_code} #{message.reason_phrase}\r\n"
       end
 
-    headers_str = headers_to_string(message.headers)
+    headers_str = headers_to_string(message)
 
     start_line <> headers_str <> "\r\n" <> (message.body || "")
   end
@@ -528,38 +472,41 @@ defmodule ParrotSip.Message do
     Method.to_string(method)
   end
 
-  defp headers_to_string(headers) do
+  defp headers_to_string(message) do
     # RFC 3261 Section 7.3.1: Header Field Order
-    # Via headers must appear before all other headers
-    # Then: Route, Record-Route, Proxy-Require, Max-Forwards, 
-    # Proxy-Authorization, To, From, Contact, etc.
-
-    # Define header order priority (lower number = higher priority)
-    header_order = %{
-      "via" => 1,
-      "route" => 2,
-      "record-route" => 3,
-      "max-forwards" => 4,
-      "proxy-require" => 5,
-      "proxy-authorization" => 6,
-      "from" => 7,
-      "to" => 8,
-      "call-id" => 9,
-      "cseq" => 10,
-      "contact" => 11,
-      "expires" => 12,
-      "content-type" => 13,
-      "content-length" => 14
-    }
-
-    # Default priority for headers not in the list
-    default_priority = 100
-
+    # Build headers in correct order from struct fields
+    headers = []
+    
+    # Via must be first
+    headers = if message.via, do: headers ++ [{"Via", message.via}], else: headers
+    
+    # Then other headers in order
+    headers = if message.route, do: headers ++ [{"Route", message.route}], else: headers
+    headers = if message.record_route, do: headers ++ [{"Record-Route", message.record_route}], else: headers
+    headers = if message.max_forwards, do: headers ++ [{"Max-Forwards", message.max_forwards}], else: headers
+    headers = if message.from, do: headers ++ [{"From", message.from}], else: headers
+    headers = if message.to, do: headers ++ [{"To", message.to}], else: headers
+    headers = if message.call_id, do: headers ++ [{"Call-Id", message.call_id}], else: headers
+    headers = if message.cseq, do: headers ++ [{"Cseq", message.cseq}], else: headers
+    headers = if message.contact, do: headers ++ [{"Contact", message.contact}], else: headers
+    headers = if message.expires, do: headers ++ [{"Expires", message.expires}], else: headers
+    headers = if message.content_type, do: headers ++ [{"Content-Type", message.content_type}], else: headers
+    headers = if message.content_length, do: headers ++ [{"Content-Length", message.content_length}], else: headers
+    headers = if message.allow, do: headers ++ [{"Allow", message.allow}], else: headers
+    headers = if message.supported, do: headers ++ [{"Supported", message.supported}], else: headers
+    headers = if message.accept, do: headers ++ [{"Accept", message.accept}], else: headers
+    headers = if message.event, do: headers ++ [{"Event", message.event}], else: headers
+    headers = if message.subscription_state, do: headers ++ [{"Subscription-State", message.subscription_state}], else: headers
+    headers = if message.refer_to, do: headers ++ [{"Refer-To", message.refer_to}], else: headers
+    headers = if message.subject, do: headers ++ [{"Subject", message.subject}], else: headers
+    
+    # Add other headers
+    other_headers = Map.to_list(message.other_headers || %{})
+      |> Enum.map(fn {k, v} -> {String.split(k, "-") |> Enum.map(&String.capitalize/1) |> Enum.join("-"), v} end)
+    
+    headers = headers ++ other_headers
+    
     headers
-    |> Enum.sort_by(fn {name, _value} ->
-      normalized_name = name |> to_string() |> String.downcase()
-      Map.get(header_order, normalized_name, default_priority)
-    end)
     |> Enum.map(fn {name, value} -> format_header(name, value) end)
     |> Enum.join("")
   end
@@ -607,219 +554,28 @@ defmodule ParrotSip.Message do
     end
   end
 
-  @doc """
-  Gets the CSeq header from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> cseq = %ParrotSip.Headers.CSeq{sequence: 1, method: :invite}
-      iex> message = ParrotSip.Message.set_header(message, "CSeq", cseq)
-      iex> ParrotSip.Message.cseq(message)
-      %ParrotSip.Headers.CSeq{sequence: 1, method: :invite}
-  """
-  @spec cseq(t()) :: CSeq.t() | nil
-  def cseq(message) do
-    get_header(message, "cseq")
-  end
+  # Simplified accessor patterns - most are removed in favor of direct field access
+  # Only keeping those that are truly helpful
   
-  @doc """
-  Gets the CSeq number from a message.
-  
-  ## Examples
-  
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> cseq = %ParrotSip.Headers.CSeq{sequence: 42, method: :invite}
-      iex> message = ParrotSip.Message.set_header(message, "CSeq", cseq)
-      iex> ParrotSip.Message.cseq_number(message)
-      42
-  """
-  @spec cseq_number(t()) :: integer() | nil
-  def cseq_number(message) do
-    case cseq(message) do
-      %CSeq{number: num} -> num
-      nil -> nil
-    end
-  end
-  
-  @doc """
-  Gets the CSeq method from a message.
-  
-  ## Examples
-  
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> cseq = %ParrotSip.Headers.CSeq{sequence: 42, method: :invite}
-      iex> message = ParrotSip.Message.set_header(message, "CSeq", cseq)
-      iex> ParrotSip.Message.cseq_method(message)
-      :invite
-  """
-  @spec cseq_method(t()) :: atom() | nil
-  def cseq_method(message) do
-    case cseq(message) do
-      %CSeq{method: method} -> method
-      nil -> nil
-    end
-  end
-
-  @doc """
-  Gets the From header from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> from = %ParrotSip.Headers.From{uri: "sip:alice@example.com"}
-      iex> message = ParrotSip.Message.set_header(message, "From", from)
-      iex> ParrotSip.Message.from(message)
-      %ParrotSip.Headers.From{uri: "sip:alice@example.com"}
-  """
-  @spec from(t()) :: From.t() | nil
-  def from(message) do
-    get_header(message, "from")
-  end
-  
-  @doc """
-  Gets the From tag from a message.
-  
-  ## Examples
-  
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> from = %ParrotSip.Headers.From{uri: "sip:alice@example.com", parameters: %{"tag" => "abc123"}}
-      iex> message = ParrotSip.Message.set_header(message, "From", from)
-      iex> ParrotSip.Message.from_tag(message)
-      "abc123"
-  """
-  @spec from_tag(t()) :: String.t() | nil
-  def from_tag(message) do
-    case from(message) do
-      %From{parameters: %{"tag" => tag}} -> tag
-      _ -> nil
-    end
-  end
-
-  @doc """
-  Gets the To header from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> to = %ParrotSip.Headers.To{uri: "sip:bob@example.com"}
-      iex> message = ParrotSip.Message.set_header(message, "To", to)
-      iex> ParrotSip.Message.to(message)
-      %ParrotSip.Headers.To{uri: "sip:bob@example.com"}
-  """
-  @spec to(t()) :: To.t() | nil
-  def to(message) do
-    get_header(message, "to")
-  end
-  
-  @doc """
-  Gets the To tag from a message.
-  
-  ## Examples
-  
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> to = %ParrotSip.Headers.To{uri: "sip:bob@example.com", parameters: %{"tag" => "xyz789"}}
-      iex> message = ParrotSip.Message.set_header(message, "To", to)
-      iex> ParrotSip.Message.to_tag(message)
-      "xyz789"
-  """
-  @spec to_tag(t()) :: String.t() | nil
-  def to_tag(message) do
-    case to(message) do
-      %To{parameters: %{"tag" => tag}} -> tag
-      _ -> nil
-    end
-  end
-
-  @doc """
-  Gets the Call-ID header from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> message = ParrotSip.Message.set_header(message, "Call-ID", "abc123@example.com")
-      iex> ParrotSip.Message.call_id(message)
-      "abc123@example.com"
-  """
-  @spec call_id(t()) :: String.t() | CallId.t() | nil
-  def call_id(message) do
-    get_header(message, "call-id")
-  end
-
   @doc """
   Gets the top Via header from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> via = %ParrotSip.Headers.Via{host: "example.com", port: 5060}
-      iex> message = ParrotSip.Message.set_header(message, "Via", via)
-      iex> ParrotSip.Message.top_via(message)
-      %ParrotSip.Headers.Via{host: "example.com", port: 5060}
+  For pattern matching, prefer accessing message.via directly.
   """
   @spec top_via(t()) :: Via.t() | nil
-  def top_via(message) do
-    case get_header(message, "via") do
-      nil -> nil
-      via when is_list(via) -> List.first(via)
-      via -> via
-    end
-  end
-
+  def top_via(%__MODULE__{via: nil}), do: nil
+  def top_via(%__MODULE__{via: via}) when is_struct(via, Via), do: via
+  def top_via(%__MODULE__{via: [via | _]}) when is_struct(via, Via), do: via
+  def top_via(_), do: nil
+  
   @doc """
-  Gets all Via headers from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> via = %ParrotSip.Headers.Via{host: "example.com", port: 5060}
-      iex> message = ParrotSip.Message.set_header(message, "Via", via)
-      iex> ParrotSip.Message.all_vias(message)
-      [%ParrotSip.Headers.Via{host: "example.com", port: 5060}]
+  Gets all Via headers from a message as a list.
+  For pattern matching, prefer accessing message.via directly.
   """
-  @spec all_vias(t()) :: list(Via.t())
-  def all_vias(message) do
-    case get_header(message, "via") do
-      nil -> []
-      via when is_list(via) -> via
-      via -> [via]
-    end
-  end
-
-  @doc """
-  Gets the Contact header from a message.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> contact = %ParrotSip.Headers.Contact{uri: "sip:alice@example.com"}
-      iex> message = ParrotSip.Message.set_header(message, "Contact", contact)
-      iex> ParrotSip.Message.contact(message)
-      %ParrotSip.Headers.Contact{uri: "sip:alice@example.com"}
-  """
-  @spec contact(t()) :: Contact.t() | nil
-  def contact(message) do
-    get_header(message, "contact")
-  end
-
-  @doc """
-  Gets the branch parameter from the top Via header.
-
-  ## Examples
-
-      iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> via = %ParrotSip.Headers.Via{parameters: %{"branch" => "z9hG4bK123"}}
-      iex> message = ParrotSip.Message.set_header(message, "Via", via)
-      iex> ParrotSip.Message.branch(message)
-      "z9hG4bK123"
-  """
-  @spec branch(t()) :: String.t() | nil
-  def branch(message) do
-    case top_via(message) do
-      nil -> nil
-      via -> Map.get(via.parameters, "branch")
-    end
-  end
+  @spec all_vias(t()) :: [Via.t()]
+  def all_vias(%__MODULE__{via: nil}), do: []
+  def all_vias(%__MODULE__{via: vias}) when is_list(vias), do: vias
+  def all_vias(%__MODULE__{via: via}) when is_struct(via, Via), do: [via]
+  def all_vias(_), do: []
 
   @doc """
   Gets a dialog ID from a message.
@@ -852,21 +608,17 @@ defmodule ParrotSip.Message do
       iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
       iex> from = %ParrotSip.Headers.From{parameters: %{"tag" => "123"}}
       iex> to = %ParrotSip.Headers.To{parameters: %{"tag" => "456"}}
-      iex> message = message |> ParrotSip.Message.set_header("From", from)
-      iex> message = message |> ParrotSip.Message.set_header("To", to)
+      iex> message = message |> ParrotSip.Message.put_from(from)
+      iex> message = message |> ParrotSip.Message.put_to(to)
       iex> ParrotSip.Message.in_dialog?(message)
       true
   """
   @spec in_dialog?(t()) :: boolean()
-  def in_dialog?(message) do
-    from_header = from(message)
-    to_header = to(message)
-
-    from_tag = if from_header, do: From.tag(from_header), else: nil
-    to_tag = if to_header, do: To.tag(to_header), else: nil
-
-    not is_nil(from_tag) and not is_nil(to_tag)
-  end
+  def in_dialog?(%__MODULE__{
+    from: %From{parameters: %{"tag" => from_tag}},
+    to: %To{parameters: %{"tag" => to_tag}}
+  }) when not is_nil(from_tag) and not is_nil(to_tag), do: true
+  def in_dialog?(_), do: false
 
   @doc """
   Gets the status class of a response message (1xx, 2xx, etc.).

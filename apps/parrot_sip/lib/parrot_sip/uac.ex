@@ -112,34 +112,16 @@ defmodule ParrotSip.UAC do
   end
 
   @spec add_branch_to_via(Message.t(), String.t()) :: Message.t()
-  defp add_branch_to_via(%Message{headers: headers} = msg, branch) do
-    # Get the Via headers
-    via_headers = Map.get(headers, "via", [])
-
-    # Update the topmost Via header with the branch
-    updated_via_headers =
-      case via_headers do
-        [first_via | rest] ->
-          # Parse the Via header if it's a string
-          via =
-            case first_via do
-              %Via{} = v -> v
-              str when is_binary(str) -> Via.parse(str)
-            end
-
-          # Add branch parameter
-          updated_via = Via.with_parameter(via, "branch", branch)
-          [updated_via | rest]
-
-        [] ->
-          # No Via headers, this shouldn't happen for a proper request
-          # but we'll handle it gracefully
-          []
-      end
-
-    # Update the message with the new Via headers
-    %{msg | headers: Map.put(headers, "via", updated_via_headers)}
+  defp add_branch_to_via(%Message{via: nil} = msg, _branch), do: msg
+  defp add_branch_to_via(%Message{via: via} = msg, branch) when is_struct(via, Via) do
+    updated_via = Via.with_parameter(via, "branch", branch)
+    %{msg | via: updated_via}
   end
+  defp add_branch_to_via(%Message{via: [first_via | rest]} = msg, branch) when is_list(msg.via) do
+    updated_via = Via.with_parameter(first_via, "branch", branch)
+    %{msg | via: [updated_via | rest]}
+  end
+  defp add_branch_to_via(msg, _branch), do: msg
 
   @spec create_client_transaction(Message.t(), String.t()) :: {:ok, Transaction.t()}
   defp create_client_transaction(%Message{method: method} = request, branch) do
