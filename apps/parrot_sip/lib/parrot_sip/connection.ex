@@ -156,20 +156,18 @@ defmodule ParrotSip.Connection do
 
   # Process the Via header in a request
   @spec process_request_via(Message.t(), t()) :: {:ok, Message.t()} | {:error, term()}
-  defp process_request_via(message, conn) do
-    case message.via do
-      nil ->
-        {:error, :no_via}
+  defp process_request_via(%Message{via: nil}, _conn) do
+    {:error, :no_via}
+  end
 
-      via ->
-        updated_via =
-          via
-          |> maybe_add_received(conn)
-          |> maybe_fill_rport(conn)
+  defp process_request_via(%Message{via: via} = message, conn) do
+    updated_via =
+      via
+      |> maybe_add_received(conn)
+      |> maybe_fill_rport(conn)
 
-        updated_message = %{message | via: updated_via}
-        {:ok, updated_message}
-    end
+    updated_message = %{message | via: updated_via}
+    {:ok, updated_message}
   end
 
   # Add received parameter if necessary

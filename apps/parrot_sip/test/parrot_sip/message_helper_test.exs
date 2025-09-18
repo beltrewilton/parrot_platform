@@ -122,8 +122,9 @@ defmodule ParrotSip.MessageHelperTest do
 
       updated = MessageHelper.remove_top_via(message)
 
-      # Direct access to via field - should only have one element now
-      assert updated.via.host == "client.atlanta.com"
+      # Direct access to via field - should only have one element now in the list
+      assert [via] = updated.via
+      assert via.host == "client.atlanta.com"
     end
 
     test "returns message unchanged when no Via headers" do

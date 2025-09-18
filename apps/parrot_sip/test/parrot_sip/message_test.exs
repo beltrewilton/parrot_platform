@@ -34,6 +34,7 @@ defmodule ParrotSip.MessageTest do
       
       message = %Message{
         method: :invite,
+        request_uri: "sip:bob@example.com",
         via: [via1, via2],
         from: From.new("sip:alice@example.com", "Alice"),
         to: To.new("sip:bob@example.com", "Bob"),
@@ -144,7 +145,7 @@ defmodule ParrotSip.MessageTest do
         cseq: CSeq.new(1, :invite),
         call_id: "mixed123@example.com",
         contact: Contact.new("sip:alice@host.com"),
-        content_type: %ParrotSip.Headers.ContentType{type: "application", subtype: "sdp"},
+        content_type: %ParrotSip.Headers.ContentType{type: "application", subtype: "sdp", parameters: %{}},
         content_length: 0,
         max_forwards: 70,
         other_headers: %{

@@ -804,7 +804,7 @@ defmodule ParrotSip.Dialog do
   defp extract_contact_uri(_message), do: ""
   
   defp extract_route_set_from_message(message) do
-    Map.get(message.headers, "record-route", [])
+    message.record_route || []
   end
   
   defp is_secure_dialog?(message) do

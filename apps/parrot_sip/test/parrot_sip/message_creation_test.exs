@@ -68,7 +68,7 @@ defmodule ParrotSip.MessageCreationTest do
       assert message.max_forwards == 70
       assert message.other_headers["user-agent"] == "ParrotSip/1.0"
       assert message.body == "v=0\r\no=..."
-      assert message.content_length == 11
+      assert message.content_length == 10
     end
   end
   

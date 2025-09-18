@@ -139,14 +139,11 @@ defmodule ParrotSip.MessageHelper do
     %{message | via: nil}
   end
   def remove_top_via(%Message{via: [_top | []]} = message) do
-    %{message | via: nil}
+    %{message | via: []}
   end
   def remove_top_via(%Message{via: [_top | rest]} = message) when is_list(message.via) do
-    # If only one via remains, store it as a single struct instead of a list
-    case rest do
-      [single_via] -> %{message | via: single_via}
-      _ -> %{message | via: rest}
-    end
+    # Always keep as list to preserve the original type
+    %{message | via: rest}
   end
 
   @doc """

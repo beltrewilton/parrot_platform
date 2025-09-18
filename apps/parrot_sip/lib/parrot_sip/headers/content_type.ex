@@ -123,11 +123,13 @@ defmodule ParrotSip.Headers.ContentType do
   def format(%__MODULE__{} = content_type) do
     media_type = "#{content_type.type}/#{content_type.subtype}"
 
-    if map_size(content_type.parameters) == 0 do
+    parameters = content_type.parameters || %{}
+    
+    if map_size(parameters) == 0 do
       media_type
     else
       params_str =
-        content_type.parameters
+        parameters
         |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
         |> Enum.join("; ")
 

@@ -253,7 +253,7 @@ defmodule ParrotSip.Serializer do
     # Make sure headers appear in a predictable order for testing
     ordered_message = order_headers(message_with_content_length)
 
-    headers_str = build_headers_string(ordered_message.headers)
+    headers_str = build_headers_string(ordered_message)
     body = ordered_message.body || ""
 
     # Combine all parts with proper CRLF sequences
@@ -261,43 +261,10 @@ defmodule ParrotSip.Serializer do
   end
 
   # Orders headers in a consistent way for testing
+  # Since we now use struct fields instead of a headers map, this function
+  # just returns the message as-is. The headers will be ordered by build_headers_string.
   defp order_headers(message) do
-    # Define header priority order
-    priority_order = [
-      "via",
-      "from",
-      "to",
-      "call-id",
-      "cseq",
-      "max-forwards",
-      "route",
-      "record-route",
-      "contact",
-      "content-type",
-      "content-length"
-    ]
-
-    # Sort headers according to priority
-    ordered_headers =
-      Enum.reduce(priority_order, %{}, fn header, acc ->
-        if Map.has_key?(message.headers, header) do
-          Map.put(acc, header, message.headers[header])
-        else
-          acc
-        end
-      end)
-
-    # Add any remaining headers not in the priority list
-    full_ordered_headers =
-      Enum.reduce(message.headers, ordered_headers, fn {k, v}, acc ->
-        if Map.has_key?(acc, k) do
-          acc
-        else
-          Map.put(acc, k, v)
-        end
-      end)
-
-    %{message | headers: full_ordered_headers}
+    message
   end
 
   # Expands compact header forms to their full forms
@@ -345,38 +312,29 @@ defmodule ParrotSip.Serializer do
 
   # Prepares a message for a specific transport type
   @spec prepare_message(Message.t(), atom(), map()) :: Message.t()
-  defp prepare_message(message, transport_type, opts) do
+  defp prepare_message(%Message{type: :request} = message, transport_type, opts) do
+    # Add Via header for requests
+    local_host = Map.get(opts, :local_host, "localhost")
+    local_port = Map.get(opts, :local_port, default_port_for_transport(transport_type))
+    branch = "z9hG4bK" <> generate_branch_id()
+
+    # Add missing required headers for requests if not present
     message =
-      case message.type do
-        :request ->
-          # Add Via header for requests
-          local_host = Map.get(opts, :local_host, "localhost")
-          local_port = Map.get(opts, :local_port, default_port_for_transport(transport_type))
-          branch = "z9hG4bK" <> generate_branch_id()
-
-          via_string =
-            "SIP/2.0/#{String.upcase(to_string(transport_type))} #{local_host}:#{local_port};branch=#{branch}"
-
-          # Add missing required headers for requests if not present
-          message =
-            if !has_header?(message, "max-forwards") do
-              updated_headers = Map.put(message.headers, "max-forwards", 70)
-              %{message | headers: updated_headers}
-            else
-              message
-            end
-
-          # Add Via as the first header
-          updated_headers = Map.put(message.headers, "via", via_string)
-
-          %{message | headers: updated_headers}
-
-        :response ->
-          # For responses, we don't need to add Via headers
-          message
+      if !has_header?(message, "max-forwards") do
+        %{message | max_forwards: 70}
+      else
+        message
       end
 
-    # Ensure proper Content-Length is set before sending
+    # Create and set Via header
+    via_header = ParrotSip.Headers.Via.new(local_host, transport_type, local_port, %{"branch" => branch})
+    
+    %{message | via: via_header}
+    |> ensure_content_length()
+  end
+  
+  defp prepare_message(%Message{type: :response} = message, _transport_type, _opts) do
+    # For responses, we don't need to add Via headers
     ensure_content_length(message)
   end
 
@@ -397,9 +355,45 @@ defmodule ParrotSip.Serializer do
   end
 
   # Builds the headers string from the headers map
-  defp build_headers_string(headers) do
+  defp build_headers_string(%Message{} = message) do
+    # Build headers from struct fields in RFC 3261 order
+    headers = []
+    
+    # Via headers (must be first)
+    headers = build_via_headers(message.via, headers)
+    
+    # Core SIP headers
+    headers = if message.from, do: [format_header("from", message.from) | headers], else: headers
+    headers = if message.to, do: [format_header("to", message.to) | headers], else: headers
+    headers = if message.call_id, do: [format_header("call-id", message.call_id) | headers], else: headers
+    headers = if message.cseq, do: [format_header("cseq", message.cseq) | headers], else: headers
+    headers = if message.max_forwards, do: [format_header("max-forwards", message.max_forwards) | headers], else: headers
+    
+    # Routing headers
+    headers = if message.route, do: [format_header("route", message.route) | headers], else: headers
+    headers = if message.record_route, do: [format_header("record-route", message.record_route) | headers], else: headers
+    headers = if message.contact, do: [format_header("contact", message.contact) | headers], else: headers
+    
+    # Content headers
+    headers = if message.content_type, do: [format_header("content-type", message.content_type) | headers], else: headers
+    headers = if message.content_length, do: [format_header("content-length", message.content_length) | headers], else: headers
+    
+    # Optional headers
+    headers = if message.expires, do: [format_header("expires", message.expires) | headers], else: headers
+    headers = if message.allow, do: [format_header("allow", message.allow) | headers], else: headers
+    headers = if message.supported, do: [format_header("supported", message.supported) | headers], else: headers
+    headers = if message.accept, do: [format_header("accept", message.accept) | headers], else: headers
+    headers = if message.event, do: [format_header("event", message.event) | headers], else: headers
+    headers = if message.subscription_state, do: [format_header("subscription-state", message.subscription_state) | headers], else: headers
+    headers = if message.refer_to, do: [format_header("refer-to", message.refer_to) | headers], else: headers
+    headers = if message.subject, do: [format_header("subject", message.subject) | headers], else: headers
+    
+    # Other headers from the catch-all map
+    headers = build_other_headers(message.other_headers, headers)
+    
+    # Reverse to get correct order (since we prepended)
     headers
-    |> Enum.map(fn {name, value} -> format_header(name, value) end)
+    |> Enum.reverse()
     |> Enum.join("")
   end
 
@@ -635,9 +629,7 @@ defmodule ParrotSip.Serializer do
   end
 
   # Process multipart bodies if content-type indicates multipart
-  defp process_multipart_bodies(%{headers: headers, body: body} = message) when is_binary(body) do
-    content_type = Map.get(headers, "content-type", "")
-
+  defp process_multipart_bodies(%Message{content_type: content_type, body: body} = message) when is_binary(body) do
     case content_type do
       %ParrotSip.Headers.ContentType{type: "multipart"} = ct ->
         # Extract boundary parameter from the ContentType struct
@@ -696,9 +688,9 @@ defmodule ParrotSip.Serializer do
           not (part.headers == %{} and part.body == "")
       end)
 
-    # Store parsed parts in message headers for application use
-    headers = Map.put(message.headers, "multipart-parts", parts)
-    %{message | headers: headers}
+    # Store parsed parts in message other_headers for application use
+    other_headers = Map.put(message.other_headers || %{}, "multipart-parts", parts)
+    %{message | other_headers: other_headers}
   end
 
   # Parse an individual part into headers and body
@@ -748,6 +740,30 @@ defmodule ParrotSip.Serializer do
       nil
     end
   end
+
+  # Build Via headers
+  defp build_via_headers(nil, headers), do: headers
+  
+  defp build_via_headers(via, headers) when is_list(via) do
+    # Via headers must be separate lines, not comma-separated
+    via_headers = Enum.map(via, fn v -> format_header("via", v) end)
+    via_headers ++ headers
+  end
+  
+  defp build_via_headers(via, headers) do
+    [format_header("via", via) | headers]
+  end
+  
+  # Build other headers from the catch-all map
+  defp build_other_headers(nil, headers), do: headers
+  
+  defp build_other_headers(other_headers, headers) when map_size(other_headers) > 0 do
+    other_headers
+    |> Enum.map(fn {name, value} -> format_header(name, value) end)
+    |> Enum.concat(headers)
+  end
+  
+  defp build_other_headers(_other_headers, headers), do: headers
 
   # Map compact header form to full form according to RFC 3261 Section 7.3.3
   # This is called by the Parser module during header parsing

@@ -213,7 +213,8 @@ defmodule ParrotSip.SerializerTest do
       assert message.method == :invite
       assert message.body == body
       assert message.content_length == byte_size(body)
-      assert message.content_type == "application/sdp"
+      assert message.content_type.type == "application"
+      assert message.content_type.subtype == "sdp"
     end
 
     test "adds source information when provided" do
@@ -479,7 +480,8 @@ defmodule ParrotSip.SerializerTest do
       assert message.from != nil
       assert message.to != nil
       assert message.call_id != nil
-      assert message.content_type == "application/sdp"
+      assert message.content_type.type == "application"
+      assert message.content_type.subtype == "sdp"
       assert message.content_length == 0
     end
   end

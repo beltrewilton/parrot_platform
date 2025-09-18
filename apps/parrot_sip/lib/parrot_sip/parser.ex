@@ -233,20 +233,7 @@ defmodule ParrotSip.Parser do
       end
 
     # RFC 3261 Section 17.1.3: Transaction ID is the branch parameter from the top Via header
-    transaction_id =
-      case base_message.via do
-        nil ->
-          nil
-
-        via when is_list(via) ->
-          case via do
-            [top | _] -> Map.get(top.parameters, "branch")
-            _ -> nil
-          end
-
-        via ->
-          Map.get(via.parameters, "branch")
-      end
+    transaction_id = extract_transaction_id(base_message.via)
 
     # RFC 3261 Section 12.1.1: Dialog ID is Call-ID + tags
     dialog_id =
@@ -312,93 +299,111 @@ defmodule ParrotSip.Parser do
     {type, updated_parts}
   end
 
-  # Process individual headers
+  # Process individual headers - Via headers can be repeated
+  defp process_header("via", value, headers) do
+    parsed = Headers.Via.parse(String.trim(value))
+    update_repeatable_header(headers, "via", parsed)
+  end
+
+  # Accept headers can be repeated
+  defp process_header("accept", value, headers) do
+    parsed = Headers.Accept.parse(String.trim(value))
+    update_repeatable_header(headers, "accept", parsed)
+  end
+
+  # Record-Route headers can be repeated and can contain comma-separated values
+  defp process_header("record-route", value, headers) do
+    parsed_list = Headers.RecordRoute.parse_list(String.trim(value))
+    update_repeatable_header_list(headers, "record-route", parsed_list)
+  end
+
+  # Route headers can be repeated and can contain comma-separated values
+  defp process_header("route", value, headers) do
+    parsed_list = Headers.Route.parse_list(String.trim(value))
+    update_repeatable_header_list(headers, "route", parsed_list)
+  end
+
+  # Single-value headers
+  defp process_header("from", value, headers) do
+    Map.put(headers, "from", Headers.From.parse(String.trim(value)))
+  end
+
+  defp process_header("to", value, headers) do
+    Map.put(headers, "to", Headers.To.parse(String.trim(value)))
+  end
+
+  defp process_header("contact", value, headers) do
+    Map.put(headers, "contact", Headers.Contact.parse(String.trim(value)))
+  end
+
+  defp process_header("call-id", value, headers) do
+    Map.put(headers, "call-id", Headers.CallId.parse(String.trim(value)))
+  end
+
+  defp process_header("cseq", value, headers) do
+    Map.put(headers, "cseq", Headers.CSeq.parse(String.trim(value)))
+  end
+
+  defp process_header("content-length", value, headers) do
+    Map.put(headers, "content-length", Headers.ContentLength.parse(String.trim(value)))
+  end
+
+  defp process_header("max-forwards", value, headers) do
+    Map.put(headers, "max-forwards", Headers.MaxForwards.parse(String.trim(value)))
+  end
+
+  defp process_header("expires", value, headers) do
+    Map.put(headers, "expires", Headers.Expires.parse(String.trim(value)))
+  end
+
+  defp process_header("content-type", value, headers) do
+    Map.put(headers, "content-type", Headers.ContentType.parse(String.trim(value)))
+  end
+
+  defp process_header("refer-to", value, headers) do
+    Map.put(headers, "refer-to", Headers.ReferTo.parse(String.trim(value)))
+  end
+
+  defp process_header("event", value, headers) do
+    Map.put(headers, "event", Headers.Event.parse(String.trim(value)))
+  end
+
+  defp process_header("subscription-state", value, headers) do
+    Map.put(headers, "subscription-state", Headers.SubscriptionState.parse(String.trim(value)))
+  end
+
+  defp process_header("subject", value, headers) do
+    Map.put(headers, "subject", Headers.Subject.parse(String.trim(value)))
+  end
+
+  defp process_header("allow", value, headers) do
+    Map.put(headers, "allow", Headers.Allow.parse(String.trim(value)))
+  end
+
+  defp process_header("supported", value, headers) do
+    Map.put(headers, "supported", Headers.Supported.parse(String.trim(value)))
+  end
+
+  # For other headers, just store the raw value
   defp process_header(name, value, headers) do
-    # Trim leading/trailing whitespace from value
-    value = String.trim(value)
+    Map.put(headers, name, String.trim(value))
+  end
 
-    # Process based on header name
-    case name do
-      "via" ->
-        # Via headers can be repeated
-        parsed = Headers.Via.parse(value)
+  # Helper function to update repeatable headers (single value)
+  defp update_repeatable_header(headers, name, parsed) do
+    case Map.get(headers, name) do
+      nil -> Map.put(headers, name, parsed)
+      existing when is_list(existing) -> Map.put(headers, name, existing ++ [parsed])
+      existing -> Map.put(headers, name, [existing, parsed])
+    end
+  end
 
-        case Map.get(headers, "via") do
-          nil ->
-            Map.put(headers, "via", parsed)
-
-          existing ->
-            if is_list(existing) do
-              Map.put(headers, "via", existing ++ [parsed])
-            else
-              Map.put(headers, "via", [existing, parsed])
-            end
-        end
-
-      "accept" ->
-        # For Accept headers, we need to keep the first one or create a list
-        parsed = Headers.Accept.parse(value)
-
-        case Map.get(headers, "accept") do
-          nil ->
-            Map.put(headers, "accept", parsed)
-
-          existing ->
-            if is_list(existing) do
-              Map.put(headers, "accept", existing ++ [parsed])
-            else
-              Map.put(headers, "accept", [existing, parsed])
-            end
-        end
-
-      "from" ->
-        Map.put(headers, "from", Headers.From.parse(value))
-
-      "to" ->
-        Map.put(headers, "to", Headers.To.parse(value))
-
-      "contact" ->
-        Map.put(headers, "contact", Headers.Contact.parse(value))
-
-      "call-id" ->
-        Map.put(headers, "call-id", Headers.CallId.parse(value))
-
-      "cseq" ->
-        Map.put(headers, "cseq", Headers.CSeq.parse(value))
-
-      "content-length" ->
-        Map.put(headers, "content-length", Headers.ContentLength.parse(value))
-
-      "max-forwards" ->
-        Map.put(headers, "max-forwards", Headers.MaxForwards.parse(value))
-
-      "expires" ->
-        Map.put(headers, "expires", Headers.Expires.parse(value))
-
-      "content-type" ->
-        Map.put(headers, "content-type", Headers.ContentType.parse(value))
-
-      "refer-to" ->
-        Map.put(headers, "refer-to", Headers.ReferTo.parse(value))
-
-      "event" ->
-        Map.put(headers, "event", Headers.Event.parse(value))
-
-      "subscription-state" ->
-        Map.put(headers, "subscription-state", Headers.SubscriptionState.parse(value))
-
-      "subject" ->
-        Map.put(headers, "subject", Headers.Subject.parse(value))
-
-      "allow" ->
-        Map.put(headers, "allow", Headers.Allow.parse(value))
-
-      "supported" ->
-        Map.put(headers, "supported", Headers.Supported.parse(value))
-
-      # For other headers, just store the raw value
-      _ ->
-        Map.put(headers, name, value)
+  # Helper function to update repeatable headers (list of values)
+  defp update_repeatable_header_list(headers, name, parsed_list) do
+    case Map.get(headers, name) do
+      nil -> Map.put(headers, name, parsed_list)
+      existing when is_list(existing) -> Map.put(headers, name, existing ++ parsed_list)
+      existing -> Map.put(headers, name, [existing | parsed_list])
     end
   end
 
@@ -446,13 +451,7 @@ defmodule ParrotSip.Parser do
   # Validate that the message has all required headers
   defp validate_message(message) do
     # Check for required headers by examining struct fields
-    missing_headers = []
-    
-    missing_headers = if is_nil(message.from), do: ["from" | missing_headers], else: missing_headers
-    missing_headers = if is_nil(message.to), do: ["to" | missing_headers], else: missing_headers
-    missing_headers = if is_nil(message.call_id), do: ["call-id" | missing_headers], else: missing_headers
-    missing_headers = if is_nil(message.cseq), do: ["cseq" | missing_headers], else: missing_headers
-    missing_headers = if is_nil(message.via), do: ["via" | missing_headers], else: missing_headers
+    missing_headers = collect_missing_headers(message)
 
     cond do
       message.type == :request and not Enum.member?(@sip_methods, message.method) ->
@@ -463,7 +462,7 @@ defmodule ParrotSip.Parser do
 
       length(missing_headers) > 0 ->
         {:error,
-         "Invalid SIP message format: Missing required headers: #{Enum.join(Enum.reverse(missing_headers), ", ")}"}
+         "Invalid SIP message format: Missing required headers: #{Enum.join(missing_headers, ", ")}"}
 
       message.type == :request and
         not is_nil(message.cseq) and
@@ -478,6 +477,23 @@ defmodule ParrotSip.Parser do
       true ->
         :ok
     end
+  end
+  
+  # Collect missing required headers
+  defp collect_missing_headers(message) do
+    required = [
+      {:from, "from"},
+      {:to, "to"},
+      {:call_id, "call-id"},
+      {:cseq, "cseq"},
+      {:via, "via"}
+    ]
+    
+    required
+    |> Enum.filter(fn {field, _name} -> 
+      is_nil(Map.get(message, field))
+    end)
+    |> Enum.map(fn {_field, name} -> name end)
   end
 
   # Create a request message from parsed parts
@@ -558,6 +574,21 @@ defmodule ParrotSip.Parser do
     }
   end
   
+  # Extract transaction ID from Via headers
+  defp extract_transaction_id(nil), do: nil
+  
+  defp extract_transaction_id([top | _]) when is_map(top) do
+    Map.get(top.parameters, "branch")
+  end
+  
+  defp extract_transaction_id([]), do: nil
+  
+  defp extract_transaction_id(via) when is_map(via) do
+    Map.get(via.parameters, "branch")
+  end
+  
+  defp extract_transaction_id(_), do: nil
+  
   # Split headers into known and unknown
   defp split_headers(headers) do
     known_header_names = [
@@ -569,7 +600,7 @@ defmodule ParrotSip.Parser do
     
     # Extract known headers
     known = %{
-      via: Map.get(headers, "via"),
+      via: parse_via_value(Map.get(headers, "via")),
       from: Map.get(headers, "from"),
       to: Map.get(headers, "to"),
       call_id: Map.get(headers, "call-id"),
@@ -577,7 +608,7 @@ defmodule ParrotSip.Parser do
       max_forwards: get_integer_value(Map.get(headers, "max-forwards")),
       contact: Map.get(headers, "contact"),
       route: Map.get(headers, "route"),
-      record_route: Map.get(headers, "record-route"),
+      record_route: parse_record_route_value(Map.get(headers, "record-route")),
       content_type: Map.get(headers, "content-type"),
       content_length: get_integer_value(Map.get(headers, "content-length")),
       expires: get_integer_value(Map.get(headers, "expires")),
@@ -609,4 +640,12 @@ defmodule ParrotSip.Parser do
   defp get_string_value(%{value: value}) when is_binary(value), do: value
   defp get_string_value(value) when is_binary(value), do: value
   defp get_string_value(_), do: nil
+
+  # Parse record_route value into list of RecordRoute structs
+  # Note: Record-Route headers are already parsed in process_header, so this just passes through
+  defp parse_record_route_value(value), do: value
+
+  # Parse via value into Via struct or list of Via structs
+  # Note: Via headers are already parsed in process_header, so this just passes through
+  defp parse_via_value(value), do: value
 end

@@ -154,8 +154,7 @@ defmodule ParrotSip.Validators do
   defp validate_required_headers(message, required_headers) do
     missing =
       Enum.reject(required_headers, fn header ->
-        Atom.to_string(header) in Map.keys(message.headers) or
-          String.replace(Atom.to_string(header), "_", "-") in Map.keys(message.headers)
+        has_header_field?(message, header)
       end)
 
     if Enum.empty?(missing) do
@@ -163,6 +162,59 @@ defmodule ParrotSip.Validators do
     else
       {:error, :missing_required_headers}
     end
+  end
+  
+  # Check if a message has a specific header field
+  defp has_header_field?(%Message{} = message, header) do
+    header_name = normalize_header_name(header)
+    
+    # First try to find the field in the Message struct
+    field_atom = header_name_to_field_atom(header_name)
+    
+    if field_atom in Message.__struct__() |> Map.keys() do
+      # It's a known struct field, check if it's not nil
+      not is_nil(Map.get(message, field_atom))
+    else
+      # It's an unknown header, check in other_headers
+      Map.has_key?(message.other_headers || %{}, header_name)
+    end
+  end
+  
+  # Convert header name to the corresponding struct field atom
+  defp header_name_to_field_atom(header_name) do
+    case header_name do
+      "call-id" -> :call_id
+      "call_id" -> :call_id
+      "max-forwards" -> :max_forwards
+      "max_forwards" -> :max_forwards
+      "content-type" -> :content_type
+      "content_type" -> :content_type
+      "content-length" -> :content_length
+      "content_length" -> :content_length
+      "record-route" -> :record_route
+      "record_route" -> :record_route
+      "subscription-state" -> :subscription_state
+      "subscription_state" -> :subscription_state
+      "refer-to" -> :refer_to
+      "refer_to" -> :refer_to
+      # For most headers, just convert string to atom
+      _ -> String.to_existing_atom(header_name)
+    end
+  rescue
+    ArgumentError ->
+      # If the atom doesn't exist, it's not a struct field
+      :unknown_field
+  end
+  
+  defp normalize_header_name(header) when is_atom(header) do
+    header
+    |> Atom.to_string()
+    |> String.replace("_", "-")
+    |> String.downcase()
+  end
+  
+  defp normalize_header_name(header) when is_binary(header) do
+    String.downcase(header)
   end
 
   defp validate_request_uri(uri) when is_binary(uri) do

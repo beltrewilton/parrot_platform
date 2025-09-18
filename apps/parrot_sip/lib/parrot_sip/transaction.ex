@@ -327,12 +327,9 @@ defmodule ParrotSip.Transaction do
     not (request.method == :ack)
   end
   
-  defp start_server_transaction_for_request(request) do
-    # Create the appropriate transaction based on method
-    transaction_result = case request.method do
-      :invite -> create_invite_server(request)
-      _ -> create_non_invite_server(request)
-    end
+  defp start_server_transaction_for_request(%{method: :invite} = request) do
+    # Create INVITE server transaction
+    transaction_result = create_invite_server(request)
     
     case transaction_result do
       {:ok, transaction} ->
@@ -344,36 +341,53 @@ defmodule ParrotSip.Transaction do
             Logger.error("Failed to start server transaction: #{inspect(reason)}")
             {:error, reason}
         end
-      {:error, reason} ->
-        Logger.error("Failed to create server transaction: #{inspect(reason)}")
-        {:error, reason}
     end
   end
   
-  defp get_branch_from_response(response) do
-    case response.via do
-      [%{parameters: %{"branch" => branch}} | _] ->
-        {:ok, branch}
-      [%{parameters: params} | _] when is_map(params) ->
-        case Map.get(params, "branch") do
-          nil -> {:error, :no_branch}
-          branch -> {:ok, branch}
+  defp start_server_transaction_for_request(request) do
+    # Create non-INVITE server transaction
+    transaction_result = create_non_invite_server(request)
+    
+    case transaction_result do
+      {:ok, transaction} ->
+        # Start the transaction state machine
+        case ParrotSip.Transaction.Supervisor.start_child([transaction]) do
+          {:ok, _pid} ->
+            :ok
+          {:error, reason} ->
+            Logger.error("Failed to start server transaction: #{inspect(reason)}")
+            {:error, reason}
         end
-      [via | _] when is_binary(via) ->
-        # Fallback for legacy string-based Via headers
-        if String.contains?(via, "branch=") do
-          branch = via
-            |> String.split(";")
-            |> Enum.find(&String.starts_with?(&1, "branch="))
-            |> String.replace("branch=", "")
-            |> String.trim()
-          {:ok, branch}
-        else
-          {:error, :no_branch}
-        end
-      _ ->
-        {:error, :no_via}
     end
+  end
+  
+  defp get_branch_from_response(%{via: [%{parameters: %{"branch" => branch}} | _]}) do
+    {:ok, branch}
+  end
+  
+  defp get_branch_from_response(%{via: [%{parameters: params} | _]}) when is_map(params) do
+    case Map.get(params, "branch") do
+      nil -> {:error, :no_branch}
+      branch -> {:ok, branch}
+    end
+  end
+  
+  defp get_branch_from_response(%{via: [via | _]}) when is_binary(via) do
+    # Fallback for legacy string-based Via headers
+    if String.contains?(via, "branch=") do
+      branch = via
+        |> String.split(";")
+        |> Enum.find(&String.starts_with?(&1, "branch="))
+        |> String.replace("branch=", "")
+        |> String.trim()
+      {:ok, branch}
+    else
+      {:error, :no_branch}
+    end
+  end
+  
+  defp get_branch_from_response(_response) do
+    {:error, :no_via}
   end
   
   defp lookup_transaction(transaction_id) do
@@ -845,17 +859,7 @@ defmodule ParrotSip.Transaction do
   @spec start_client_transaction(t()) :: {:ok, t()}
   def start_client_transaction(transaction) do
     # Define initial state and actions based on transaction type
-    {new_state, actions} =
-      case transaction.type do
-        :invite_client ->
-          {:calling, [:start_timer_a, :start_timer_b]}
-
-        :non_invite_client ->
-          {:trying, [:start_timer_e, :start_timer_f]}
-
-        _ ->
-          raise ArgumentError, "Not a client transaction"
-      end
+    {new_state, actions} = get_client_initial_state_actions(transaction.type)
 
     # Apply the timer actions
     transaction = apply_timer_actions(transaction, actions)
@@ -880,12 +884,7 @@ defmodule ParrotSip.Transaction do
   @spec start_server_transaction(t()) :: {:ok, t()}
   def start_server_transaction(transaction) do
     # Define initial state based on transaction type
-    new_state =
-      case transaction.type do
-        :invite_server -> :proceeding
-        :non_invite_server -> :trying
-        _ -> raise ArgumentError, "Not a server transaction"
-      end
+    new_state = get_server_initial_state(transaction.type)
 
     # Update the transaction with the new state
     updated_transaction = %{transaction | state: new_state}
@@ -908,12 +907,7 @@ defmodule ParrotSip.Transaction do
   @spec matches_response?(t(), Message.t()) :: boolean()
   def matches_response?(transaction, response) do
     # Extract the top Via header from the response
-    via =
-      case response.via do
-        %Headers.Via{} = via -> via
-        [via | _] when is_struct(via, Headers.Via) -> via
-        _ -> nil
-      end
+    via = extract_top_via(response.via)
 
     if via == nil do
       false
@@ -943,12 +937,7 @@ defmodule ParrotSip.Transaction do
   @spec matches_request?(t(), Message.t()) :: boolean()
   def matches_request?(transaction, request) do
     # Extract the top Via header from the request
-    via =
-      case request.via do
-        %Headers.Via{} = via -> via
-        [via | _] when is_struct(via, Headers.Via) -> via
-        _ -> nil
-      end
+    via = extract_top_via(request.via)
 
     if via == nil do
       false
@@ -1057,15 +1046,37 @@ defmodule ParrotSip.Transaction do
 
   # Get the branch parameter from a request's Via header
   defp get_branch(request) do
-    via =
-      case request.via do
-        %Headers.Via{} = via -> via
-        [via | _] when is_struct(via, Headers.Via) -> via
-        _ -> raise ArgumentError, "Request must have a Via header"
-      end
-
+    via = extract_top_via_strict(request.via)
     via.parameters["branch"]
   end
+  
+  # Extract top Via header (returns nil if not found)
+  defp extract_top_via(%Headers.Via{} = via), do: via
+  defp extract_top_via([via | _]) when is_struct(via, Headers.Via), do: via
+  defp extract_top_via(_), do: nil
+  
+  # Extract top Via header (raises if not found)
+  defp extract_top_via_strict(%Headers.Via{} = via), do: via
+  defp extract_top_via_strict([via | _]) when is_struct(via, Headers.Via), do: via
+  defp extract_top_via_strict(_), do: raise(ArgumentError, "Request must have a Via header")
+  
+  # Get initial state and actions for client transactions
+  defp get_client_initial_state_actions(:invite_client) do
+    {:calling, [:start_timer_a, :start_timer_b]}
+  end
+  
+  defp get_client_initial_state_actions(:non_invite_client) do
+    {:trying, [:start_timer_e, :start_timer_f]}
+  end
+  
+  defp get_client_initial_state_actions(_) do
+    raise(ArgumentError, "Not a client transaction")
+  end
+  
+  # Get initial state for server transactions  
+  defp get_server_initial_state(:invite_server), do: :proceeding
+  defp get_server_initial_state(:non_invite_server), do: :trying
+  defp get_server_initial_state(_), do: raise(ArgumentError, "Not a server transaction")
 
   # Apply timer actions to a transaction
   defp apply_timer_actions(transaction, actions) do
@@ -1226,11 +1237,7 @@ defmodule ParrotSip.Transaction do
     case event do
       {:received, _request} ->
         # Retransmit last response if any
-        actions =
-          case transaction.last_response do
-            nil -> [:ignore]
-            resp -> [{:send_response, resp}]
-          end
+        actions = get_retransmit_actions(transaction.last_response)
 
         {transaction, actions}
 
@@ -1271,11 +1278,7 @@ defmodule ParrotSip.Transaction do
     case event do
       {:received, _request} ->
         # Retransmit last response if any
-        actions =
-          case transaction.last_response do
-            nil -> [:ignore]
-            resp -> [{:send_response, resp}]
-          end
+        actions = get_retransmit_actions(transaction.last_response)
 
         {transaction, actions}
 
@@ -1301,11 +1304,7 @@ defmodule ParrotSip.Transaction do
           {new_transaction, actions}
         else
           # Not an ACK, retransmit last response
-          actions =
-            case transaction.last_response do
-              nil -> [:ignore]
-              resp -> [{:send_response, resp}]
-            end
+          actions = get_retransmit_actions(transaction.last_response)
 
           {transaction, actions}
         end
@@ -1381,11 +1380,7 @@ defmodule ParrotSip.Transaction do
     case event do
       {:received, _request} ->
         # Retransmit last response if any
-        actions =
-          case transaction.last_response do
-            nil -> [:ignore]
-            resp -> [{:send_response, resp}]
-          end
+        actions = get_retransmit_actions(transaction.last_response)
 
         {transaction, actions}
 
@@ -1422,11 +1417,7 @@ defmodule ParrotSip.Transaction do
     case event do
       {:received, _request} ->
         # Retransmit last response if any
-        actions =
-          case transaction.last_response do
-            nil -> [:ignore]
-            resp -> [{:send_response, resp}]
-          end
+        actions = get_retransmit_actions(transaction.last_response)
 
         {transaction, actions}
 
@@ -1453,11 +1444,7 @@ defmodule ParrotSip.Transaction do
 
       {:received, _request} ->
         # Retransmit last response
-        actions =
-          case transaction.last_response do
-            nil -> [:ignore]
-            resp -> [{:send_response, resp}]
-          end
+        actions = get_retransmit_actions(transaction.last_response)
 
         {transaction, actions}
 
@@ -1583,27 +1570,31 @@ defmodule ParrotSip.Transaction do
   defp timer_j_timeout(_transaction), do: 5_000
   defp timer_rel1xx_timeout(_transaction), do: 10_000
 
-  defp handle_timer_event(timer, transaction) do
-    # Expand this as needed for your timer logic
-    case timer do
-      :g ->
-        {transaction,
-         [:retransmit_last_response, {:start_timer, :g, timer_g_timeout(transaction)}]}
+  # Get retransmit actions based on last response
+  defp get_retransmit_actions(nil), do: [:ignore]
+  defp get_retransmit_actions(response), do: [{:send_response, response}]
 
-      :h ->
-        {transaction, [:move_to_terminated]}
-
-      :i ->
-        {transaction, [:move_to_terminated]}
-
-      :j ->
-        {transaction, [:move_to_terminated]}
-
-      :d ->
-        {transaction, [:move_to_terminated]}
-
-      _ ->
-        {transaction, [:ignore]}
-    end
+  defp handle_timer_event(:g, transaction) do
+    {transaction, [:retransmit_last_response, {:start_timer, :g, timer_g_timeout(transaction)}]}
+  end
+  
+  defp handle_timer_event(:h, transaction) do
+    {transaction, [:move_to_terminated]}
+  end
+  
+  defp handle_timer_event(:i, transaction) do
+    {transaction, [:move_to_terminated]}
+  end
+  
+  defp handle_timer_event(:j, transaction) do
+    {transaction, [:move_to_terminated]}
+  end
+  
+  defp handle_timer_event(:d, transaction) do
+    {transaction, [:move_to_terminated]}
+  end
+  
+  defp handle_timer_event(_, transaction) do
+    {transaction, [:ignore]}
   end
 end

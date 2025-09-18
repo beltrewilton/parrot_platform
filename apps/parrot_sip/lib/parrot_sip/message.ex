@@ -299,6 +299,17 @@ defmodule ParrotSip.Message do
     new_response(status_code, reason_phrase, opts)
   end
 
+  # Additional function variants for backward compatibility
+  @spec new_request(Method.t(), String.t(), map(), keyword()) :: t()
+  def new_request(method, request_uri, _headers, opts) when is_list(opts) do
+    new_request(method, request_uri, opts)
+  end
+
+  @spec new_response(integer(), String.t(), map(), keyword()) :: t()
+  def new_response(status_code, reason_phrase, _headers, opts) when is_list(opts) do
+    new_response(status_code, reason_phrase, opts)
+  end
+
   @doc """
   Creates a response from a request, copying necessary headers and setting
   the status code and reason phrase.
@@ -373,8 +384,33 @@ defmodule ParrotSip.Message do
   end
   
   @spec get_header(t(), String.t()) :: any()
-  def get_header(%__MODULE__{} = message, name) do
-    Map.get(message.other_headers || %{}, String.downcase(name))
+  def get_header(%__MODULE__{via: via}, "via") when is_list(via), do: via
+  def get_header(%__MODULE__{via: via}, "via"), do: via
+  def get_header(%__MODULE__{from: from}, "from"), do: from
+  def get_header(%__MODULE__{to: to}, "to"), do: to
+  def get_header(%__MODULE__{call_id: call_id}, "call-id"), do: call_id
+  def get_header(%__MODULE__{cseq: cseq}, "cseq"), do: cseq
+  def get_header(%__MODULE__{contact: contact}, "contact"), do: contact
+  def get_header(%__MODULE__{route: routes}, "route") when is_list(routes), do: routes
+  def get_header(%__MODULE__{route: route}, "route") when not is_nil(route), do: [route]
+  def get_header(%__MODULE__{route: nil}, "route"), do: nil
+  def get_header(%__MODULE__{record_route: routes}, "record-route") when is_list(routes), do: routes
+  def get_header(%__MODULE__{record_route: route}, "record-route") when not is_nil(route), do: [route]
+  def get_header(%__MODULE__{record_route: nil}, "record-route"), do: nil
+  def get_header(%__MODULE__{max_forwards: max_forwards}, "max-forwards"), do: max_forwards
+  def get_header(%__MODULE__{content_type: content_type}, "content-type"), do: content_type
+  def get_header(%__MODULE__{content_length: content_length}, "content-length"), do: content_length
+  def get_header(%__MODULE__{expires: expires}, "expires"), do: expires
+  def get_header(%__MODULE__{allow: allow}, "allow"), do: allow
+  def get_header(%__MODULE__{supported: supported}, "supported"), do: supported
+  def get_header(%__MODULE__{accept: accept}, "accept"), do: accept
+  def get_header(%__MODULE__{event: event}, "event"), do: event
+  def get_header(%__MODULE__{subscription_state: subscription_state}, "subscription-state"), do: subscription_state
+  def get_header(%__MODULE__{refer_to: refer_to}, "refer-to"), do: refer_to
+  def get_header(%__MODULE__{subject: subject}, "subject"), do: subject
+  def get_header(%__MODULE__{other_headers: other_headers}, header_name) do
+    header_name = String.downcase(header_name)
+    Map.get(other_headers || %{}, header_name)
   end
   
   # New setter functions for pattern matching convenience
@@ -741,5 +777,122 @@ defmodule ParrotSip.Message do
   @spec to_binary(t()) :: binary()
   def to_binary(message) do
     to_s(message)
+  end
+
+  # Legacy accessor functions for backward compatibility
+  @doc """
+  Returns the From header of the message.
+  """
+  @spec from(t()) :: From.t() | nil
+  def from(%__MODULE__{from: from}), do: from
+
+  @doc """
+  Returns the To header of the message.
+  """
+  @spec to(t()) :: To.t() | nil
+  def to(%__MODULE__{to: to}), do: to
+
+  @doc """
+  Returns the Call-ID header of the message.
+  """
+  @spec call_id(t()) :: String.t() | nil
+  def call_id(%__MODULE__{call_id: call_id}), do: call_id
+
+  @doc """
+  Returns the CSeq header of the message.
+  """
+  @spec cseq(t()) :: CSeq.t() | nil
+  def cseq(%__MODULE__{cseq: cseq}), do: cseq
+
+  @doc """
+  Sets a header in the message.
+  For now, this stores values in other_headers for unknown headers.
+  """
+  @spec set_header(t(), String.t(), any()) :: t()
+  def set_header(%__MODULE__{} = message, header_name, value) do
+    header_name = String.downcase(header_name)
+    
+    case header_name do
+      "from" -> %{message | from: value}
+      "to" -> %{message | to: value}
+      "call-id" -> %{message | call_id: value}
+      "cseq" -> %{message | cseq: value}
+      "via" -> 
+        # If value is a string, parse it to a Via struct
+        via_value = 
+          cond do
+            is_binary(value) -> 
+              # Parse the via string into a Via struct
+              try do
+                ParrotSip.Headers.Via.parse(value)
+              rescue
+                _ -> value  # Keep as string if parsing fails
+              end
+            is_struct(value, Via) -> value
+            is_list(value) -> 
+              # Parse each string in the list
+              Enum.map(value, fn
+                v when is_binary(v) ->
+                  try do
+                    ParrotSip.Headers.Via.parse(v)
+                  rescue
+                    _ -> v
+                  end
+                v -> v
+              end)
+            true -> value
+          end
+        %{message | via: via_value}
+      "contact" -> %{message | contact: value}
+      "content-type" -> %{message | content_type: value}
+      "content-length" -> %{message | content_length: value}
+      "route" -> 
+        # Route should be stored as a list for get_header compatibility
+        route_list = if is_list(value), do: value, else: [value]
+        %{message | route: route_list}
+      "record-route" -> 
+        # Record-Route should be stored as a list
+        record_route_list = if is_list(value), do: value, else: [value]
+        %{message | record_route: record_route_list}
+      _ -> 
+        other_headers = Map.put(message.other_headers || %{}, header_name, value)
+        %{message | other_headers: other_headers}
+    end
+  end
+
+  @doc """
+  Returns the branch parameter from the top Via header.
+  """
+  @spec branch(t()) :: String.t() | nil
+  def branch(%__MODULE__{via: nil}), do: nil
+  def branch(%__MODULE__{via: %Via{parameters: %{"branch" => branch}}}), do: branch
+  def branch(%__MODULE__{via: [%Via{parameters: %{"branch" => branch}} | _]}), do: branch
+  def branch(%__MODULE__{via: %Via{}}), do: nil
+  def branch(%__MODULE__{via: [%Via{} | _]}), do: nil
+  def branch(_), do: nil
+
+  @doc """
+  Returns multiple headers of the same name from the message.
+  For backward compatibility with tests expecting get_headers/2.
+  """
+  @spec get_headers(t(), String.t()) :: [any()]
+  def get_headers(%__MODULE__{via: nil}, "via"), do: []
+  def get_headers(%__MODULE__{via: headers}, "via") when is_list(headers), do: headers
+  def get_headers(%__MODULE__{via: header}, "via"), do: [header]
+  
+  def get_headers(%__MODULE__{route: nil}, "route"), do: []
+  def get_headers(%__MODULE__{route: headers}, "route") when is_list(headers), do: headers
+  def get_headers(%__MODULE__{route: header}, "route"), do: [header]
+  
+  def get_headers(%__MODULE__{record_route: nil}, "record-route"), do: []
+  def get_headers(%__MODULE__{record_route: headers}, "record-route") when is_list(headers), do: headers
+  def get_headers(%__MODULE__{record_route: header}, "record-route"), do: [header]
+  
+  def get_headers(%__MODULE__{} = message, header_name) do
+    header_name = String.downcase(header_name)
+    case get_header(message, header_name) do
+      nil -> []
+      header -> [header]
+    end
   end
 end

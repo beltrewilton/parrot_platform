@@ -162,7 +162,7 @@ defmodule ParrotSip.Headers.From do
           port_part = if uri.port, do: ":#{uri.port}", else: ""
 
           params_part =
-            if map_size(uri.parameters) > 0 do
+            if uri.parameters && map_size(uri.parameters) > 0 do
               ";" <>
                 (uri.parameters
                  |> Enum.map(fn {k, v} -> if v == "", do: k, else: "#{k}=#{v}" end)
@@ -172,7 +172,7 @@ defmodule ParrotSip.Headers.From do
             end
 
           headers_part =
-            if map_size(uri.headers) > 0 do
+            if uri.headers && map_size(uri.headers) > 0 do
               "?" <> (uri.headers |> Enum.map(fn {k, v} -> "#{k}=#{v}" end) |> Enum.join("&"))
             else
               ""
@@ -195,9 +195,14 @@ defmodule ParrotSip.Headers.From do
       end
 
     params_part =
-      from.parameters
-      |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
-      |> Enum.join(";")
+      case from.parameters do
+        nil -> ""
+        params when map_size(params) == 0 -> ""
+        params ->
+          params
+          |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
+          |> Enum.join(";")
+      end
 
     cond do
       display_part != "" && params_part != "" ->
