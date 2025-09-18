@@ -1028,7 +1028,7 @@ defmodule ParrotSip.TransactionStatem do
     invite_msg = %{
       cancel_msg
       | method: :invite,
-        headers: Map.put(cancel_msg.headers, "cseq", invite_cseq)
+        cseq: invite_cseq
     }
 
     Transaction.generate_id(invite_msg)

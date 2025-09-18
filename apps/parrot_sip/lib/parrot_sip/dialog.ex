@@ -784,44 +784,24 @@ defmodule ParrotSip.Dialog do
   end
   
   
-  defp extract_local_uri(message, :uac) do
-    # For UAC, local URI is From
-    case Message.from(message) do
-      %From{uri: uri} -> uri
-      _ -> ""
-    end
-  end
+  # For UAC, local URI is From
+  defp extract_local_uri(%Message{from: %From{uri: uri}}, :uac), do: uri
+  defp extract_local_uri(_message, :uac), do: ""
   
-  defp extract_local_uri(message, :uas) do
-    # For UAS, local URI is To
-    case Message.to(message) do
-      %To{uri: uri} -> uri
-      _ -> ""
-    end
-  end
+  # For UAS, local URI is To
+  defp extract_local_uri(%Message{to: %To{uri: uri}}, :uas), do: uri
+  defp extract_local_uri(_message, :uas), do: ""
   
-  defp extract_remote_uri(message, :uac) do
-    # For UAC, remote URI is To
-    case Message.to(message) do
-      %To{uri: uri} -> uri
-      _ -> ""
-    end
-  end
+  # For UAC, remote URI is To
+  defp extract_remote_uri(%Message{to: %To{uri: uri}}, :uac), do: uri
+  defp extract_remote_uri(_message, :uac), do: ""
   
-  defp extract_remote_uri(message, :uas) do
-    # For UAS, remote URI is From
-    case Message.from(message) do
-      %From{uri: uri} -> uri
-      _ -> ""
-    end
-  end
+  # For UAS, remote URI is From
+  defp extract_remote_uri(%Message{from: %From{uri: uri}}, :uas), do: uri
+  defp extract_remote_uri(_message, :uas), do: ""
   
-  defp extract_contact_uri(message) do
-    case Message.contact(message) do
-      %Contact{uri: uri} -> uri
-      _ -> ""
-    end
-  end
+  defp extract_contact_uri(%Message{contact: %Contact{uri: uri}}), do: uri
+  defp extract_contact_uri(_message), do: ""
   
   defp extract_route_set_from_message(message) do
     Map.get(message.headers, "record-route", [])

@@ -327,38 +327,36 @@ defmodule ParrotSip.DialogTest do
       request = %Message{
         method: :invite,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@example.com"),
-            parameters: %{"tag" => "from-tag-123"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{}
-          },
-          "call-id" => "call-123@example.com",
-          "cseq" => %CSeq{number: 100, method: :invite},
-          "contact" => %Contact{
-            uri: Uri.parse!("sip:alice@192.168.1.100:5060")
-          }
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "from-tag-123"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "call-123@example.com",
+        cseq: %CSeq{number: 100, method: :invite},
+        contact: %Contact{
+          uri: Uri.parse!("sip:alice@192.168.1.100:5060")
+        },
+        other_headers: %{}
       }
 
       response = %Message{
         type: :response,
         status_code: 200,
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@example.com"),
-            parameters: %{"tag" => "from-tag-123"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{"tag" => "to-tag-456"}
-          },
-          "call-id" => "call-123@example.com",
-          "cseq" => %CSeq{number: 100, method: :invite}
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "from-tag-123"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "to-tag-456"}
+        },
+        call_id: "call-123@example.com",
+        cseq: %CSeq{number: 100, method: :invite},
+        other_headers: %{}
       }
 
       {:ok, request: request, response: response}
@@ -382,18 +380,17 @@ defmodule ParrotSip.DialogTest do
       provisional = %Message{
         type: :response,
         status_code: 180,
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@example.com"),
-            parameters: %{"tag" => "from-tag-123"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{"tag" => "to-tag-456"}
-          },
-          "call-id" => "call-123@example.com",
-          "cseq" => %CSeq{number: 100, method: :invite}
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "from-tag-123"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "to-tag-456"}
+        },
+        call_id: "call-123@example.com",
+        cseq: %CSeq{number: 100, method: :invite},
+        other_headers: %{}
       }
 
       {:ok, dialog} = Dialog.uas_create(request, provisional)
@@ -407,38 +404,36 @@ defmodule ParrotSip.DialogTest do
       request = %Message{
         method: :invite,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@example.com"),
-            parameters: %{"tag" => "from-tag-123"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{}
-          },
-          "call-id" => "call-123@example.com",
-          "cseq" => %CSeq{number: 100, method: :invite}
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "from-tag-123"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "call-123@example.com",
+        cseq: %CSeq{number: 100, method: :invite},
+        other_headers: %{}
       }
 
       response = %Message{
         type: :response,
         status_code: 200,
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@example.com"),
-            parameters: %{"tag" => "from-tag-123"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{"tag" => "to-tag-456"}
-          },
-          "call-id" => "call-123@example.com",
-          "cseq" => %CSeq{number: 100, method: :invite},
-          "contact" => %Contact{
-            uri: Uri.parse!("sip:bob@192.168.1.200:5060")
-          }
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "from-tag-123"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "to-tag-456"}
+        },
+        call_id: "call-123@example.com",
+        cseq: %CSeq{number: 100, method: :invite},
+        contact: %Contact{
+          uri: Uri.parse!("sip:bob@192.168.1.200:5060")
+        },
+        other_headers: %{}
       }
 
       {:ok, request: request, response: response}
@@ -465,18 +460,17 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :invite,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@alice.com"),
-            parameters: %{"tag" => "1928301774"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{}
-          },
-          "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-          "cseq" => %CSeq{number: 314159, method: :invite}
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@alice.com"),
+          parameters: %{"tag" => "1928301774"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "a84b4c76e66710@pc33.atlanta.com",
+        cseq: %CSeq{number: 314159, method: :invite},
+        other_headers: %{}
       }
       
       {:ok, dialog} = Dialog.create_from_invite(invite, :uac)
@@ -493,18 +487,17 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :invite,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "from" => %From{
-            uri: Uri.parse!("sip:alice@alice.com"),
-            parameters: %{"tag" => "1928301774"}
-          },
-          "to" => %To{
-            uri: Uri.parse!("sip:bob@example.com"),
-            parameters: %{}
-          },
-          "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-          "cseq" => %CSeq{number: 314159, method: :invite}
-        }
+        from: %From{
+          uri: Uri.parse!("sip:alice@alice.com"),
+          parameters: %{"tag" => "1928301774"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "a84b4c76e66710@pc33.atlanta.com",
+        cseq: %CSeq{number: 314159, method: :invite},
+        other_headers: %{}
       }
       
       {:ok, dialog} = Dialog.create_from_invite(invite, :uas)
@@ -521,7 +514,7 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :bye,
         request_uri: "sip:bob@example.com",
-        headers: %{}
+        other_headers: %{}
       }
       
       assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite(bye, :uac)
@@ -532,9 +525,8 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :invite,
         request_uri: "sip:bob@example.com",
-        headers: %{
-          "call-id" => "test-call-id"
-        }
+        call_id: "test-call-id",
+        other_headers: %{}
       }
       
       assert {:error, "Role must be :uac or :uas"} = Dialog.create_from_invite(invite, :invalid)

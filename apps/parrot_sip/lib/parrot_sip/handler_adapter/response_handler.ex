@@ -7,7 +7,7 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
   """
 
   require Logger
-  alias ParrotSip.UAS
+  alias ParrotSip.{UAS, Message}
 
   @doc """
   Processes a response from the user handler and sends it via the UAS.
@@ -79,13 +79,19 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
 
   `:ok`
   """
+  def proxy_request(uri, %Message{method: :invite} = req_sip_msg, uas_obj) do
+    # Send provisional response for INVITE
+    trying_resp = UAS.make_reply(100, "Trying", uas_obj, req_sip_msg)
+    UAS.response(trying_resp, uas_obj)
+    
+    do_proxy_request(uri, req_sip_msg, uas_obj)
+  end
+  
   def proxy_request(uri, req_sip_msg, uas_obj) do
-    # Ensure Transport and UAC are accessible or passed if these become instance methods
-    if req_sip_msg.method == :invite do
-      trying_resp = UAS.make_reply(100, "Trying", uas_obj, req_sip_msg)
-      UAS.response(trying_resp, uas_obj)
-    end
-
+    do_proxy_request(uri, req_sip_msg, uas_obj)
+  end
+  
+  defp do_proxy_request(uri, req_sip_msg, uas_obj) do
     forward_sip_msg = prepare_request_for_forwarding(req_sip_msg, uri)
 
     ParrotSip.UAC.request(forward_sip_msg, fn response ->
@@ -124,13 +130,34 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
 
   The modified SIP request message ready for forwarding
   """
+  def prepare_request_for_forwarding(%Message{method: :invite} = req_sip_msg, target_uri) do
+    # Process basic forwarding updates
+    req = prepare_basic_forwarding(req_sip_msg, target_uri)
+    
+    # Add Record-Route for INVITE
+    local_uri = Application.get_env(:parrot_sip, :local_uri, "sip:localhost:5060")
+    record_route_hdr = ParrotSip.Headers.RecordRoute.new(local_uri)
+
+    existing_routes =
+      case req.record_route do
+        nil -> []
+        r -> List.wrap(r)
+      end
+
+    %{req | record_route: [record_route_hdr | existing_routes]}
+  end
+  
   def prepare_request_for_forwarding(req_sip_msg, target_uri) do
+    prepare_basic_forwarding(req_sip_msg, target_uri)
+  end
+  
+  defp prepare_basic_forwarding(req_sip_msg, target_uri) do
     # Set the new request URI
     req1 = %{req_sip_msg | request_uri: target_uri}
 
     # Decrement Max-Forwards
     max_forwards_val =
-      case ParrotSip.Message.get_header(req1, "max-forwards") do
+      case req1.max_forwards do
         nil -> ParrotSip.Headers.MaxForwards.default()
         val -> val
       end
@@ -141,23 +168,7 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
         v -> v
       end
 
-    req2 = ParrotSip.Message.set_header(req1, "max-forwards", new_max_forwards)
-
-    # Add Record-Route if INVITE
-    if req2.method == :invite do
-      local_uri = Application.get_env(:parrot_sip, :local_uri, "sip:localhost:5060")
-      record_route_hdr = ParrotSip.Headers.RecordRoute.new(local_uri)
-
-      existing_routes =
-        case ParrotSip.Message.get_header(req2, "record-route") do
-          nil -> []
-          r -> List.wrap(r)
-        end
-
-      ParrotSip.Message.set_header(req2, "record-route", [record_route_hdr | existing_routes])
-    else
-      req2
-    end
+    %{req1 | max_forwards: new_max_forwards}
   end
 
   @doc """
@@ -189,10 +200,64 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
     headers_to_copy = ["contact", "content-type", "record-route"]
 
     Enum.reduce(headers_to_copy, resp_with_body, fn header_key, acc_resp ->
-      case ParrotSip.Message.get_header(resp_sip_msg, header_key) do
+      case get_header_value(resp_sip_msg, header_key) do
         nil -> acc_resp
-        value -> ParrotSip.Message.set_header(acc_resp, header_key, value)
+        value -> set_header_value(acc_resp, header_key, value)
       end
     end)
+  end
+
+  # Helper function to get header value from Message struct
+  defp get_header_value(message, header_name) do
+    case String.downcase(header_name) do
+      "from" -> message.from
+      "to" -> message.to
+      "via" -> message.via
+      "call-id" -> message.call_id
+      "cseq" -> message.cseq
+      "contact" -> message.contact
+      "route" -> message.route
+      "record-route" -> message.record_route
+      "max-forwards" -> message.max_forwards
+      "content-type" -> message.content_type
+      "content-length" -> message.content_length
+      "expires" -> message.expires
+      "allow" -> message.allow
+      "supported" -> message.supported
+      "accept" -> message.accept
+      "event" -> message.event
+      "subscription-state" -> message.subscription_state
+      "refer-to" -> message.refer_to
+      "subject" -> message.subject
+      _ -> Map.get(message.other_headers || %{}, header_name)
+    end
+  end
+
+  # Helper function to set header value on Message struct
+  defp set_header_value(message, header_name, value) do
+    case String.downcase(header_name) do
+      "from" -> %{message | from: value}
+      "to" -> %{message | to: value}
+      "via" -> %{message | via: value}
+      "call-id" -> %{message | call_id: value}
+      "cseq" -> %{message | cseq: value}
+      "contact" -> %{message | contact: value}
+      "route" -> %{message | route: value}
+      "record-route" -> %{message | record_route: value}
+      "max-forwards" -> %{message | max_forwards: value}
+      "content-type" -> %{message | content_type: value}
+      "content-length" -> %{message | content_length: value}
+      "expires" -> %{message | expires: value}
+      "allow" -> %{message | allow: value}
+      "supported" -> %{message | supported: value}
+      "accept" -> %{message | accept: value}
+      "event" -> %{message | event: value}
+      "subscription-state" -> %{message | subscription_state: value}
+      "refer-to" -> %{message | refer_to: value}
+      "subject" -> %{message | subject: value}
+      _ -> 
+        other = message.other_headers || %{}
+        %{message | other_headers: Map.put(other, header_name, value)}
+    end
   end
 end

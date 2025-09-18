@@ -131,17 +131,17 @@ defmodule ParrotSip.MessageExtendedTest do
           dialog_id: "dlg-setup",
           transaction_id: "txn-setup"
         )
-        |> Message.set_header("from", %From{
+        |> Message.put_from(%From{
           uri: "sip:alice@example.com",
           parameters: %{"tag" => "123"}
         })
-        |> Message.set_header("to", %To{uri: "sip:bob@example.com", parameters: %{"tag" => "456"}})
-        |> Message.set_header("call-id", "abc123@example.com")
-        |> Message.set_header("via", %Via{
+        |> Message.put_to(%To{uri: "sip:bob@example.com", parameters: %{"tag" => "456"}})
+        |> Message.put_call_id("abc123@example.com")
+        |> Message.put_via(%Via{
           host: "example.com",
           parameters: %{"branch" => "z9hG4bKxyz"}
         })
-        |> Message.set_header("cseq", %CSeq{number: 1, method: :invite})
+        |> Message.put_cseq(%CSeq{number: 1, method: :invite})
 
       {:ok, message: request}
     end

@@ -103,13 +103,19 @@ defmodule ParrotSip.Transaction.ProcessTest do
         type: :response,
         status_code: 200,
         reason_phrase: "OK",
-        headers: %{
-          "via" => ["SIP/2.0/UDP alice.com:5060"],
-          "from" => ["Alice <sip:alice@alice.com>;tag=1928301774"],
-          "to" => ["Bob <sip:bob@example.com>;tag=xyz789"],
-          "call-id" => ["a84b4c76e66710@pc33.alice.com"],
-          "cseq" => %CSeq{number: 314159, method: :invite}
-        }
+        via: [%Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "alice.com",
+          port: 5060,
+          parameters: %{}  # No branch parameter
+        }],
+        from: %From{uri: "sip:alice@alice.com", display_name: "Alice", parameters: %{"tag" => "1928301774"}},
+        to: %To{uri: "sip:bob@example.com", display_name: "Bob", parameters: %{"tag" => "xyz789"}},
+        call_id: "a84b4c76e66710@pc33.alice.com",
+        cseq: %CSeq{number: 314159, method: :invite},
+        other_headers: %{}
       }
       
       result = Transaction.process_message(response)

@@ -647,9 +647,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_provisional?(t()) :: boolean()
-  def is_provisional?(message) do
-    status_class(message) == 1
-  end
+  def is_provisional?(%__MODULE__{type: :response, status_code: code}) when code >= 100 and code < 200, do: true
+  def is_provisional?(_), do: false
 
   @doc """
   Checks if a response message is successful (2xx).
@@ -661,9 +660,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_success?(t()) :: boolean()
-  def is_success?(message) do
-    status_class(message) == 2
-  end
+  def is_success?(%__MODULE__{type: :response, status_code: code}) when code >= 200 and code < 300, do: true
+  def is_success?(_), do: false
 
   @doc """
   Checks if a response message is a redirection (3xx).
@@ -675,9 +673,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_redirect?(t()) :: boolean()
-  def is_redirect?(message) do
-    status_class(message) == 3
-  end
+  def is_redirect?(%__MODULE__{type: :response, status_code: code}) when code >= 300 and code < 400, do: true
+  def is_redirect?(_), do: false
 
   @doc """
   Checks if a response message is a client error (4xx).
@@ -689,9 +686,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_client_error?(t()) :: boolean()
-  def is_client_error?(message) do
-    status_class(message) == 4
-  end
+  def is_client_error?(%__MODULE__{type: :response, status_code: code}) when code >= 400 and code < 500, do: true
+  def is_client_error?(_), do: false
 
   @doc """
   Checks if a response message is a server error (5xx).
@@ -703,9 +699,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_server_error?(t()) :: boolean()
-  def is_server_error?(message) do
-    status_class(message) == 5
-  end
+  def is_server_error?(%__MODULE__{type: :response, status_code: code}) when code >= 500 and code < 600, do: true
+  def is_server_error?(_), do: false
 
   @doc """
   Checks if a response message is a global error (6xx).
@@ -717,9 +712,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_global_error?(t()) :: boolean()
-  def is_global_error?(message) do
-    status_class(message) == 6
-  end
+  def is_global_error?(%__MODULE__{type: :response, status_code: code}) when code >= 600 and code < 700, do: true
+  def is_global_error?(_), do: false
 
   @doc """
   Checks if a response message is a failure (4xx, 5xx, or 6xx).
@@ -731,10 +725,8 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_failure?(t()) :: boolean()
-  def is_failure?(message) do
-    class = status_class(message)
-    class in [4, 5, 6]
-  end
+  def is_failure?(%__MODULE__{type: :response, status_code: code}) when code >= 400 and code < 700, do: true
+  def is_failure?(_), do: false
 
   @doc """
   Converts a message to binary format for transmission.

@@ -87,8 +87,10 @@ defmodule ParrotSip.MessageTest do
       assert %Message{
         from: %From{parameters: %{"tag" => from_tag}},
         to: %To{parameters: %{"tag" => to_tag}}
-      } = message when from_tag != nil and to_tag != nil
+      } = message
       
+      assert from_tag != nil
+      assert to_tag != nil
       assert from_tag == "from123"
       assert to_tag == "to456"
     end

@@ -119,12 +119,16 @@ defmodule ParrotSip.Connection do
   # Private functions
 
   # Process a parsed message based on its type (request or response)
+  defp receive_raw(%Message{type: :request} = message, conn) do
+    receive_request(message, conn)
+  end
+  
+  defp receive_raw(%Message{type: :response} = message, conn) do
+    receive_response(message, conn)
+  end
+  
   defp receive_raw(message, conn) do
-    case message.type do
-      :request -> receive_request(message, conn)
-      :response -> receive_response(message, conn)
-      _ -> {conn, {:bad_message, message, :unknown_message_type}}
-    end
+    {conn, {:bad_message, message, :unknown_message_type}}
   end
 
   # Process a request message
@@ -163,7 +167,7 @@ defmodule ParrotSip.Connection do
           |> maybe_add_received(conn)
           |> maybe_fill_rport(conn)
 
-        updated_message = Message.set_header(message, "via", updated_via)
+        updated_message = %{message | via: updated_via}
         {:ok, updated_message}
     end
   end

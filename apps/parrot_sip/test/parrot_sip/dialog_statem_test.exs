@@ -356,20 +356,19 @@ defmodule ParrotSip.DialogStatemTest do
       malformed_msg = %Message{
         method: :unknown,
         request_uri: "sip:invalid@example.com",
-        headers: %{
-          "cseq" => %CSeq{number: 999, method: :unknown},
-          "call-id" => "test-call-id-123@example.com",
-          "from" => %From{
-            display_name: "Test User",
-            uri: "sip:test@example.com",
-            parameters: %{"tag" => "test-from-tag"}
-          },
-          "to" => %To{
-            display_name: "Target User",
-            uri: "sip:target@example.com",
-            parameters: %{"tag" => "test-to-tag"}
-          }
+        cseq: %CSeq{number: 999, method: :unknown},
+        call_id: "test-call-id-123@example.com",
+        from: %From{
+          display_name: "Test User",
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "test-from-tag"}
         },
+        to: %To{
+          display_name: "Target User",
+          uri: "sip:target@example.com",
+          parameters: %{"tag" => "test-to-tag"}
+        },
+        other_headers: %{},
         body: ""
       }
 
@@ -415,32 +414,31 @@ defmodule ParrotSip.DialogStatemTest do
       method: :invite,
       request_uri: "sip:user@example.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-123"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{}
-        },
-        "call-id" => "test-call-id-123@example.com",
-        "cseq" => %CSeq{number: 1, method: :invite},
-        "contact" => %Contact{
-          uri: "sip:test@127.0.0.1:5060",
-          parameters: %{}
-        }
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-123"}
       },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{}
+      },
+      call_id: "test-call-id-123@example.com",
+      cseq: %CSeq{number: 1, method: :invite},
+      contact: %Contact{
+        uri: "sip:test@127.0.0.1:5060",
+        parameters: %{}
+      },
+      other_headers: %{},
       body:
         "v=0\r\no=test 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
     }
@@ -453,28 +451,27 @@ defmodule ParrotSip.DialogStatemTest do
       version: "SIP/2.0",
       status_code: status,
       reason_phrase: reason,
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-123"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{"tag" => "test-to-tag"}
-        },
-        "call-id" => "test-call-id-123@example.com",
-        "cseq" => %CSeq{number: 1, method: :invite}
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-123"}
       },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: "test-call-id-123@example.com",
+      cseq: %CSeq{number: 1, method: :invite},
+      other_headers: %{},
       body: ""
     }
   end
@@ -484,28 +481,27 @@ defmodule ParrotSip.DialogStatemTest do
       method: :ack,
       request_uri: "sip:target@example.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-ack"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{"tag" => "test-to-tag"}
-        },
-        "call-id" => "test-call-id-123@example.com",
-        "cseq" => %CSeq{number: 1, method: :ack}
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-ack"}
       },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: "test-call-id-123@example.com",
+      cseq: %CSeq{number: 1, method: :ack},
+      other_headers: %{},
       body: ""
     }
   end
@@ -515,28 +511,27 @@ defmodule ParrotSip.DialogStatemTest do
       method: :bye,
       request_uri: "sip:target@example.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-bye"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{"tag" => "test-to-tag"}
-        },
-        "call-id" => "test-call-id-123@example.com",
-        "cseq" => %CSeq{number: 2, method: :bye}
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-bye"}
       },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: "test-call-id-123@example.com",
+      cseq: %CSeq{number: 2, method: :bye},
+      other_headers: %{},
       body: ""
     }
   end
@@ -546,28 +541,27 @@ defmodule ParrotSip.DialogStatemTest do
       method: :options,
       request_uri: "sip:target@example.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-options"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{}
-        },
-        "call-id" => "test-call-id-options@example.com",
-        "cseq" => %CSeq{number: 1, method: :options}
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-options"}
       },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{}
+      },
+      call_id: "test-call-id-options@example.com",
+      cseq: %CSeq{number: 1, method: :options},
+      other_headers: %{},
       body: ""
     }
   end
@@ -577,28 +571,27 @@ defmodule ParrotSip.DialogStatemTest do
       method: :invite,
       request_uri: "sip:target@example.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-reinvite"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{"tag" => "test-to-tag"}
-        },
-        "call-id" => "test-call-id-123@example.com",
-        "cseq" => %CSeq{number: 3, method: :invite}
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-reinvite"}
       },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: "test-call-id-123@example.com",
+      cseq: %CSeq{number: 3, method: :invite},
+      other_headers: %{},
       body:
         "v=0\r\no=test 789 012 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
     }
@@ -609,27 +602,27 @@ defmodule ParrotSip.DialogStatemTest do
       method: :subscribe,
       request_uri: "sip:target@example.com",
       version: "2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "127.0.0.1",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK-test-branch-subscribe"}
-        },
-        "from" => %From{
-          display_name: "Test User",
-          uri: "sip:test@example.com",
-          parameters: %{"tag" => "test-from-tag"}
-        },
-        "to" => %To{
-          display_name: "Target User",
-          uri: "sip:target@example.com",
-          parameters: %{}
-        },
-        "call-id" => "test-call-id-subscribe@example.com",
-        "cseq" => %CSeq{number: 1, method: :subscribe},
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-test-branch-subscribe"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{}
+      },
+      call_id: "test-call-id-subscribe@example.com",
+      cseq: %CSeq{number: 1, method: :subscribe},
+      other_headers: %{
         "event" => "presence",
         "expires" => "3600"
       },

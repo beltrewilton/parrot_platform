@@ -261,16 +261,16 @@ defmodule ParrotSip.Transaction do
   - `{:error, reason}` for other errors
   """
   @spec process_message(Message.t()) :: :ok | {:error, term()}
-  def process_message(%Message{} = message) do
-    # Determine if this is a request or response
-    case message.type do
-      :request ->
-        process_request(message)
-      :response ->
-        process_response(message)
-      _ ->
-        {:error, :invalid_message_type}
-    end
+  def process_message(%Message{type: :request} = message) do
+    process_request(message)
+  end
+  
+  def process_message(%Message{type: :response} = message) do
+    process_response(message)
+  end
+  
+  def process_message(_message) do
+    {:error, :invalid_message_type}
   end
   
   defp process_request(request) do

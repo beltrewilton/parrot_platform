@@ -466,11 +466,11 @@ defmodule ParrotSip.Parser do
          "Invalid SIP message format: Missing required headers: #{Enum.join(Enum.reverse(missing_headers), ", ")}"}
 
       message.type == :request and
-        message.cseq and
+        not is_nil(message.cseq) and
           not Enum.member?(@sip_methods, message.cseq.method) ->
         {:error, "Invalid CSeq method: #{message.cseq.method}"}
 
-      message.via and is_binary(message.via) ->
+      not is_nil(message.via) and is_binary(message.via) ->
         # If Via is still a string, try to parse it properly
         # This shouldn't happen with the new parser but keeping for safety
         {:error, "Via header not properly parsed"}

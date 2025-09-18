@@ -47,17 +47,17 @@ defmodule ParrotSip.HandlerAdapter.HeaderHandler do
         is_list(value) and header_name == "contact" ->
           Logger.debug("Processing contact list: #{inspect(value)}")
           contacts = Enum.map(value, &parse_contact_value/1)
-          Message.set_header(acc_msg, "contact", contacts)
+          %{acc_msg | contact: contacts}
 
         # Handle string values
         is_binary(value) ->
           Logger.debug("Processing string header value")
-          Message.set_header(acc_msg, header_name, value)
+          set_header_field(acc_msg, header_name, value)
 
         # Handle already parsed header structs
         true ->
           Logger.debug("Header value is already a parsed structure")
-          Message.set_header(acc_msg, header_name, value)
+          set_header_field(acc_msg, header_name, value)
       end
     end)
   end
@@ -133,7 +133,7 @@ defmodule ParrotSip.HandlerAdapter.HeaderHandler do
             }
         end
 
-      Message.set_header(sip_msg, header_name, header)
+      set_header_field(sip_msg, header_name, header)
     else
       # No URI, skip adding the header
       sip_msg
@@ -169,5 +169,34 @@ defmodule ParrotSip.HandlerAdapter.HeaderHandler do
       uri: uri,
       parameters: %{}
     }
+  end
+
+  # Helper function to set header fields on Message struct
+  defp set_header_field(message, header_name, value) do
+    case String.downcase(header_name) do
+      "from" -> %{message | from: value}
+      "to" -> %{message | to: value}
+      "via" -> %{message | via: value}
+      "call-id" -> %{message | call_id: value}
+      "cseq" -> %{message | cseq: value}
+      "contact" -> %{message | contact: value}
+      "route" -> %{message | route: value}
+      "record-route" -> %{message | record_route: value}
+      "max-forwards" -> %{message | max_forwards: value}
+      "content-type" -> %{message | content_type: value}
+      "content-length" -> %{message | content_length: value}
+      "expires" -> %{message | expires: value}
+      "allow" -> %{message | allow: value}
+      "supported" -> %{message | supported: value}
+      "accept" -> %{message | accept: value}
+      "event" -> %{message | event: value}
+      "subscription-state" -> %{message | subscription_state: value}
+      "refer-to" -> %{message | refer_to: value}
+      "subject" -> %{message | subject: value}
+      _ -> 
+        # Unknown header, add to other_headers
+        other = message.other_headers || %{}
+        %{message | other_headers: Map.put(other, header_name, value)}
+    end
   end
 end

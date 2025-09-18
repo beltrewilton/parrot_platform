@@ -33,10 +33,10 @@ defmodule ParrotSip.TransactionStatemTest do
 
       # Test improved pattern matching for headers
       assert %Via{} = Message.top_via(message)
-      assert %From{} = Message.from(message)
-      assert %To{} = Message.to(message)
-      assert %CSeq{} = Message.cseq(message)
-      assert is_binary(Message.call_id(message))
+      assert %From{} = message.from
+      assert %To{} = message.to
+      assert %CSeq{} = message.cseq
+      assert is_binary(message.call_id)
     end
 
     test "handles in-dialog detection" do
@@ -55,28 +55,27 @@ defmodule ParrotSip.TransactionStatemTest do
         direction: :incoming,
         request_uri: "sip:bob@biloxi.com",
         version: "SIP/2.0",
-        headers: %{
-          "via" => %Via{
-            protocol: "SIP",
-            version: "2.0",
-            transport: :udp,
-            host: "pc33.atlanta.com",
-            port: 5060,
-            parameters: %{"branch" => "z9hG4bKnashds8"}
-          },
-          "from" => %From{
-            display_name: "Alice",
-            uri: "sip:alice@atlanta.com",
-            parameters: %{"tag" => "1928301774"}
-          },
-          "to" => %To{
-            display_name: "Bob",
-            uri: "sip:bob@biloxi.com",
-            parameters: %{"tag" => "314159"}
-          },
-          "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-          "cseq" => %CSeq{number: 314_159, method: :ack}
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bKnashds8"}
         },
+        from: %From{
+          display_name: "Alice",
+          uri: "sip:alice@atlanta.com",
+          parameters: %{"tag" => "1928301774"}
+        },
+        to: %To{
+          display_name: "Bob",
+          uri: "sip:bob@biloxi.com",
+          parameters: %{"tag" => "314159"}
+        },
+        call_id: "a84b4c76e66710@pc33.atlanta.com",
+        cseq: %CSeq{number: 314_159, method: :ack},
+        other_headers: %{},
         body: "",
         source: %ParrotSip.Source{
           local: {{127, 0, 0, 1}, 5060},
@@ -230,10 +229,10 @@ defmodule ParrotSip.TransactionStatemTest do
       assert response.reason_phrase == "Ringing"
 
       # Should copy headers from request appropriately
-      assert response.headers["via"] == request.headers["via"]
-      assert response.headers["from"] == request.headers["from"]
-      assert response.headers["call-id"] == request.headers["call-id"]
-      assert response.headers["cseq"] == request.headers["cseq"]
+      assert response.via == request.via
+      assert response.from == request.from
+      assert response.call_id == request.call_id
+      assert response.cseq == request.cseq
     end
 
     test "handles different response codes" do
@@ -272,38 +271,37 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          # No branch parameter for RFC 2543 style
-          parameters: %{}
-        },
-        "from" => %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        "to" => %To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          # With tag to make it appear in-dialog for RFC 2543 ID generation
-          parameters: %{"tag" => "314159"}
-        },
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => %CSeq{
-          number: 314_159,
-          method: :invite
-        },
-        "contact" => %Contact{
-          display_name: nil,
-          uri: "sip:alice@pc33.atlanta.com",
-          parameters: %{}
-        }
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "pc33.atlanta.com",
+        port: 5060,
+        # No branch parameter for RFC 2543 style
+        parameters: %{}
       },
+      from: %From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %To{
+        display_name: "Bob",
+        uri: "sip:bob@biloxi.com",
+        # With tag to make it appear in-dialog for RFC 2543 ID generation
+        parameters: %{"tag" => "314159"}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %CSeq{
+        number: 314_159,
+        method: :invite
+      },
+      contact: %Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      other_headers: %{},
       body: ""
     }
   end
@@ -315,36 +313,35 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          parameters: %{"branch" => branch}
-        },
-        "from" => %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        "to" => %To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{}
-        },
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => %CSeq{
-          number: 314_159,
-          method: :invite
-        },
-        "contact" => %Contact{
-          display_name: nil,
-          uri: "sip:alice@pc33.atlanta.com",
-          parameters: %{}
-        }
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "pc33.atlanta.com",
+        port: 5060,
+        parameters: %{"branch" => branch}
       },
+      from: %From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %To{
+        display_name: "Bob",
+        uri: "sip:bob@biloxi.com",
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %CSeq{
+        number: 314_159,
+        method: :invite
+      },
+      contact: %Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      other_headers: %{},
       body: ""
     }
   end
@@ -356,36 +353,35 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :register,
       request_uri: "sip:registrar.biloxi.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          parameters: %{"branch" => branch}
-        },
-        "from" => %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        "to" => %To{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{}
-        },
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => %CSeq{
-          number: 314_159,
-          method: :register
-        },
-        "contact" => %Contact{
-          display_name: nil,
-          uri: "sip:alice@pc33.atlanta.com",
-          parameters: %{}
-        }
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "pc33.atlanta.com",
+        port: 5060,
+        parameters: %{"branch" => branch}
       },
+      from: %From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %To{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %CSeq{
+        number: 314_159,
+        method: :register
+      },
+      contact: %Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      other_headers: %{},
       body: ""
     }
   end
@@ -397,31 +393,30 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :cancel,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKnonexistent"}
-        },
-        "from" => %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        "to" => %To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{}
-        },
-        "call-id" => "nonexistent@pc33.atlanta.com",
-        "cseq" => %CSeq{
-          number: 314_159,
-          method: :cancel
-        }
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "pc33.atlanta.com",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKnonexistent"}
       },
+      from: %From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %To{
+        display_name: "Bob",
+        uri: "sip:bob@biloxi.com",
+        parameters: %{}
+      },
+      call_id: "nonexistent@pc33.atlanta.com",
+      cseq: %CSeq{
+        number: 314_159,
+        method: :cancel
+      },
+      other_headers: %{},
       body: ""
     }
   end
@@ -433,32 +428,31 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :bye,
       request_uri: "sip:alice@pc33.atlanta.com",
       version: "SIP/2.0",
-      headers: %{
-        "via" => %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "biloxi.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKbye123"}
-        },
-        "from" => %From{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{"tag" => "8321234356"}
-        },
-        "to" => %To{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          # Both tags present = in-dialog
-          parameters: %{"tag" => "1928301774"}
-        },
-        "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-        "cseq" => %CSeq{
-          number: 231,
-          method: :bye
-        }
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "biloxi.com",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKbye123"}
       },
+      from: %From{
+        display_name: "Bob",
+        uri: "sip:bob@biloxi.com",
+        parameters: %{"tag" => "8321234356"}
+      },
+      to: %To{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        # Both tags present = in-dialog
+        parameters: %{"tag" => "1928301774"}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %CSeq{
+        number: 231,
+        method: :bye
+      },
+      other_headers: %{},
       body: ""
     }
   end
