@@ -92,16 +92,23 @@ defmodule ParrotSip.UASTest do
     test "rejects unsupported methods with 405 Method Not Allowed" do
       # Test with an unsupported method by creating a message with unsupported method
       # Note: Since validate_request is private, we test it indirectly through process
+      headers = create_basic_headers()
       msg = %Message{
         # Unsupported method
         method: :subscribe,
         request_uri: "sip:alice@example.com",
         version: "SIP/2.0",
-        headers: create_basic_headers(),
+        call_id: headers["call-id"],
+        contact: headers["contact"],
+        cseq: headers["cseq"],
+        from: headers["from"],
+        to: headers["to"],
+        via: headers["via"],
         body: "",
         direction: :incoming,
         type: :request,
-        source: create_test_source()
+        source: create_test_source(),
+        other_headers: %{}
       }
 
       handler = TestHandler.new()
@@ -174,41 +181,62 @@ defmodule ParrotSip.UASTest do
   # Helper functions
 
   defp create_invite_request do
+    headers = create_basic_headers()
     %Message{
       type: :request,
       direction: :incoming,
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      headers: create_basic_headers(),
+      call_id: headers["call-id"],
+      contact: headers["contact"],
+      cseq: headers["cseq"],
+      from: headers["from"],
+      to: headers["to"],
+      via: headers["via"],
       body: "",
-      source: create_test_source()
+      source: create_test_source(),
+      other_headers: %{}
     }
   end
 
   defp create_ack_request do
+    headers = create_basic_headers()
     %Message{
       type: :request,
       direction: :incoming,
       method: :ack,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      headers: create_basic_headers(),
+      call_id: headers["call-id"],
+      contact: headers["contact"],
+      cseq: headers["cseq"],
+      from: headers["from"],
+      to: headers["to"],
+      via: headers["via"],
       body: "",
-      source: create_test_source()
+      source: create_test_source(),
+      other_headers: %{}
     }
   end
 
   defp create_request_with_method(method) do
+    headers = create_basic_headers()
     %Message{
       type: :request,
       direction: :incoming,
       method: method,
       request_uri: "sip:alice@example.com",
       version: "SIP/2.0",
-      headers: create_basic_headers(),
+      call_id: headers["call-id"],
+      contact: headers["contact"],
+      cseq: headers["cseq"],
+      from: headers["from"],
+      to: headers["to"],
+      via: headers["via"],
       body: "",
-      source: create_test_source()
+      source: create_test_source(),
+      other_headers: %{}
     }
   end
 

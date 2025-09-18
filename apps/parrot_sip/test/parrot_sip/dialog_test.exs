@@ -12,11 +12,10 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :invite,
         direction: :incoming,
-        headers: %{
-          "from" => %From{parameters: %{"tag" => "from-tag-123"}},
-          "to" => %To{parameters: %{"tag" => "to-tag-456"}},
-          "call-id" => "call-123@example.com"
-        }
+        from: %From{parameters: %{"tag" => "from-tag-123"}},
+        to: %To{parameters: %{"tag" => "to-tag-456"}},
+        call_id: "call-123@example.com",
+        other_headers: %{}
       }
 
       dialog_id = Dialog.from_message(request)
@@ -32,11 +31,10 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :bye,
         direction: :outgoing,
-        headers: %{
-          "from" => %From{parameters: %{"tag" => "from-tag-123"}},
-          "to" => %To{parameters: %{"tag" => "to-tag-456"}},
-          "call-id" => "call-123@example.com"
-        }
+        from: %From{parameters: %{"tag" => "from-tag-123"}},
+        to: %To{parameters: %{"tag" => "to-tag-456"}},
+        call_id: "call-123@example.com",
+        other_headers: %{}
       }
 
       dialog_id = Dialog.from_message(request)
@@ -52,11 +50,10 @@ defmodule ParrotSip.DialogTest do
         type: :response,
         status_code: 200,
         direction: :incoming,
-        headers: %{
-          "from" => %From{parameters: %{"tag" => "from-tag-123"}},
-          "to" => %To{parameters: %{"tag" => "to-tag-456"}},
-          "call-id" => "call-123@example.com"
-        }
+        from: %From{parameters: %{"tag" => "from-tag-123"}},
+        to: %To{parameters: %{"tag" => "to-tag-456"}},
+        call_id: "call-123@example.com",
+        other_headers: %{}
       }
 
       dialog_id = Dialog.from_message(response)
@@ -73,11 +70,10 @@ defmodule ParrotSip.DialogTest do
         type: :request,
         method: :invite,
         direction: :incoming,
-        headers: %{
-          "from" => %From{parameters: %{"tag" => "from-tag-123"}},
-          "to" => %To{parameters: %{}},
-          "call-id" => "call-123@example.com"
-        }
+        from: %From{parameters: %{"tag" => "from-tag-123"}},
+        to: %To{parameters: %{}},
+        call_id: "call-123@example.com",
+        other_headers: %{}
       }
 
       dialog_id = Dialog.from_message(request)

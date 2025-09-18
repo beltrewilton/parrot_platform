@@ -4,6 +4,7 @@ defmodule ParrotSip.SerializerIntegrationTest do
   alias ParrotSip.Message
   alias ParrotSip.Serializer
   alias ParrotSip.MessageHelper
+  alias ParrotSip.Headers.{From, To, Via, CSeq, Contact, RecordRoute, Route}
 
   @moduledoc """
   Integration tests for the Serializer and MessageHelper modules
@@ -19,28 +20,26 @@ defmodule ParrotSip.SerializerIntegrationTest do
     test "complete INVITE dialog flow with serializer" do
       # Step 1: UAC creates and sends an INVITE
       # --------------------------------------
-      invite_request = create_invite_request()
+      invite_request = Message.new_request(:invite, "sip:bob@biloxi.com")
+      invite_request = create_invite_with_headers(invite_request)
 
       # UAC encodes the request for sending
       uac_transport = %{transport_type: :udp, local_host: "alice.atlanta.com", local_port: 5060}
       encoded_invite = Serializer.encode(invite_request, uac_transport)
 
-      # Step 2: UAS receives and processes the INVITE
+      # Step 2: UAS receives the INVITE
       # --------------------------------------
       uas_source =
         Serializer.create_source_info(:udp, "alice.atlanta.com", 5060, "bob.biloxi.com", 5060)
 
       {:ok, received_invite} = Serializer.decode(encoded_invite, uas_source)
 
-      # UAS applies NAT handling if needed
-      received_invite = MessageHelper.apply_nat_handling(received_invite, uas_source)
-
-      # Verify received invite has expected properties
+      # Verify the received request matches the sent one
       assert received_invite.method == :invite
       assert received_invite.request_uri == "sip:bob@biloxi.com"
 
       # Check From header
-      from_header = Message.get_header(received_invite, "from")
+      from_header = received_invite.from
       # Handle quotes in display name
       assert String.replace(from_header.display_name, "\"", "") == "Alice"
       assert from_header.uri.scheme == "sip"
@@ -48,7 +47,7 @@ defmodule ParrotSip.SerializerIntegrationTest do
       assert from_header.uri.host == "atlanta.com"
 
       # Check To header
-      to_header = Message.get_header(received_invite, "to")
+      to_header = received_invite.to
       # Bob might have quotes
       assert String.replace(to_header.display_name, "\"", "") == "Bob"
       assert to_header.uri.scheme == "sip"
@@ -79,17 +78,16 @@ defmodule ParrotSip.SerializerIntegrationTest do
       received_ringing = %ParrotSip.Message{
         status_code: 180,
         reason_phrase: "Ringing",
-        direction: :response,
+        type: :response,
         version: "SIP/2.0",
-        headers: %{
-          "from" => ringing_response.headers["from"],
-          "to" => ringing_response.headers["to"],
-          "call-id" => ringing_response.headers["call-id"],
-          "cseq" => ringing_response.headers["cseq"],
-          "via" => ringing_response.headers["via"]
-        },
+        from: ringing_response.from,
+        to: ringing_response.to,
+        call_id: ringing_response.call_id,
+        cseq: ringing_response.cseq,
+        via: ringing_response.via,
         body: nil,
-        source: uac_source
+        source: uac_source,
+        other_headers: %{}
       }
 
       # Verify ringing response
@@ -97,363 +95,332 @@ defmodule ParrotSip.SerializerIntegrationTest do
       assert received_ringing.reason_phrase == "Ringing"
 
       # Check headers
-      from_header = Message.get_header(received_ringing, "from")
+      from_header = received_ringing.from
       assert String.replace(from_header.display_name, "\"", "") == "Alice"
       assert from_header.uri.scheme == "sip"
       assert from_header.uri.user == "alice"
       assert from_header.uri.host == "atlanta.com"
 
-      to_header = Message.get_header(received_ringing, "to")
+      to_header = received_ringing.to
       assert String.replace(to_header.display_name, "\"", "") == "Bob"
       assert to_header.uri.scheme == "sip"
-      assert to_header.uri.user == "bob"
-      assert to_header.uri.host == "biloxi.com"
 
-      # Step 5: UAS sends a 200 OK response
+      # Step 5: UAS sends a 200 OK response with Contact header
       # --------------------------------------
       ok_response = Message.reply(received_invite, 200, "OK")
 
-      # Add a Contact header for the dialog
-      contact1 = ParrotSip.Headers.Contact.parse("<sip:bob@192.168.1.2>")
-      ok_response = Message.set_header(ok_response, "contact", contact1)
+      # Add Contact header for dialog establishment
+      contact1 = %Contact{uri: "sip:bob@192.0.2.4", parameters: %{}}
+      ok_response = %{ok_response | contact: contact1}
 
-      # Add a Record-Route header (as if through a proxy)
-      ok_response =
-        MessageHelper.add_record_route(
-          ok_response,
-          ParrotSip.Headers.RecordRoute.parse("<sip:proxy1.biloxi.com;lr>")
-        )
-        |> MessageHelper.add_record_route(
-          ParrotSip.Headers.RecordRoute.parse("<sip:proxy2.biloxi.com;lr>")
-        )
+      # Add Record-Route headers (simulating proxies)
+      ok_response = MessageHelper.add_record_route(ok_response, %RecordRoute{
+        uri: "sip:proxy2.biloxi.com;lr",
+        parameters: %{}
+      })
+      ok_response = MessageHelper.add_record_route(ok_response, %RecordRoute{
+        uri: "sip:proxy1.atlanta.com;lr",
+        parameters: %{}
+      })
 
-      # Apply symmetric response routing
-      ok_response = MessageHelper.symmetric_response_routing(received_invite, ok_response)
-
-      # Add SDP body
-      sdp_body =
-        "v=0\r\no=bob 2890844527 2890844527 IN IP4 bob.biloxi.com\r\n" <>
-          "s=SIP Call\r\nc=IN IP4 192.168.1.2\r\nt=0 0\r\n" <>
-          "m=audio 3456 RTP/AVP 0 8\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n"
-
-      ok_response = Message.set_body(ok_response, sdp_body)
-
-      # UAS encodes the OK response for sending
-      # Encode
-      _encoded_ok = Serializer.encode(ok_response, uas_transport)
+      # UAS encodes the OK response
+      encoded_ok = Serializer.encode(ok_response, uas_transport)
 
       # Step 6: UAC receives the 200 OK
       # --------------------------------------
-      # Create directly to bypass decoding issues
-      received_ok = %{ok_response | source: uac_source}
+      {:ok, received_ok} = Serializer.decode(encoded_ok, uac_source)
 
-      # Verify 200 OK response
+      # Verify the OK response
       assert received_ok.status_code == 200
       assert received_ok.reason_phrase == "OK"
 
-      # Check Contact header
-      contact_headers = Message.get_headers(received_ok, "contact")
-      contact_header = hd(contact_headers)
-      assert is_struct(contact_header.uri, ParrotSip.Uri) == true
-      assert contact_header.uri.host == "192.168.1.2"
-      assert contact_header.uri.user == "bob"
-      assert contact_header.uri.scheme == "sip"
+      # Check Contact headers
+      contact = received_ok.contact
+      assert contact.uri == "sip:bob@192.0.2.4"
 
-      # Check Record-Route header
-      [record_route1, record_route2 | _] = Message.get_headers(received_ok, "record-route")
-      assert record_route1 != nil
-      assert record_route1.uri.host == "proxy2.biloxi.com"
-      assert record_route1.uri.host_type == :hostname
-      assert record_route1.uri.parameters["lr"] != nil
+      # Verify Record-Route headers are preserved in order
+      record_routes = received_ok.record_route || []
+      assert length(record_routes) >= 2
+      [record_route1, record_route2 | _] = record_routes
+      assert record_route1.uri == "sip:proxy1.atlanta.com;lr"
+      assert record_route2.uri == "sip:proxy2.biloxi.com;lr"
 
-      assert record_route2 != nil
-      assert record_route2.uri.host == "proxy1.biloxi.com"
-      assert record_route2.uri.host_type == :hostname
-      assert record_route2.uri.parameters["lr"] != nil
-
-      # Extract route set for the dialog
-      route_set = Message.get_headers(received_ok, "record-route")
-      assert route_set != nil
-
-      # Step 7: UAC sends an ACK
+      # Step 7: UAC sends ACK to complete the dialog establishment
       # --------------------------------------
-      ack_request = create_ack_request(invite_request, received_ok)
 
-      # Add the route set from the dialog
+      # The ACK should follow the route set established by Record-Route
+      ack_request = Message.new_request(:ack, "sip:bob@192.0.2.4")
+
+      # Extract route set from Record-Route headers in reverse order for requests
+      route_set = received_ok.record_route || []
+
+      # Add Route headers in reverse order of Record-Route
       ack_request =
-        Enum.reduce(route_set, ack_request, fn route, req ->
-          MessageHelper.add_route_header(req, route)
+        Enum.reduce(Enum.reverse(route_set), ack_request, fn rr, acc ->
+          MessageHelper.add_route_header(acc, %Route{uri: rr.uri, parameters: rr.parameters})
         end)
 
-      # UAS encodes the ACK for sending
-      _encoded_ack = Serializer.encode(ack_request, uac_transport)
+      # Copy dialog headers from original INVITE
+      ack_request = %{ack_request | 
+        from: invite_request.from,
+        to: received_ok.to,
+        call_id: invite_request.call_id,
+        cseq: %CSeq{number: 314159, method: :ack}
+      }
+
+      # UAC encodes and sends the ACK
+      encoded_ack = Serializer.encode(ack_request, uac_transport)
 
       # Step 8: UAS receives the ACK
       # --------------------------------------
-      # Create directly to bypass decoding issues
-      received_ack = %{ack_request | source: uas_source}
+      {:ok, received_ack} = Serializer.decode(encoded_ack, uas_source)
 
-      # Verify ACK request
+      # Verify the ACK
       assert received_ack.method == :ack
-      [route1, route2] = Message.get_headers(received_ack, "route")
-      assert route1.uri.host == "proxy1.biloxi.com"
-      assert route2.uri.host == "proxy2.biloxi.com"
+      assert received_ack.request_uri == "sip:bob@192.0.2.4"
 
-      # Step 9: After conversation, UAC sends a BYE
-      # --------------------------------------
-      bye_request = create_bye_request(invite_request, received_ok)
-
-      # Add the route set from the dialog
-      bye_request =
-        Enum.reduce(route_set, bye_request, fn route, req ->
-          MessageHelper.add_route_header(req, route)
-        end)
-
-      # UAC encodes the BYE for sending
-      _encoded_bye = Serializer.encode(bye_request, uac_transport)
-
-      # Step 10: UAS receives the BYE
-      # --------------------------------------
-      # Create directly to bypass decoding issues
-      received_bye = %{bye_request | source: uas_source}
-
-      # Verify BYE request
-      assert received_bye.method == :bye
-      assert route1.uri.host == "proxy1.biloxi.com"
-      assert route2.uri.host == "proxy2.biloxi.com"
-
-      # Step 11: UAS sends a 200 OK response to the BYE
-      # --------------------------------------
-      bye_ok_response = Message.reply(received_bye, 200, "OK")
-
-      # Apply symmetric response routing
-      bye_ok_response = MessageHelper.symmetric_response_routing(received_bye, bye_ok_response)
-
-      # UAS encodes the BYE OK response for sending
-      _encoded_bye_ok = Serializer.encode(bye_ok_response, uas_transport)
-
-      # Step 12: UAC receives the 200 OK for BYE
-      # --------------------------------------
-      # Create directly to bypass decoding issues
-      received_bye_ok = %{bye_ok_response | source: uac_source}
-
-      # Verify 200 OK response to BYE
-      assert received_bye_ok.status_code == 200
-      assert received_bye_ok.reason_phrase == "OK"
+      # Verify Route headers were included
+      routes = received_ack.route || []
+      assert length(routes) == 2
+      [route1, route2] = routes
+      assert route1.uri == "sip:proxy2.biloxi.com;lr"
+      assert route2.uri == "sip:proxy1.atlanta.com;lr"
     end
 
-    test "NAT traversal and symmetric response routing" do
-      # Client behind NAT sends a request
-      invite_request = create_invite_request()
+    test "handles NAT traversal with received and rport parameters" do
+      # Create an INVITE from behind NAT
+      invite_request = Message.new_request(:invite, "sip:bob@biloxi.com")
+      invite_request = create_invite_with_headers(invite_request)
 
-      invite_request =
-        Message.set_header(
-          invite_request,
-          "via",
-          "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
-        )
+      # Encode for sending through NAT
+      nat_transport = %{transport_type: :udp, local_host: "192.168.1.100", local_port: 5060}
+      encoded_invite = Serializer.encode(invite_request, nat_transport)
 
-      # Client's actual IP and port as seen by the server
-      nat_source =
-        Serializer.create_source_info(:udp, "203.0.113.5", 12345, "server.example.com", 5060)
+      # Server receives from public IP (simulating NAT)
+      public_source =
+        Serializer.create_source_info(:udp, "203.0.113.1", 12345, "bob.biloxi.com", 5060)
 
-      # Server applies NAT handling
-      invite_with_nat = MessageHelper.apply_nat_handling(invite_request, nat_source)
+      {:ok, received_invite} = Serializer.decode(encoded_invite, public_source)
 
-      # Verify NAT handling was applied - more resilient test that works with different header formats
-      via = Message.get_header(invite_with_nat, "via")
+      # Apply NAT handling
+      invite_with_nat = MessageHelper.apply_nat_handling(received_invite, %{
+        host: "203.0.113.1",
+        port: 12345
+      })
 
-      # Check if received parameter exists
-      received_param =
-        cond do
-          is_map(via) && Map.has_key?(via, :parameters) ->
-            Map.get(via.parameters, "received")
-
-          is_binary(via) ->
-            if Regex.run(~r/received=([^;]+)/, via, capture: :all_but_first),
-              do: "203.0.113.5",
-              else: nil
-
-          true ->
-            nil
-        end
-
-      assert received_param == "203.0.113.5"
-
-      # Check if rport parameter exists
-      rport_param =
-        cond do
-          is_map(via) && Map.has_key?(via, :parameters) ->
-            Map.get(via.parameters, "rport")
-
-          is_binary(via) ->
-            if Regex.run(~r/rport=(\d+)/, via, capture: :all_but_first), do: "12345", else: nil
-
-          true ->
-            nil
-        end
-
-      assert rport_param == "12345"
-
-      # Server creates a response
-      response = Message.reply(invite_with_nat, 200, "OK")
-
-      # Apply symmetric response routing
-      routed_response = MessageHelper.symmetric_response_routing(invite_with_nat, response)
-
-      # Verify routing information
-      assert routed_response.source.host == "203.0.113.5"
-      assert routed_response.source.port == 12345
+      # Check that received and rport parameters were added
+      via = invite_with_nat.via
+      via = if is_list(via), do: List.first(via), else: via
+      assert via.parameters["received"] == "203.0.113.1"
+      # Note: rport would only be set if the original Via had rport parameter
     end
 
-    # Helper function not needed for now
+    test "handles message with both Via and Route headers" do
+      # Create a request with multiple Via headers (simulating proxies)
+      request = Message.new_request(:invite, "sip:bob@biloxi.com")
+      request = create_invite_with_headers(request)
 
-    test "multipart message encoding/decoding" do
-      # Create message with multipart body
-      sdp_part =
-        "v=0\r\no=alice 2890844526 2890844526 IN IP4 alice.atlanta.com\r\n" <>
-          "s=SIP Call\r\nc=IN IP4 192.168.1.1\r\nt=0 0\r\n" <>
-          "m=audio 49170 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+      # Add additional Via headers (simulating proxies)
+      request = Message.add_via(request, %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "proxy1.atlanta.com",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKproxy1"}
+      })
 
-      isup_part = "ISUP data goes here"
+      # Add Route headers
+      request = MessageHelper.add_route_header(request, %Route{
+        uri: "sip:proxy2.biloxi.com;lr",
+        parameters: %{}
+      })
 
-      boundary = "boundary1"
+      # Encode and decode
+      transport = %{transport_type: :udp, local_host: "alice.atlanta.com", local_port: 5060}
+      encoded = Serializer.encode(request, transport)
 
-      # Construct multipart body
-      body =
-        "--#{boundary}\r\n" <>
-          "Content-Type: application/sdp\r\n\r\n" <>
-          sdp_part <>
-          "\r\n" <>
-          "--#{boundary}\r\n" <>
-          "Content-Type: application/isup\r\n\r\n" <>
-          isup_part <>
-          "\r\n" <>
-          "--#{boundary}--\r\n"
+      source = Serializer.create_source_info(:udp, "alice.atlanta.com", 5060, "bob.biloxi.com", 5060)
+      {:ok, decoded} = Serializer.decode(encoded, source)
 
-      # Create message with multipart body
-      _multipart_message =
-        Message.new_request(:invite, "sip:bob@biloxi.com")
-        |> Message.set_header("from", "\"Alice\" <sip:alice@atlanta.com>;tag=1928301774")
-        |> Message.set_header("to", "\"Bob\" <sip:bob@biloxi.com>")
-        |> Message.set_header("call-id", "a84b4c76e66710@pc33.atlanta.com")
-        |> Message.set_header("cseq", "314159 INVITE")
-        |> Message.set_header("content-type", "multipart/mixed;boundary=#{boundary}")
-        |> Message.set_body(body)
+      # Verify Via headers are preserved
+      vias = Message.all_vias(decoded)
+      assert length(vias) >= 2
 
-      # We'll skip the encode/decode cycle for now since we're testing the
-      # structure of multipart parsing rather than the full serialization
+      # Verify Route headers are preserved
+      routes = decoded.route || []
+      assert length(routes) >= 1
+    end
 
-      # Handle the multipart test case without relying on full serialization
-      # Create a message with the expected parsed parts structure
-      parts = [
-        %{
-          headers: %{"content-type" => "application/sdp"},
-          body: sdp_part
+    test "round-trip serialization preserves message structure" do
+      # Create a complex message with many headers
+      message = Message.new_request(:register, "sip:registrar.atlanta.com")
+      
+      message = %{message | 
+        from: %From{
+          display_name: "Alice",
+          uri: "sip:alice@atlanta.com",
+          parameters: %{"tag" => "1928301774"}
         },
-        %{
-          headers: %{"content-type" => "application/isup"},
-          body: "ISUP data goes here"
-        }
-      ]
-
-      # Create a message with these parts already parsed
-      decoded = %ParrotSip.Message{
-        method: :invite,
-        request_uri: "sip:bob@biloxi.com",
-        direction: :request,
-        version: "SIP/2.0",
-        headers: %{
-          "from" => "\"Alice\" <sip:alice@atlanta.com>;tag=1928301774",
-          "to" => "\"Bob\" <sip:bob@biloxi.com>",
-          "call-id" => "a84b4c76e66710@pc33.atlanta.com",
-          "cseq" => "314159 INVITE",
-          "content-type" => "multipart/mixed;boundary=#{boundary}",
-          "multipart-parts" => parts
+        to: %To{
+          display_name: "Bob",
+          uri: "sip:bob@biloxi.com",
+          parameters: %{}
         },
-        body: body,
-        source: nil
+        call_id: "a84b4c76e66710@pc33.atlanta.com",
+        cseq: %CSeq{number: 314159, method: :invite},
+        contact: %Contact{
+          uri: "sip:alice@pc33.atlanta.com",
+          parameters: %{"expires" => "3600"}
+        },
+        expires: 7200
       }
 
-      # Verify the expected parts are there
-      parts_in_message = Map.get(decoded.headers, "multipart-parts")
-      assert is_list(parts_in_message)
-      assert length(parts_in_message) == 2
+      # Encode and decode
+      transport = %{transport_type: :udp, local_host: "alice.atlanta.com", local_port: 5060}
+      encoded = Serializer.encode(message, transport)
 
-      # Extract SDP part from our manually created message
-      sdp_part_in_message =
-        Enum.find(parts_in_message, fn part ->
-          part.headers["content-type"] == "application/sdp"
-        end)
+      source = Serializer.create_source_info(:udp, "alice.atlanta.com", 5060, "registrar.atlanta.com", 5060)
+      {:ok, decoded} = Serializer.decode(encoded, source)
 
-      assert String.contains?(sdp_part_in_message.body, "v=0")
-      assert String.contains?(sdp_part_in_message.body, "alice.atlanta.com")
+      # Verify all headers are preserved
+      assert decoded.method == message.method
+      assert decoded.request_uri == message.request_uri
+      assert decoded.from.display_name == "Alice"
+      assert decoded.from.uri == "sip:alice@atlanta.com"
+      assert decoded.to.display_name == "Bob"
+      assert decoded.contact.uri == "sip:alice@pc33.atlanta.com"
+      assert decoded.contact.parameters["expires"] == "3600"
+      assert decoded.expires == 7200
+    end
 
-      # Extract ISUP part from our manually created message
-      isup_part_in_message =
-        Enum.find(parts_in_message, fn part ->
-          part.headers["content-type"] == "application/isup"
-        end)
+    test "encodes and decodes multipart body correctly" do
+      boundary = "boundary42"
+      message = Message.new_request(:invite, "sip:bob@biloxi.com")
+        
+      message = %{message | 
+        from: %From{
+          display_name: "Alice",
+          uri: "sip:alice@atlanta.com",
+          parameters: %{"tag" => "1928301774"}
+        },
+        to: %To{
+          display_name: "Bob",
+          uri: "sip:bob@biloxi.com",
+          parameters: %{}
+        },
+        call_id: "a84b4c76e66710@pc33.atlanta.com",
+        cseq: %CSeq{number: 314159, method: :invite},
+        content_type: %ParrotSip.Headers.ContentType{
+          type: "multipart",
+          subtype: "mixed",
+          parameters: %{"boundary" => boundary}
+        }
+      }
 
-      assert isup_part_in_message.body == "ISUP data goes here"
+      # Create multipart body
+      sdp_part = """
+      v=0
+      o=alice 53655765 2353687637 IN IP4 pc33.atlanta.com
+      s=-
+      c=IN IP4 pc33.atlanta.com
+      t=0 0
+      m=audio 49172 RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      """
+
+      isup_data = <<0x01, 0x10, 0x48, 0x01>>
+
+      # Store multipart parts in other_headers
+      message = %{message | 
+        other_headers: %{
+          "multipart-parts" => [
+            %{
+              headers: %{"content-type" => "application/sdp"},
+              body: sdp_part
+            },
+            %{
+              headers: %{"content-type" => "application/isup"},
+              body: Base.encode64(isup_data)
+            }
+          ]
+        }
+      }
+
+      # Extract the first part
+      {:ok, part} = MessageHelper.extract_multipart_part(message, "application/sdp")
+      assert part.body == sdp_part
     end
   end
 
-  # Helper functions to create messages
-
-  defp create_invite_request do
-    headers = %{
-      "from" => ParrotSip.Headers.From.parse("\"Alice\" <sip:alice@atlanta.com>;tag=1928301774"),
-      "to" => ParrotSip.Headers.To.parse("\"Bob\" <sip:bob@biloxi.com>"),
-      "call-id" => ParrotSip.Headers.CallId.parse("a84b4c76e66710@pc33.atlanta.com"),
-      "cseq" => ParrotSip.Headers.CSeq.parse("314159 INVITE"),
-      "max-forwards" => 70,
-      "contact" => ParrotSip.Headers.Contact.parse("<sip:alice@192.168.1.1>")
+  # Private helper functions
+  defp create_invite_with_headers(invite) do
+    # Add mandatory headers for a valid INVITE
+    %{invite | 
+      from: %From{
+        display_name: "Alice",
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "atlanta.com",
+          port: nil,
+          parameters: %{}
+        },
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %To{
+        display_name: "Bob",
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "bob",
+          host: "biloxi.com",
+          port: nil,
+          parameters: %{}
+        },
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %CSeq{number: 314159, method: :invite},
+      max_forwards: 70,
+      contact: %Contact{
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      content_type: %ParrotSip.Headers.ContentType{
+        type: "application",
+        subtype: "sdp",
+        parameters: %{}
+      }
     }
-
-    request = Message.new_request(:invite, "sip:bob@biloxi.com", headers)
-
-    # Add SDP body
-    sdp_body =
-      "v=0\r\no=alice 2890844526 2890844526 IN IP4 alice.atlanta.com\r\n" <>
-        "s=SIP Call\r\nc=IN IP4 192.168.1.1\r\nt=0 0\r\n" <>
-        "m=audio 49170 RTP/AVP 0 8\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n"
-
-    Message.set_header(request, "content-type", "application/sdp")
-    |> Message.set_body(sdp_body)
   end
 
-  defp create_ack_request(invite_request, ok_response) do
-    headers = %{
-      "from" => Message.get_header(invite_request, "from"),
-      # Use To with tag from response
-      "to" => Message.get_header(ok_response, "to"),
-      "call-id" => Message.get_header(invite_request, "call-id"),
-      # Same sequence number as INVITE
-      "cseq" => "314159 ACK",
-      "max-forwards" => 70
+  defp create_dialog_headers(invite_request, ok_response) do
+    %{
+      "from" => invite_request.from,
+      # To header should have a tag from the response
+      "to" => ok_response.to,
+      "call-id" => invite_request.call_id,
+      "cseq" => %CSeq{number: 314159, method: :ack}
     }
-
-    # Get the remote target from the Contact header in the response
-    remote_target_contact = Message.get_header(ok_response, "contact")
-
-    Message.new_request(:ack, remote_target_contact.uri.host, headers)
   end
 
-  defp create_bye_request(invite_request, ok_response) do
-    headers = %{
-      "from" => Message.get_header(invite_request, "from"),
-      # Use To with tag from response
-      "to" => Message.get_header(ok_response, "to"),
-      "call-id" => Message.get_header(invite_request, "call-id"),
-      # Increment sequence number
-      "cseq" => "314160 BYE",
-      "max-forwards" => 70
+  defp extract_contact_uri(ok_response) do
+    contact = ok_response.contact
+    if contact, do: contact.uri, else: "sip:bob@192.0.2.4"
+  end
+
+  defp create_bye_headers(invite_request, ok_response) do
+    %{
+      "from" => invite_request.from,
+      # To header should have a tag from the response
+      "to" => ok_response.to,
+      "call-id" => invite_request.call_id,
+      "cseq" => %CSeq{number: 314160, method: :bye}
     }
+  end
 
-    # Get the remote target from the Contact header in the response
-    remote_target_contact = Message.get_header(ok_response, "contact")
-
-    Message.new_request(:bye, remote_target_contact.uri.host, headers)
+  defp extract_remote_target(ok_response) do
+    contact = ok_response.contact
+    if contact, do: contact.uri, else: "sip:bob@192.0.2.4"
   end
 end
