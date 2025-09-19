@@ -20,7 +20,8 @@ log_level = System.get_env("LOG_LEVEL", default_level) |> String.to_existing_ato
 # Be very aggressive about suppressing logs during tests
 if sip_trace do
   config :logger, level: log_level
-  config :logger, :console, 
+
+  config :logger, :console,
     level: log_level,
     format: "$time $metadata[$level] $message\n"
 else

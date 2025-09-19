@@ -9,12 +9,12 @@ defmodule ParrotPlatform.MixProject do
       deps: deps(),
       aliases: aliases(),
       preferred_cli_env: preferred_cli_env(),
-      
+
       # Hex.pm metadata
       name: "Parrot Platform",
       description:
         "Elixir libraries and OTP behaviours for building telecom applications with SIP protocol and media handling",
-      
+
       # Documentation
       docs: docs()
     ]
@@ -80,7 +80,7 @@ defmodule ParrotPlatform.MixProject do
     # Run all tests with excluded tags included
     Mix.Task.run("test", ["--include", "sipp", "--include", "slow" | args])
   end
-  
+
   defp copy_images(_) do
     # Ensure doc directory exists
     File.mkdir_p!("doc/assets")
@@ -94,7 +94,7 @@ defmodule ParrotPlatform.MixProject do
         Mix.shell().error("Failed to copy #{file}: #{inspect(reason)}")
     end
   end
-  
+
   defp docs do
     [
       # The main page in the docs
