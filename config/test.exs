@@ -14,9 +14,25 @@ sip_trace = System.get_env("SIP_TRACE", "false") == "true"
 
 # If SIP trace is enabled, we need to allow info level logs to see the traces
 # Otherwise use the configured log level
-default_level = if sip_trace, do: "info", else: "warning"
+default_level = if sip_trace, do: "info", else: "error"
 log_level = System.get_env("LOG_LEVEL", default_level) |> String.to_existing_atom()
-config :logger, level: log_level
+
+# Be very aggressive about suppressing logs during tests
+if sip_trace do
+  config :logger, level: log_level
+  config :logger, :console, 
+    level: log_level,
+    format: "$time $metadata[$level] $message\n"
+else
+  # Completely disable console backend when not tracing
+  # This is the most effective way to suppress ALL logs
+  config :logger,
+    backends: [],
+    level: :emergency,
+    compile_time_purge_matching: [
+      [level_lower_than: :emergency]
+    ]
+end
 
 # Configure each umbrella app separately
 config :parrot_sip,
