@@ -238,7 +238,6 @@ defmodule ParrotSip.Parser do
     # RFC 3261 Section 12.1.1: Dialog ID is Call-ID + tags
     dialog_id =
       try do
-        Logger.debug("Getting dialog_id from message")
         ParrotSip.Dialog.from_message(base_message)
       rescue
         _ -> nil
@@ -421,13 +420,7 @@ defmodule ParrotSip.Parser do
         actual_length != declared_length ->
           # Be lenient with Content-Length mismatches for UDP
           # Many SIP implementations have minor discrepancies
-          # Log a warning but don't reject the message
-          require Logger
-
-          Logger.debug(
-            "Content-Length mismatch: declared #{declared_length}, actual #{actual_length}"
-          )
-
+          # Don't reject the message for minor mismatches
           :ok
 
         true ->

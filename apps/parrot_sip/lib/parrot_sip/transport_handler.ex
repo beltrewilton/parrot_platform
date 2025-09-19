@@ -123,7 +123,8 @@ defmodule ParrotSip.TransportHandler do
       handlers: []
     }
     
-    Logger.info("TransportHandler started#{if name, do: " as #{name}", else: ""}")
+    # Logger.info("TransportHandler started#{if name, do: " as #{name}", else: ""}")
+    # Startup log disabled for cleaner test output
     
     {:ok, state}
   end
