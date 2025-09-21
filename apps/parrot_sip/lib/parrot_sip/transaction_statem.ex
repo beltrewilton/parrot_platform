@@ -105,41 +105,47 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  # in-dialog message received
+  def server_process(
+        %ParrotSip.Message{
+          from: %ParrotSip.Headers.From{parameters: %{"tag" => _from_tag}},
+          to: %ParrotSip.Headers.To{parameters: %{"tag" => _to_tag}}
+        } = sip_msg,
+        handler
+      ) do
+    case find_server(sip_msg) do
+      {:ok, pid} ->
+        :gen_statem.cast(pid, {:received, sip_msg})
+
+      :error ->
+        Logger.debug("Processing in-dialog request: #{sip_msg.method}")
+        handle_in_dialog_request(sip_msg, handler)
+    end
+  end
+
   def server_process(%ParrotSip.Message{} = sip_msg, handler) do
     case find_server(sip_msg) do
       {:ok, pid} ->
         :gen_statem.cast(pid, {:received, sip_msg})
 
       :error ->
-        case sip_msg do
-          # Handle in-dialog requests (both From and To have tags)
-          %Message{
-            from: %{parameters: %{"tag" => _from_tag}},
-            to: %{parameters: %{"tag" => _to_tag}}
-          } = in_dialog_msg ->
-            Logger.debug("Processing in-dialog request: #{in_dialog_msg.method}")
-            handle_in_dialog_request(in_dialog_msg, handler)
+        Logger.debug("Creating new transaction for #{sip_msg.method}")
 
-          # Handle new dialog requests
-          _new_dialog_msg ->
-            Logger.debug("Creating new transaction for #{sip_msg.method}")
+        transaction =
+          case Transaction.determine_transaction_type(sip_msg) do
+            :invite_server ->
+              {:ok, t} = Transaction.create_invite_server(sip_msg)
+              t
 
-            transaction =
-              case Transaction.determine_transaction_type(sip_msg) do
-                :invite_server ->
-                  {:ok, t} = Transaction.create_invite_server(sip_msg)
-                  t
+            :non_invite_server ->
+              {:ok, t} = Transaction.create_non_invite_server(sip_msg)
+              t
 
-                :non_invite_server ->
-                  {:ok, t} = Transaction.create_non_invite_server(sip_msg)
-                  t
+            other ->
+              raise ArgumentError, "Unsupported transaction type: #{inspect(other)}"
+          end
 
-                other ->
-                  raise ArgumentError, "Unsupported transaction type: #{inspect(other)}"
-              end
-
-            start_transaction([transaction, handler])
-        end
+        start_transaction([transaction, handler])
     end
   end
 
@@ -309,7 +315,8 @@ defmodule ParrotSip.TransactionStatem do
           cancelled: false
         },
         timers: %{},
-        log: false,  # TODO: Make configurable
+        # TODO: Make configurable
+        log: false,
         logbranch: branch
       }
 
@@ -339,7 +346,8 @@ defmodule ParrotSip.TransactionStatem do
           auto_resp: 500
         },
         timers: %{},
-        log: false,  # TODO: Make configurable
+        # TODO: Make configurable
+        log: false,
         logbranch: branch
       }
 
@@ -1044,27 +1052,40 @@ defmodule ParrotSip.TransactionStatem do
         Logger.error("server failed to create transaction: #{inspect(error, @inspect_opts)}")
     end
   end
-  
+
   # Helper function to send messages via transport handler
   defp send_via_transport_handler(action, message, destination_or_source) do
     # Try to find the transport handler
     # First try the registered name
-    transport_handler = case Process.whereis(ParrotSip.TransportHandler) do
-      nil ->
-        # Try to find via Registry
-        case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
-          [{_pid, handler_pid}] -> handler_pid
-          _ -> nil
-        end
-      pid -> pid
-    end
-    
+    transport_handler =
+      case Process.whereis(ParrotSip.TransportHandler) do
+        nil ->
+          # Try to find via Registry
+          case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
+            [{_pid, handler_pid}] -> handler_pid
+            _ -> nil
+          end
+
+        pid ->
+          pid
+      end
+
     if transport_handler do
       case action do
         :send_request ->
-          ParrotSip.TransportHandler.send_request(transport_handler, message, destination_or_source)
+          ParrotSip.TransportHandler.send_request(
+            transport_handler,
+            message,
+            destination_or_source
+          )
+
         :send_response ->
-          ParrotSip.TransportHandler.send_response(transport_handler, message, destination_or_source)
+          ParrotSip.TransportHandler.send_response(
+            transport_handler,
+            message,
+            destination_or_source
+          )
+
         _ ->
           Logger.error("Unknown transport action: #{action}")
       end
