@@ -51,11 +51,15 @@ defmodule ParrotSip.MessageHelper do
   """
   @spec set_received_parameter(Message.t(), String.t()) :: Message.t()
   def set_received_parameter(%Message{via: nil} = message, _ip_address), do: message
-  def set_received_parameter(%Message{via: via} = message, ip_address) when is_struct(via, ParrotSip.Headers.Via) do
+
+  def set_received_parameter(%Message{via: via} = message, ip_address)
+      when is_struct(via, ParrotSip.Headers.Via) do
     updated_via = ParrotSip.Headers.Via.with_parameter(via, "received", ip_address)
     %{message | via: updated_via}
   end
-  def set_received_parameter(%Message{via: [first_via | rest]} = message, ip_address) when is_list(message.via) do
+
+  def set_received_parameter(%Message{via: [first_via | rest]} = message, ip_address)
+      when is_list(message.via) do
     updated_via = ParrotSip.Headers.Via.with_parameter(first_via, "received", ip_address)
     %{message | via: [updated_via | rest]}
   end
@@ -93,12 +97,18 @@ defmodule ParrotSip.MessageHelper do
   """
   @spec set_rport_parameter(Message.t(), non_neg_integer()) :: Message.t()
   def set_rport_parameter(%Message{via: nil} = message, _port), do: message
-  def set_rport_parameter(%Message{via: via} = message, port) when is_struct(via, ParrotSip.Headers.Via) do
+
+  def set_rport_parameter(%Message{via: via} = message, port)
+      when is_struct(via, ParrotSip.Headers.Via) do
     updated_via = ParrotSip.Headers.Via.with_parameter(via, "rport", Integer.to_string(port))
     %{message | via: updated_via}
   end
-  def set_rport_parameter(%Message{via: [first_via | rest]} = message, port) when is_list(message.via) do
-    updated_via = ParrotSip.Headers.Via.with_parameter(first_via, "rport", Integer.to_string(port))
+
+  def set_rport_parameter(%Message{via: [first_via | rest]} = message, port)
+      when is_list(message.via) do
+    updated_via =
+      ParrotSip.Headers.Via.with_parameter(first_via, "rport", Integer.to_string(port))
+
     %{message | via: [updated_via | rest]}
   end
 
@@ -135,12 +145,16 @@ defmodule ParrotSip.MessageHelper do
   """
   @spec remove_top_via(Message.t()) :: Message.t()
   def remove_top_via(%Message{via: nil} = message), do: message
-  def remove_top_via(%Message{via: _single_via} = message) when is_struct(message.via, ParrotSip.Headers.Via) do
+
+  def remove_top_via(%Message{via: _single_via} = message)
+      when is_struct(message.via, ParrotSip.Headers.Via) do
     %{message | via: nil}
   end
+
   def remove_top_via(%Message{via: [_top | []]} = message) do
     %{message | via: []}
   end
+
   def remove_top_via(%Message{via: [_top | rest]} = message) when is_list(message.via) do
     # Always keep as list to preserve the original type
     %{message | via: rest}
@@ -179,13 +193,15 @@ defmodule ParrotSip.MessageHelper do
   """
   @spec apply_nat_handling(Message.t(), map()) :: Message.t()
   def apply_nat_handling(%Message{via: nil} = message, _source_info), do: message
+
   def apply_nat_handling(%Message{via: via} = message, %{host: host, port: port}) do
-    top_via = case via do
-      v when is_struct(v, ParrotSip.Headers.Via) -> v
-      [v | _] when is_list(via) -> v
-      _ -> nil
-    end
-    
+    top_via =
+      case via do
+        v when is_struct(v, ParrotSip.Headers.Via) -> v
+        [v | _] when is_list(via) -> v
+        _ -> nil
+      end
+
     if top_via do
       # Apply changes sequentially to build the final message
       message =
@@ -235,24 +251,30 @@ defmodule ParrotSip.MessageHelper do
   """
   @spec symmetric_response_routing(Message.t(), Message.t()) :: Message.t()
   def symmetric_response_routing(%Message{via: nil} = _request, response), do: response
+
   def symmetric_response_routing(%Message{via: via} = _request, response) do
-    top_via = case via do
-      v when is_struct(v, ParrotSip.Headers.Via) -> v
-      [v | _] when is_list(via) -> v
-      _ -> nil
-    end
-    
+    top_via =
+      case via do
+        v when is_struct(v, ParrotSip.Headers.Via) -> v
+        [v | _] when is_list(via) -> v
+        _ -> nil
+      end
+
     if top_via do
       received = Map.get(top_via.parameters, "received")
       rport = Map.get(top_via.parameters, "rport")
-      
+
       # Determine target host and port
       host = if received && received != "", do: received, else: top_via.host
-      
+
       port =
         case rport do
-          nil -> top_via.port || 5060
-          "" -> top_via.port || 5060
+          nil ->
+            top_via.port || 5060
+
+          "" ->
+            top_via.port || 5060
+
           value ->
             case Integer.parse(value) do
               {port_num, _} -> port_num
@@ -310,10 +332,13 @@ defmodule ParrotSip.MessageHelper do
   """
   @spec add_route_header(Message.t(), ParrotSip.Headers.Route.t(), boolean()) :: Message.t()
   def add_route_header(message, route, prepend \\ true)
+
   def add_route_header(%Message{route: nil} = message, route, _prepend) do
     %{message | route: [route]}
   end
-  def add_route_header(%Message{route: current_routes} = message, route, prepend) when is_list(current_routes) do
+
+  def add_route_header(%Message{route: current_routes} = message, route, prepend)
+      when is_list(current_routes) do
     updated_routes = if prepend, do: [route | current_routes], else: current_routes ++ [route]
     %{message | route: updated_routes}
   end
@@ -350,7 +375,9 @@ defmodule ParrotSip.MessageHelper do
   def add_record_route(%Message{record_route: nil} = message, record_route) do
     %{message | record_route: [record_route]}
   end
-  def add_record_route(%Message{record_route: current} = message, record_route) when is_list(current) do
+
+  def add_record_route(%Message{record_route: current} = message, record_route)
+      when is_list(current) do
     %{message | record_route: [record_route | current]}
   end
 

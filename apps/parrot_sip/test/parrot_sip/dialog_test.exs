@@ -469,19 +469,19 @@ defmodule ParrotSip.DialogTest do
           parameters: %{}
         },
         call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %CSeq{number: 314159, method: :invite},
+        cseq: %CSeq{number: 314_159, method: :invite},
         other_headers: %{}
       }
-      
+
       {:ok, dialog} = Dialog.create_from_invite(invite, :uac)
-      
+
       assert dialog.call_id == "a84b4c76e66710@pc33.atlanta.com"
       assert dialog.local_tag == "1928301774"
       assert dialog.remote_tag == nil
       assert dialog.state == :early
       assert dialog.role == :uac
     end
-    
+
     test "creates dialog from INVITE request as UAS" do
       invite = %Message{
         type: :request,
@@ -496,19 +496,20 @@ defmodule ParrotSip.DialogTest do
           parameters: %{}
         },
         call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %CSeq{number: 314159, method: :invite},
+        cseq: %CSeq{number: 314_159, method: :invite},
         other_headers: %{}
       }
-      
+
       {:ok, dialog} = Dialog.create_from_invite(invite, :uas)
-      
+
       assert dialog.call_id == "a84b4c76e66710@pc33.atlanta.com"
-      assert dialog.local_tag != nil  # UAS generates a tag
+      # UAS generates a tag
+      assert dialog.local_tag != nil
       assert dialog.remote_tag == "1928301774"
       assert dialog.state == :early
       assert dialog.role == :uas
     end
-    
+
     test "returns error for non-INVITE message" do
       bye = %Message{
         type: :request,
@@ -516,10 +517,10 @@ defmodule ParrotSip.DialogTest do
         request_uri: "sip:bob@example.com",
         other_headers: %{}
       }
-      
+
       assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite(bye, :uac)
     end
-    
+
     test "returns error for invalid role" do
       invite = %Message{
         type: :request,
@@ -528,7 +529,7 @@ defmodule ParrotSip.DialogTest do
         call_id: "test-call-id",
         other_headers: %{}
       }
-      
+
       assert {:error, "Role must be :uac or :uas"} = Dialog.create_from_invite(invite, :invalid)
     end
   end

@@ -11,7 +11,6 @@ defmodule ParrotSip.Test.TestHandler do
 
   require Logger
 
-
   @impl ParrotSip.Handler
   def transp_request(_msg, _args) do
     Logger.debug("TestHandler: transp_request called")

@@ -42,32 +42,52 @@ defmodule ParrotSip.Message do
     :transaction_id,
     # dialog_id
     :dialog_id,
-    
+
     # Core headers as struct fields (RFC 3261 mandatory/common)
-    :via,           # Via.t() | [Via.t()]
-    :from,          # From.t()
-    :to,            # To.t()
-    :call_id,       # String.t() | CallId.t()
-    :cseq,          # CSeq.t()
-    :max_forwards,  # integer()
-    :contact,       # Contact.t() | [Contact.t()] | nil
-    :route,         # [Route.t()] | nil
-    :record_route,  # [RecordRoute.t()] | nil
-    
+    # Via.t() | [Via.t()]
+    :via,
+    # From.t()
+    :from,
+    # To.t()
+    :to,
+    # String.t() | CallId.t()
+    :call_id,
+    # CSeq.t()
+    :cseq,
+    # integer()
+    :max_forwards,
+    # Contact.t() | [Contact.t()] | nil
+    :contact,
+    # [Route.t()] | nil
+    :route,
+    # [RecordRoute.t()] | nil
+    :record_route,
+
     # Common optional headers
-    :content_type,   # ContentType.t() | nil
-    :content_length, # integer()
-    :expires,        # integer() | nil
-    :allow,          # [String.t()] | nil
-    :supported,      # [String.t()] | nil
-    :accept,         # Accept.t() | nil
-    :event,          # Event.t() | nil
-    :subscription_state, # SubscriptionState.t() | nil
-    :refer_to,       # ReferTo.t() | nil
-    :subject,        # String.t() | nil
-    
+    # ContentType.t() | nil
+    :content_type,
+    # integer()
+    :content_length,
+    # integer() | nil
+    :expires,
+    # [String.t()] | nil
+    :allow,
+    # [String.t()] | nil
+    :supported,
+    # Accept.t() | nil
+    :accept,
+    # Event.t() | nil
+    :event,
+    # SubscriptionState.t() | nil
+    :subscription_state,
+    # ReferTo.t() | nil
+    :refer_to,
+    # String.t() | nil
+    :subject,
+
     # Catch-all for unknown/extension headers
-    :other_headers   # map() - for headers we don't have parsers for
+    # map() - for headers we don't have parsers for
+    :other_headers
   ]
 
   @type t :: %__MODULE__{
@@ -82,7 +102,7 @@ defmodule ParrotSip.Message do
           direction: :incoming | :outgoing | nil,
           transaction_id: String.t() | nil,
           dialog_id: String.t() | nil,
-          
+
           # Header fields
           via: Via.t() | [Via.t()] | nil,
           from: From.t() | nil,
@@ -382,7 +402,7 @@ defmodule ParrotSip.Message do
     other_headers = Map.put(message.other_headers || %{}, downcased, value)
     %{message | other_headers: other_headers}
   end
-  
+
   @spec get_header(t(), String.t()) :: any()
   def get_header(%__MODULE__{via: via}, "via") when is_list(via), do: via
   def get_header(%__MODULE__{via: via}, "via"), do: via
@@ -394,65 +414,79 @@ defmodule ParrotSip.Message do
   def get_header(%__MODULE__{route: routes}, "route") when is_list(routes), do: routes
   def get_header(%__MODULE__{route: route}, "route") when not is_nil(route), do: [route]
   def get_header(%__MODULE__{route: nil}, "route"), do: nil
-  def get_header(%__MODULE__{record_route: routes}, "record-route") when is_list(routes), do: routes
-  def get_header(%__MODULE__{record_route: route}, "record-route") when not is_nil(route), do: [route]
+
+  def get_header(%__MODULE__{record_route: routes}, "record-route") when is_list(routes),
+    do: routes
+
+  def get_header(%__MODULE__{record_route: route}, "record-route") when not is_nil(route),
+    do: [route]
+
   def get_header(%__MODULE__{record_route: nil}, "record-route"), do: nil
   def get_header(%__MODULE__{max_forwards: max_forwards}, "max-forwards"), do: max_forwards
   def get_header(%__MODULE__{content_type: content_type}, "content-type"), do: content_type
-  def get_header(%__MODULE__{content_length: content_length}, "content-length"), do: content_length
+
+  def get_header(%__MODULE__{content_length: content_length}, "content-length"),
+    do: content_length
+
   def get_header(%__MODULE__{expires: expires}, "expires"), do: expires
   def get_header(%__MODULE__{allow: allow}, "allow"), do: allow
   def get_header(%__MODULE__{supported: supported}, "supported"), do: supported
   def get_header(%__MODULE__{accept: accept}, "accept"), do: accept
   def get_header(%__MODULE__{event: event}, "event"), do: event
-  def get_header(%__MODULE__{subscription_state: subscription_state}, "subscription-state"), do: subscription_state
+
+  def get_header(%__MODULE__{subscription_state: subscription_state}, "subscription-state"),
+    do: subscription_state
+
   def get_header(%__MODULE__{refer_to: refer_to}, "refer-to"), do: refer_to
   def get_header(%__MODULE__{subject: subject}, "subject"), do: subject
+
   def get_header(%__MODULE__{other_headers: other_headers}, header_name) do
     header_name = String.downcase(header_name)
     Map.get(other_headers || %{}, header_name)
   end
-  
+
   # New setter functions for pattern matching convenience
   @spec put_via(t(), Via.t() | [Via.t()]) :: t()
   def put_via(%__MODULE__{} = msg, via), do: %{msg | via: via}
-  
+
   @spec put_from(t(), From.t()) :: t()
   def put_from(%__MODULE__{} = msg, from), do: %{msg | from: from}
-  
+
   @spec put_to(t(), To.t()) :: t()
   def put_to(%__MODULE__{} = msg, to), do: %{msg | to: to}
-  
+
   @spec put_call_id(t(), String.t() | CallId.t()) :: t()
   def put_call_id(%__MODULE__{} = msg, call_id), do: %{msg | call_id: call_id}
-  
+
   @spec put_cseq(t(), CSeq.t()) :: t()
   def put_cseq(%__MODULE__{} = msg, cseq), do: %{msg | cseq: cseq}
-  
+
   @spec put_contact(t(), Contact.t() | [Contact.t()] | nil) :: t()
   def put_contact(%__MODULE__{} = msg, contact), do: %{msg | contact: contact}
-  
+
   @spec put_max_forwards(t(), integer()) :: t()
   def put_max_forwards(%__MODULE__{} = msg, max_forwards), do: %{msg | max_forwards: max_forwards}
-  
+
   @spec put_route(t(), [ParrotSip.Headers.Route.t()]) :: t()
   def put_route(%__MODULE__{} = msg, route), do: %{msg | route: route}
-  
+
   @spec put_record_route(t(), [ParrotSip.Headers.RecordRoute.t()]) :: t()
   def put_record_route(%__MODULE__{} = msg, record_route), do: %{msg | record_route: record_route}
-  
+
   @spec put_content_type(t(), ParrotSip.Headers.ContentType.t()) :: t()
   def put_content_type(%__MODULE__{} = msg, content_type), do: %{msg | content_type: content_type}
-  
+
   @spec put_expires(t(), integer()) :: t()
   def put_expires(%__MODULE__{} = msg, expires), do: %{msg | expires: expires}
-  
+
   # Helper to add to list headers (Via, Route, Record-Route)
   @spec add_via(t(), Via.t()) :: t()
   def add_via(%__MODULE__{via: nil} = msg, via), do: %{msg | via: via}
-  def add_via(%__MODULE__{via: vias} = msg, via) when is_list(vias), 
+
+  def add_via(%__MODULE__{via: vias} = msg, via) when is_list(vias),
     do: %{msg | via: [via | vias]}
-  def add_via(%__MODULE__{via: existing} = msg, via), 
+
+  def add_via(%__MODULE__{via: existing} = msg, via),
     do: %{msg | via: [via, existing]}
 
   @doc """
@@ -512,36 +546,65 @@ defmodule ParrotSip.Message do
     # RFC 3261 Section 7.3.1: Header Field Order
     # Build headers in correct order from struct fields
     headers = []
-    
+
     # Via must be first
     headers = if message.via, do: headers ++ [{"Via", message.via}], else: headers
-    
+
     # Then other headers in order
     headers = if message.route, do: headers ++ [{"Route", message.route}], else: headers
-    headers = if message.record_route, do: headers ++ [{"Record-Route", message.record_route}], else: headers
-    headers = if message.max_forwards, do: headers ++ [{"Max-Forwards", message.max_forwards}], else: headers
+
+    headers =
+      if message.record_route,
+        do: headers ++ [{"Record-Route", message.record_route}],
+        else: headers
+
+    headers =
+      if message.max_forwards,
+        do: headers ++ [{"Max-Forwards", message.max_forwards}],
+        else: headers
+
     headers = if message.from, do: headers ++ [{"From", message.from}], else: headers
     headers = if message.to, do: headers ++ [{"To", message.to}], else: headers
     headers = if message.call_id, do: headers ++ [{"Call-Id", message.call_id}], else: headers
     headers = if message.cseq, do: headers ++ [{"Cseq", message.cseq}], else: headers
     headers = if message.contact, do: headers ++ [{"Contact", message.contact}], else: headers
     headers = if message.expires, do: headers ++ [{"Expires", message.expires}], else: headers
-    headers = if message.content_type, do: headers ++ [{"Content-Type", message.content_type}], else: headers
-    headers = if message.content_length, do: headers ++ [{"Content-Length", message.content_length}], else: headers
+
+    headers =
+      if message.content_type,
+        do: headers ++ [{"Content-Type", message.content_type}],
+        else: headers
+
+    headers =
+      if message.content_length,
+        do: headers ++ [{"Content-Length", message.content_length}],
+        else: headers
+
     headers = if message.allow, do: headers ++ [{"Allow", message.allow}], else: headers
-    headers = if message.supported, do: headers ++ [{"Supported", message.supported}], else: headers
+
+    headers =
+      if message.supported, do: headers ++ [{"Supported", message.supported}], else: headers
+
     headers = if message.accept, do: headers ++ [{"Accept", message.accept}], else: headers
     headers = if message.event, do: headers ++ [{"Event", message.event}], else: headers
-    headers = if message.subscription_state, do: headers ++ [{"Subscription-State", message.subscription_state}], else: headers
+
+    headers =
+      if message.subscription_state,
+        do: headers ++ [{"Subscription-State", message.subscription_state}],
+        else: headers
+
     headers = if message.refer_to, do: headers ++ [{"Refer-To", message.refer_to}], else: headers
     headers = if message.subject, do: headers ++ [{"Subject", message.subject}], else: headers
-    
+
     # Add other headers
-    other_headers = Map.to_list(message.other_headers || %{})
-      |> Enum.map(fn {k, v} -> {String.split(k, "-") |> Enum.map(&String.capitalize/1) |> Enum.join("-"), v} end)
-    
+    other_headers =
+      Map.to_list(message.other_headers || %{})
+      |> Enum.map(fn {k, v} ->
+        {String.split(k, "-") |> Enum.map(&String.capitalize/1) |> Enum.join("-"), v}
+      end)
+
     headers = headers ++ other_headers
-    
+
     headers
     |> Enum.map(fn {name, value} -> format_header(name, value) end)
     |> Enum.join("")
@@ -592,7 +655,7 @@ defmodule ParrotSip.Message do
 
   # Simplified accessor patterns - most are removed in favor of direct field access
   # Only keeping those that are truly helpful
-  
+
   @doc """
   Gets the top Via header from a message.
   For pattern matching, prefer accessing message.via directly.
@@ -602,7 +665,7 @@ defmodule ParrotSip.Message do
   def top_via(%__MODULE__{via: via}) when is_struct(via, Via), do: via
   def top_via(%__MODULE__{via: [via | _]}) when is_struct(via, Via), do: via
   def top_via(_), do: nil
-  
+
   @doc """
   Gets all Via headers from a message as a list.
   For pattern matching, prefer accessing message.via directly.
@@ -651,9 +714,12 @@ defmodule ParrotSip.Message do
   """
   @spec in_dialog?(t()) :: boolean()
   def in_dialog?(%__MODULE__{
-    from: %From{parameters: %{"tag" => from_tag}},
-    to: %To{parameters: %{"tag" => to_tag}}
-  }) when not is_nil(from_tag) and not is_nil(to_tag), do: true
+        from: %From{parameters: %{"tag" => from_tag}},
+        to: %To{parameters: %{"tag" => to_tag}}
+      })
+      when not is_nil(from_tag) and not is_nil(to_tag),
+      do: true
+
   def in_dialog?(_), do: false
 
   @doc """
@@ -683,7 +749,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_provisional?(t()) :: boolean()
-  def is_provisional?(%__MODULE__{type: :response, status_code: code}) when code >= 100 and code < 200, do: true
+  def is_provisional?(%__MODULE__{type: :response, status_code: code})
+      when code >= 100 and code < 200,
+      do: true
+
   def is_provisional?(_), do: false
 
   @doc """
@@ -696,7 +765,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_success?(t()) :: boolean()
-  def is_success?(%__MODULE__{type: :response, status_code: code}) when code >= 200 and code < 300, do: true
+  def is_success?(%__MODULE__{type: :response, status_code: code})
+      when code >= 200 and code < 300,
+      do: true
+
   def is_success?(_), do: false
 
   @doc """
@@ -709,7 +781,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_redirect?(t()) :: boolean()
-  def is_redirect?(%__MODULE__{type: :response, status_code: code}) when code >= 300 and code < 400, do: true
+  def is_redirect?(%__MODULE__{type: :response, status_code: code})
+      when code >= 300 and code < 400,
+      do: true
+
   def is_redirect?(_), do: false
 
   @doc """
@@ -722,7 +797,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_client_error?(t()) :: boolean()
-  def is_client_error?(%__MODULE__{type: :response, status_code: code}) when code >= 400 and code < 500, do: true
+  def is_client_error?(%__MODULE__{type: :response, status_code: code})
+      when code >= 400 and code < 500,
+      do: true
+
   def is_client_error?(_), do: false
 
   @doc """
@@ -735,7 +813,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_server_error?(t()) :: boolean()
-  def is_server_error?(%__MODULE__{type: :response, status_code: code}) when code >= 500 and code < 600, do: true
+  def is_server_error?(%__MODULE__{type: :response, status_code: code})
+      when code >= 500 and code < 600,
+      do: true
+
   def is_server_error?(_), do: false
 
   @doc """
@@ -748,7 +829,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_global_error?(t()) :: boolean()
-  def is_global_error?(%__MODULE__{type: :response, status_code: code}) when code >= 600 and code < 700, do: true
+  def is_global_error?(%__MODULE__{type: :response, status_code: code})
+      when code >= 600 and code < 700,
+      do: true
+
   def is_global_error?(_), do: false
 
   @doc """
@@ -761,7 +845,10 @@ defmodule ParrotSip.Message do
       true
   """
   @spec is_failure?(t()) :: boolean()
-  def is_failure?(%__MODULE__{type: :response, status_code: code}) when code >= 400 and code < 700, do: true
+  def is_failure?(%__MODULE__{type: :response, status_code: code})
+      when code >= 400 and code < 700,
+      do: true
+
   def is_failure?(_), do: false
 
   @doc """
@@ -811,25 +898,37 @@ defmodule ParrotSip.Message do
   @spec set_header(t(), String.t(), any()) :: t()
   def set_header(%__MODULE__{} = message, header_name, value) do
     header_name = String.downcase(header_name)
-    
+
     case header_name do
-      "from" -> %{message | from: value}
-      "to" -> %{message | to: value}
-      "call-id" -> %{message | call_id: value}
-      "cseq" -> %{message | cseq: value}
-      "via" -> 
+      "from" ->
+        %{message | from: value}
+
+      "to" ->
+        %{message | to: value}
+
+      "call-id" ->
+        %{message | call_id: value}
+
+      "cseq" ->
+        %{message | cseq: value}
+
+      "via" ->
         # If value is a string, parse it to a Via struct
-        via_value = 
+        via_value =
           cond do
-            is_binary(value) -> 
+            is_binary(value) ->
               # Parse the via string into a Via struct
               try do
                 ParrotSip.Headers.Via.parse(value)
               rescue
-                _ -> value  # Keep as string if parsing fails
+                # Keep as string if parsing fails
+                _ -> value
               end
-            is_struct(value, Via) -> value
-            is_list(value) -> 
+
+            is_struct(value, Via) ->
+              value
+
+            is_list(value) ->
               # Parse each string in the list
               Enum.map(value, fn
                 v when is_binary(v) ->
@@ -838,23 +937,37 @@ defmodule ParrotSip.Message do
                   rescue
                     _ -> v
                   end
-                v -> v
+
+                v ->
+                  v
               end)
-            true -> value
+
+            true ->
+              value
           end
+
         %{message | via: via_value}
-      "contact" -> %{message | contact: value}
-      "content-type" -> %{message | content_type: value}
-      "content-length" -> %{message | content_length: value}
-      "route" -> 
+
+      "contact" ->
+        %{message | contact: value}
+
+      "content-type" ->
+        %{message | content_type: value}
+
+      "content-length" ->
+        %{message | content_length: value}
+
+      "route" ->
         # Route should be stored as a list for get_header compatibility
         route_list = if is_list(value), do: value, else: [value]
         %{message | route: route_list}
-      "record-route" -> 
+
+      "record-route" ->
         # Record-Route should be stored as a list
         record_route_list = if is_list(value), do: value, else: [value]
         %{message | record_route: record_route_list}
-      _ -> 
+
+      _ ->
         other_headers = Map.put(message.other_headers || %{}, header_name, value)
         %{message | other_headers: other_headers}
     end
@@ -879,17 +992,21 @@ defmodule ParrotSip.Message do
   def get_headers(%__MODULE__{via: nil}, "via"), do: []
   def get_headers(%__MODULE__{via: headers}, "via") when is_list(headers), do: headers
   def get_headers(%__MODULE__{via: header}, "via"), do: [header]
-  
+
   def get_headers(%__MODULE__{route: nil}, "route"), do: []
   def get_headers(%__MODULE__{route: headers}, "route") when is_list(headers), do: headers
   def get_headers(%__MODULE__{route: header}, "route"), do: [header]
-  
+
   def get_headers(%__MODULE__{record_route: nil}, "record-route"), do: []
-  def get_headers(%__MODULE__{record_route: headers}, "record-route") when is_list(headers), do: headers
+
+  def get_headers(%__MODULE__{record_route: headers}, "record-route") when is_list(headers),
+    do: headers
+
   def get_headers(%__MODULE__{record_route: header}, "record-route"), do: [header]
-  
+
   def get_headers(%__MODULE__{} = message, header_name) do
     header_name = String.downcase(header_name)
+
     case get_header(message, header_name) do
       nil -> []
       header -> [header]

@@ -122,11 +122,11 @@ defmodule ParrotSip.Connection do
   defp receive_raw(%Message{type: :request} = message, conn) do
     receive_request(message, conn)
   end
-  
+
   defp receive_raw(%Message{type: :response} = message, conn) do
     receive_response(message, conn)
   end
-  
+
   defp receive_raw(message, conn) do
     {conn, {:bad_message, message, :unknown_message_type}}
   end

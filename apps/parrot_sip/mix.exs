@@ -31,7 +31,7 @@ defmodule ParrotSip.MixProject do
       # NO dependency on :parrot_transport or :parrot_media!
     ]
   end
-  
+
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 end

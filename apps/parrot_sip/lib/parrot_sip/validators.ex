@@ -163,15 +163,15 @@ defmodule ParrotSip.Validators do
       {:error, :missing_required_headers}
     end
   end
-  
+
   # Check if a message has a specific header field
   defp has_header_field?(%Message{} = message, header) do
     header_name = normalize_header_name(header)
-    
+
     # First try to find the field in the Message struct
     field_atom = header_name_to_field_atom(header_name)
-    
-    if field_atom in Message.__struct__() |> Map.keys() do
+
+    if (field_atom in Message.__struct__()) |> Map.keys() do
       # It's a known struct field, check if it's not nil
       not is_nil(Map.get(message, field_atom))
     else
@@ -179,7 +179,7 @@ defmodule ParrotSip.Validators do
       Map.has_key?(message.other_headers || %{}, header_name)
     end
   end
-  
+
   # Convert header name to the corresponding struct field atom
   defp header_name_to_field_atom(header_name) do
     case header_name do
@@ -205,14 +205,14 @@ defmodule ParrotSip.Validators do
       # If the atom doesn't exist, it's not a struct field
       :unknown_field
   end
-  
+
   defp normalize_header_name(header) when is_atom(header) do
     header
     |> Atom.to_string()
     |> String.replace("_", "-")
     |> String.downcase()
   end
-  
+
   defp normalize_header_name(header) when is_binary(header) do
     String.downcase(header)
   end

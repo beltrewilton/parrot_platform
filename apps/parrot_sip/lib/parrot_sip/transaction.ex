@@ -152,7 +152,7 @@ defmodule ParrotSip.Transaction do
   # Helper function to check if a message has a header
   defp has_header?(message, header_name) do
     downcased = String.downcase(header_name)
-    
+
     case downcased do
       "via" -> not is_nil(message.via)
       "from" -> not is_nil(message.from)
@@ -244,18 +244,18 @@ defmodule ParrotSip.Transaction do
 
   @doc """
   Processes an incoming SIP message by routing it to the appropriate transaction.
-  
+
   This function:
   1. Extracts the transaction ID from the message
   2. Looks up existing transaction or creates a new one
   3. Routes the message to the transaction state machine
-  
+
   ## Parameters
-  
+
   - `message`: The parsed SIP message to process
-  
+
   ## Returns
-  
+
   - `:ok` if the message was successfully processed by a transaction
   - `{:error, :no_transaction}` if no transaction handles this message
   - `{:error, reason}` for other errors
@@ -264,26 +264,26 @@ defmodule ParrotSip.Transaction do
   def process_message(%Message{type: :request} = message) do
     process_request(message)
   end
-  
+
   def process_message(%Message{type: :response} = message) do
     process_response(message)
   end
-  
+
   def process_message(_message) do
     {:error, :invalid_message_type}
   end
-  
+
   defp process_request(request) do
     # Generate transaction ID
     transaction_id = generate_id(request)
-    
+
     # Check if transaction exists
     case lookup_transaction(transaction_id) do
       {:ok, pid} ->
         # Existing transaction - send message to it
         send(pid, {:sip_request, request})
         :ok
-        
+
       {:error, :not_found} ->
         # New transaction - check if we should create one
         if should_create_transaction?(request) do
@@ -295,101 +295,105 @@ defmodule ParrotSip.Transaction do
         end
     end
   end
-  
+
   defp process_response(response) do
     # Extract transaction ID from Via branch
     case get_branch_from_response(response) do
       {:ok, branch} ->
         cseq_method = if response.cseq, do: response.cseq.method, else: nil
         transaction_id = "#{branch}_#{cseq_method}"
-        
+
         case lookup_transaction(transaction_id) do
           {:ok, pid} ->
             # Send response to transaction
             send(pid, {:sip_response, response})
             :ok
-            
+
           {:error, :not_found} ->
             # No matching transaction
             Logger.debug("No transaction found for response: #{transaction_id}")
             {:error, :no_transaction}
         end
-        
+
       {:error, reason} ->
         Logger.warning("Could not extract branch from response: #{reason}")
         {:error, :no_transaction}
     end
   end
-  
+
   defp should_create_transaction?(request) do
     # ACK for 2xx responses don't create transactions
     # All other requests do
     not (request.method == :ack)
   end
-  
+
   defp start_server_transaction_for_request(%{method: :invite} = request) do
     # Create INVITE server transaction
     transaction_result = create_invite_server(request)
-    
+
     case transaction_result do
       {:ok, transaction} ->
         # Start the transaction state machine
         case ParrotSip.Transaction.Supervisor.start_child([transaction]) do
           {:ok, _pid} ->
             :ok
+
           {:error, reason} ->
             Logger.error("Failed to start server transaction: #{inspect(reason)}")
             {:error, reason}
         end
     end
   end
-  
+
   defp start_server_transaction_for_request(request) do
     # Create non-INVITE server transaction
     transaction_result = create_non_invite_server(request)
-    
+
     case transaction_result do
       {:ok, transaction} ->
         # Start the transaction state machine
         case ParrotSip.Transaction.Supervisor.start_child([transaction]) do
           {:ok, _pid} ->
             :ok
+
           {:error, reason} ->
             Logger.error("Failed to start server transaction: #{inspect(reason)}")
             {:error, reason}
         end
     end
   end
-  
+
   defp get_branch_from_response(%{via: [%{parameters: %{"branch" => branch}} | _]}) do
     {:ok, branch}
   end
-  
+
   defp get_branch_from_response(%{via: [%{parameters: params} | _]}) when is_map(params) do
     case Map.get(params, "branch") do
       nil -> {:error, :no_branch}
       branch -> {:ok, branch}
     end
   end
-  
+
   defp get_branch_from_response(%{via: [via | _]}) when is_binary(via) do
     # Fallback for legacy string-based Via headers
     if String.contains?(via, "branch=") do
-      branch = via
+      branch =
+        via
         |> String.split(";")
         |> Enum.find(&String.starts_with?(&1, "branch="))
         |> String.replace("branch=", "")
         |> String.trim()
+
       {:ok, branch}
     else
       {:error, :no_branch}
     end
   end
-  
+
   defp get_branch_from_response(_response) do
     {:error, :no_via}
   end
-  
+
   defp lookup_transaction(transaction_id) do
     # Look up in Registry
     case Registry.lookup(ParrotSip.Registry, {:transaction, transaction_id}) do
@@ -397,16 +401,16 @@ defmodule ParrotSip.Transaction do
       [] -> {:error, :not_found}
     end
   end
-  
+
   @doc """
   Gets the current state of a transaction.
-  
+
   ## Parameters
-  
+
   - `transaction_id`: The transaction identifier
-  
+
   ## Returns
-  
+
   - `{:ok, state}` where state is the current transaction state
   - `{:error, :not_found}` if transaction doesn't exist
   """
@@ -422,7 +426,7 @@ defmodule ParrotSip.Transaction do
           :exit, _ ->
             {:error, :not_found}
         end
-        
+
       {:error, :not_found} ->
         {:error, :not_found}
     end
@@ -1049,30 +1053,30 @@ defmodule ParrotSip.Transaction do
     via = extract_top_via_strict(request.via)
     via.parameters["branch"]
   end
-  
+
   # Extract top Via header (returns nil if not found)
   defp extract_top_via(%Headers.Via{} = via), do: via
   defp extract_top_via([via | _]) when is_struct(via, Headers.Via), do: via
   defp extract_top_via(_), do: nil
-  
+
   # Extract top Via header (raises if not found)
   defp extract_top_via_strict(%Headers.Via{} = via), do: via
   defp extract_top_via_strict([via | _]) when is_struct(via, Headers.Via), do: via
   defp extract_top_via_strict(_), do: raise(ArgumentError, "Request must have a Via header")
-  
+
   # Get initial state and actions for client transactions
   defp get_client_initial_state_actions(:invite_client) do
     {:calling, [:start_timer_a, :start_timer_b]}
   end
-  
+
   defp get_client_initial_state_actions(:non_invite_client) do
     {:trying, [:start_timer_e, :start_timer_f]}
   end
-  
+
   defp get_client_initial_state_actions(_) do
     raise(ArgumentError, "Not a client transaction")
   end
-  
+
   # Get initial state for server transactions  
   defp get_server_initial_state(:invite_server), do: :proceeding
   defp get_server_initial_state(:non_invite_server), do: :trying
@@ -1577,23 +1581,23 @@ defmodule ParrotSip.Transaction do
   defp handle_timer_event(:g, transaction) do
     {transaction, [:retransmit_last_response, {:start_timer, :g, timer_g_timeout(transaction)}]}
   end
-  
+
   defp handle_timer_event(:h, transaction) do
     {transaction, [:move_to_terminated]}
   end
-  
+
   defp handle_timer_event(:i, transaction) do
     {transaction, [:move_to_terminated]}
   end
-  
+
   defp handle_timer_event(:j, transaction) do
     {transaction, [:move_to_terminated]}
   end
-  
+
   defp handle_timer_event(:d, transaction) do
     {transaction, [:move_to_terminated]}
   end
-  
+
   defp handle_timer_event(_, transaction) do
     {transaction, [:ignore]}
   end

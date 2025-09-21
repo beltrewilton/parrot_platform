@@ -124,7 +124,7 @@ defmodule ParrotSip.Headers.ContentType do
     media_type = "#{content_type.type}/#{content_type.subtype}"
 
     parameters = content_type.parameters || %{}
-    
+
     if map_size(parameters) == 0 do
       media_type
     else

@@ -11,7 +11,8 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        via:
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
@@ -26,7 +27,10 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=10.0.0.1")
+        via:
+          ParrotSip.Headers.Via.parse(
+            "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=10.0.0.1"
+          )
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
@@ -56,7 +60,8 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        via:
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
@@ -70,7 +75,10 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport")
+        via:
+          ParrotSip.Headers.Via.parse(
+            "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
+          )
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
@@ -85,7 +93,10 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport=9999")
+        via:
+          ParrotSip.Headers.Via.parse(
+            "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport=9999"
+          )
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
@@ -147,7 +158,10 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport")
+        via:
+          ParrotSip.Headers.Via.parse(
+            "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
+          )
       }
 
       source_info = %{host: "192.168.1.100", port: 12345}
@@ -163,7 +177,8 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        via:
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
       }
 
       source_info = %{host: "192.168.1.100", port: 5060}
@@ -178,7 +193,8 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK74bf9;rport")
+        via:
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK74bf9;rport")
       }
 
       source_info = %{host: "192.168.1.100", port: 12345}
@@ -195,7 +211,10 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport=12345")
+        via:
+          ParrotSip.Headers.Via.parse(
+            "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport=12345"
+          )
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -212,7 +231,8 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        via:
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -229,7 +249,10 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport")
+        via:
+          ParrotSip.Headers.Via.parse(
+            "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport"
+          )
       }
 
       response = Message.new_response(200, "OK", %{}, [])
@@ -245,7 +268,8 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/TLS client.atlanta.com:5061;branch=z9hG4bK74bf9")
+        via:
+          ParrotSip.Headers.Via.parse("SIP/2.0/TLS client.atlanta.com:5061;branch=z9hG4bK74bf9")
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -265,7 +289,10 @@ defmodule ParrotSip.MessageHelperTest do
         route: nil
       }
 
-      updated = MessageHelper.add_route_header(message, %ParrotSip.Headers.Route{uri: "sip:proxy.biloxi.com;lr"})
+      updated =
+        MessageHelper.add_route_header(message, %ParrotSip.Headers.Route{
+          uri: "sip:proxy.biloxi.com;lr"
+        })
 
       assert updated.route == [%ParrotSip.Headers.Route{uri: "sip:proxy.biloxi.com;lr"}]
     end
@@ -278,7 +305,10 @@ defmodule ParrotSip.MessageHelperTest do
         route: [%ParrotSip.Headers.Route{uri: "sip:proxy1.atlanta.com;lr"}]
       }
 
-      updated = MessageHelper.add_route_header(message, %ParrotSip.Headers.Route{uri: "sip:proxy2.biloxi.com;lr"})
+      updated =
+        MessageHelper.add_route_header(message, %ParrotSip.Headers.Route{
+          uri: "sip:proxy2.biloxi.com;lr"
+        })
 
       assert is_list(updated.route)
       assert length(updated.route) == 2
@@ -293,7 +323,12 @@ defmodule ParrotSip.MessageHelperTest do
         route: [%ParrotSip.Headers.Route{uri: "sip:proxy1.atlanta.com;lr"}]
       }
 
-      updated = MessageHelper.add_route_header(message, %ParrotSip.Headers.Route{uri: "sip:proxy2.biloxi.com;lr"}, false)
+      updated =
+        MessageHelper.add_route_header(
+          message,
+          %ParrotSip.Headers.Route{uri: "sip:proxy2.biloxi.com;lr"},
+          false
+        )
 
       assert is_list(updated.route)
       assert length(updated.route) == 2
@@ -310,9 +345,14 @@ defmodule ParrotSip.MessageHelperTest do
         record_route: nil
       }
 
-      updated = MessageHelper.add_record_route(message, %ParrotSip.Headers.RecordRoute{uri: "sip:proxy.biloxi.com;lr"})
+      updated =
+        MessageHelper.add_record_route(message, %ParrotSip.Headers.RecordRoute{
+          uri: "sip:proxy.biloxi.com;lr"
+        })
 
-      assert updated.record_route == [%ParrotSip.Headers.RecordRoute{uri: "sip:proxy.biloxi.com;lr"}]
+      assert updated.record_route == [
+               %ParrotSip.Headers.RecordRoute{uri: "sip:proxy.biloxi.com;lr"}
+             ]
     end
 
     test "prepends record-route when one already exists" do
@@ -323,11 +363,17 @@ defmodule ParrotSip.MessageHelperTest do
         record_route: [%ParrotSip.Headers.RecordRoute{uri: "sip:proxy1.atlanta.com;lr"}]
       }
 
-      updated = MessageHelper.add_record_route(message, %ParrotSip.Headers.RecordRoute{uri: "sip:proxy2.biloxi.com;lr"})
+      updated =
+        MessageHelper.add_record_route(message, %ParrotSip.Headers.RecordRoute{
+          uri: "sip:proxy2.biloxi.com;lr"
+        })
 
       assert is_list(updated.record_route)
       assert length(updated.record_route) == 2
-      assert hd(updated.record_route) == %ParrotSip.Headers.RecordRoute{uri: "sip:proxy2.biloxi.com;lr"}
+
+      assert hd(updated.record_route) == %ParrotSip.Headers.RecordRoute{
+               uri: "sip:proxy2.biloxi.com;lr"
+             }
     end
   end
 
@@ -348,7 +394,11 @@ defmodule ParrotSip.MessageHelperTest do
         type: :request,
         method: :invite,
         request_uri: "sip:bob@example.com",
-        content_type: %ParrotSip.Headers.ContentType{type: "multipart", subtype: "mixed", parameters: %{"boundary" => "boundary1"}},
+        content_type: %ParrotSip.Headers.ContentType{
+          type: "multipart",
+          subtype: "mixed",
+          parameters: %{"boundary" => "boundary1"}
+        },
         other_headers: %{
           "multipart-parts" => [sdp_part, isup_part]
         }
@@ -369,7 +419,11 @@ defmodule ParrotSip.MessageHelperTest do
         type: :request,
         method: :invite,
         request_uri: "sip:bob@example.com",
-        content_type: %ParrotSip.Headers.ContentType{type: "multipart", subtype: "mixed", parameters: %{"boundary" => "boundary1"}},
+        content_type: %ParrotSip.Headers.ContentType{
+          type: "multipart",
+          subtype: "mixed",
+          parameters: %{"boundary" => "boundary1"}
+        },
         other_headers: %{
           "multipart-parts" => [
             %{

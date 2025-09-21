@@ -93,6 +93,7 @@ defmodule ParrotSip.UASTest do
       # Test with an unsupported method by creating a message with unsupported method
       # Note: Since validate_request is private, we test it indirectly through process
       headers = create_basic_headers()
+
       msg = %Message{
         # Unsupported method
         method: :subscribe,
@@ -182,6 +183,7 @@ defmodule ParrotSip.UASTest do
 
   defp create_invite_request do
     headers = create_basic_headers()
+
     %Message{
       type: :request,
       direction: :incoming,
@@ -202,6 +204,7 @@ defmodule ParrotSip.UASTest do
 
   defp create_ack_request do
     headers = create_basic_headers()
+
     %Message{
       type: :request,
       direction: :incoming,
@@ -222,6 +225,7 @@ defmodule ParrotSip.UASTest do
 
   defp create_request_with_method(method) do
     headers = create_basic_headers()
+
     %Message{
       type: :request,
       direction: :incoming,

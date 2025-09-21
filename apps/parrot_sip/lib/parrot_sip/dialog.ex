@@ -84,41 +84,42 @@ defmodule ParrotSip.Dialog do
 
   @doc """
   Creates a dialog from an INVITE message.
-  
+
   This function creates a new dialog based on an INVITE request, following
   RFC 3261 Section 12.1. The dialog is created in the early state and will
   transition to confirmed when a 2xx response is received.
-  
+
   ## Parameters
-  
+
   - `invite_message`: The INVITE request message
   - `role`: Either `:uac` (client) or `:uas` (server)
-  
+
   ## Returns
-  
+
   - `{:ok, dialog_id}` if dialog was created successfully
   - `{:error, reason}` if dialog creation failed
   """
   @spec create_from_invite(Message.t(), :uac | :uas) :: {:ok, String.t()} | {:error, term()}
-  def create_from_invite(%Message{method: :invite} = invite_message, role) when role in [:uac, :uas] do
+  def create_from_invite(%Message{method: :invite} = invite_message, role)
+      when role in [:uac, :uas] do
     # Extract dialog components using Message helper functions
     call_id = invite_message.call_id
     from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
     to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil
-    
+
     # Validate required fields
     with {:call_id, call_id} when not is_nil(call_id) <- {:call_id, call_id},
          {:from_tag, from_tag} when not is_nil(from_tag) <- {:from_tag, from_tag} do
-      
       # Determine local and remote tags based on role
-      {local_tag, remote_tag} = case role do
-        :uac -> {from_tag, to_tag}
-        :uas -> {to_tag || generate_tag(), from_tag}
-      end
-      
+      {local_tag, remote_tag} =
+        case role do
+          :uac -> {from_tag, to_tag}
+          :uas -> {to_tag || generate_tag(), from_tag}
+        end
+
       # Create dialog ID
       dialog_id = generate_id(role, call_id, local_tag, remote_tag)
-      
+
       # Create dialog struct
       dialog = %__MODULE__{
         id: dialog_id,
@@ -129,22 +130,24 @@ defmodule ParrotSip.Dialog do
         local_uri: extract_local_uri(invite_message, role),
         remote_uri: extract_remote_uri(invite_message, role),
         remote_target: extract_contact_uri(invite_message),
-        local_seq: if(role == :uac, do: invite_message.cseq && invite_message.cseq.number, else: 0),
-        remote_seq: if(role == :uas, do: invite_message.cseq && invite_message.cseq.number, else: 0),
+        local_seq:
+          if(role == :uac, do: invite_message.cseq && invite_message.cseq.number, else: 0),
+        remote_seq:
+          if(role == :uas, do: invite_message.cseq && invite_message.cseq.number, else: 0),
         route_set: extract_route_set_from_message(invite_message),
         secure: is_secure_dialog?(invite_message)
       }
-      
+
       # Add role field to dialog (using Map.put since it's not in the struct)
       dialog_with_role = Map.put(dialog, :role, role)
-      
+
       # Start dialog process
       case ParrotSip.Dialog.Supervisor.start_child(dialog_with_role) do
         {:ok, _pid} ->
           # Register dialog in registry
           Registry.register(ParrotSip.Registry, {:dialog, dialog_id}, dialog_with_role)
           {:ok, dialog_with_role}
-          
+
         {:error, _reason} ->
           # If start fails, just return the dialog structure for now
           # This allows tests to pass without the full dialog statem infrastructure
@@ -155,15 +158,15 @@ defmodule ParrotSip.Dialog do
       {:from_tag, nil} -> {:error, :no_from_tag}
     end
   end
-  
+
   def create_from_invite(%Message{method: method}, _role) when method != :invite do
     {:error, "Message must be an INVITE request"}
   end
-  
+
   def create_from_invite(%Message{method: :invite}, role) when role not in [:uac, :uas] do
     {:error, "Role must be :uac or :uas"}
   end
-  
+
   def create_from_invite(_message, _role) do
     {:error, "Message must be an INVITE request"}
   end
@@ -782,36 +785,35 @@ defmodule ParrotSip.Dialog do
     # from the response and reverse them for the route set
     []
   end
-  
-  
+
   # For UAC, local URI is From
   defp extract_local_uri(%Message{from: %From{uri: uri}}, :uac), do: uri
   defp extract_local_uri(_message, :uac), do: ""
-  
+
   # For UAS, local URI is To
   defp extract_local_uri(%Message{to: %To{uri: uri}}, :uas), do: uri
   defp extract_local_uri(_message, :uas), do: ""
-  
+
   # For UAC, remote URI is To
   defp extract_remote_uri(%Message{to: %To{uri: uri}}, :uac), do: uri
   defp extract_remote_uri(_message, :uac), do: ""
-  
+
   # For UAS, remote URI is From
   defp extract_remote_uri(%Message{from: %From{uri: uri}}, :uas), do: uri
   defp extract_remote_uri(_message, :uas), do: ""
-  
+
   defp extract_contact_uri(%Message{contact: %Contact{uri: uri}}), do: uri
   defp extract_contact_uri(_message), do: ""
-  
+
   defp extract_route_set_from_message(message) do
     message.record_route || []
   end
-  
+
   defp is_secure_dialog?(message) do
     # Check if Request-URI uses SIPS
     String.starts_with?(message.request_uri || "", "sips:")
   end
-  
+
   defp generate_tag do
     # Generate a random tag
     :crypto.strong_rand_bytes(8)

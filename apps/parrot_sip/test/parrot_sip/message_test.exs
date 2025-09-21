@@ -7,7 +7,7 @@ defmodule ParrotSip.MessageTest do
   describe "Pattern matching on Message struct fields" do
     test "can pattern match on Via header directly" do
       via = Via.new("proxy.example.com", "udp", 5060, %{"branch" => "z9hG4bK123"})
-      
+
       message = %Message{
         method: :invite,
         request_uri: "sip:bob@example.com",
@@ -19,19 +19,19 @@ defmodule ParrotSip.MessageTest do
         type: :request,
         direction: :outgoing
       }
-      
+
       # Direct pattern matching on Via
       assert %Message{via: %Via{host: "proxy.example.com", port: 5060}} = message
-      
+
       # Pattern match and extract values
       %Message{via: %Via{parameters: %{"branch" => branch}}} = message
       assert branch == "z9hG4bK123"
     end
-    
+
     test "can pattern match on multiple Via headers (list)" do
       via1 = Via.new("proxy1.example.com", "udp", 5060, %{"branch" => "z9hG4bK111"})
       via2 = Via.new("proxy2.example.com", "tcp", 5061, %{"branch" => "z9hG4bK222"})
-      
+
       message = %Message{
         method: :invite,
         request_uri: "sip:bob@example.com",
@@ -47,12 +47,12 @@ defmodule ParrotSip.MessageTest do
 
       # Pattern match on first Via in list
       assert %Message{via: [%Via{host: "proxy1.example.com"} | _rest]} = message
-      
+
       # Extract top Via using pattern matching
       %Message{via: [top_via | _]} = message
       assert top_via.host == "proxy1.example.com"
       assert top_via.transport == :udp
-      
+
       binary = Message.to_binary(message)
 
       # Check that the message starts with the request line
@@ -83,13 +83,13 @@ defmodule ParrotSip.MessageTest do
         cseq: CSeq.new(1, :invite),
         type: :request
       }
-      
+
       # Pattern match to check if message is in dialog
       assert %Message{
-        from: %From{parameters: %{"tag" => from_tag}},
-        to: %To{parameters: %{"tag" => to_tag}}
-      } = message
-      
+               from: %From{parameters: %{"tag" => from_tag}},
+               to: %To{parameters: %{"tag" => to_tag}}
+             } = message
+
       assert from_tag != nil
       assert to_tag != nil
       assert from_tag == "from123"
@@ -113,7 +113,7 @@ defmodule ParrotSip.MessageTest do
 
       # Pattern match on single Via
       assert %Message{via: %Via{host: "proxy.example.com"}} = message
-      
+
       binary = Message.to_binary(message)
 
       # Via should be formatted correctly from struct field
@@ -126,7 +126,7 @@ defmodule ParrotSip.MessageTest do
         cseq: CSeq.new(42, :invite),
         type: :request
       }
-      
+
       # Pattern match on CSeq number and method
       assert %Message{cseq: %CSeq{number: 42, method: :invite}} = message
     end
@@ -145,7 +145,11 @@ defmodule ParrotSip.MessageTest do
         cseq: CSeq.new(1, :invite),
         call_id: "mixed123@example.com",
         contact: Contact.new("sip:alice@host.com"),
-        content_type: %ParrotSip.Headers.ContentType{type: "application", subtype: "sdp", parameters: %{}},
+        content_type: %ParrotSip.Headers.ContentType{
+          type: "application",
+          subtype: "sdp",
+          parameters: %{}
+        },
         content_length: 0,
         max_forwards: 70,
         other_headers: %{
@@ -165,17 +169,18 @@ defmodule ParrotSip.MessageTest do
       assert binary =~ "User-Agent: Parrot/1.0\r\n"
     end
   end
-  
+
   describe "Message accessor removal tests" do
     test "direct field access instead of accessor functions" do
-      message = Message.new_request(:invite, "sip:bob@example.com")
-      |> Message.put_from(From.new("sip:alice@example.com", "Alice", %{"tag" => "123"}))
-      |> Message.put_to(To.new("sip:bob@example.com", "Bob", %{"tag" => "456"}))
-      |> Message.put_call_id("call123@example.com")
-      |> Message.put_cseq(CSeq.new(42, :invite))
-      |> Message.put_via(Via.new("example.com", "udp", 5060, %{"branch" => "z9hG4bK999"}))
-      |> Message.put_contact(Contact.new("sip:alice@192.168.1.1:5060"))
-      
+      message =
+        Message.new_request(:invite, "sip:bob@example.com")
+        |> Message.put_from(From.new("sip:alice@example.com", "Alice", %{"tag" => "123"}))
+        |> Message.put_to(To.new("sip:bob@example.com", "Bob", %{"tag" => "456"}))
+        |> Message.put_call_id("call123@example.com")
+        |> Message.put_cseq(CSeq.new(42, :invite))
+        |> Message.put_via(Via.new("example.com", "udp", 5060, %{"branch" => "z9hG4bK999"}))
+        |> Message.put_contact(Contact.new("sip:alice@192.168.1.1:5060"))
+
       # Direct field access (no more Message.from/1, Message.to/1, etc.)
       assert ParrotSip.Uri.to_string(message.from.uri) == "sip:alice@example.com"
       assert ParrotSip.Uri.to_string(message.to.uri) == "sip:bob@example.com"
@@ -184,31 +189,36 @@ defmodule ParrotSip.MessageTest do
       assert message.cseq.method == :invite
       assert message.via.host == "example.com"
       assert ParrotSip.Uri.to_string(message.contact.uri) == "sip:alice@192.168.1.1:5060"
-      
+
       # Extract branch using pattern matching instead of Message.branch/1
       %Message{via: %Via{parameters: %{"branch" => branch}}} = message
       assert branch == "z9hG4bK999"
-      
+
       # Extract tags using pattern matching instead of Message.from_tag/1, Message.to_tag/1
       %Message{
         from: %From{parameters: %{"tag" => from_tag}},
         to: %To{parameters: %{"tag" => to_tag}}
       } = message
+
       assert from_tag == "123"
       assert to_tag == "456"
     end
-    
+
     test "top_via with pattern matching instead of function" do
       # Single Via
-      msg1 = Message.new_request(:invite, "sip:bob@example.com")
+      msg1 =
+        Message.new_request(:invite, "sip:bob@example.com")
         |> Message.put_via(Via.new("single.com", "udp"))
+
       assert %Message{via: %Via{host: "single.com"}} = msg1
-      
+
       # Via list
-      msg2 = Message.new_request(:invite, "sip:bob@example.com")
+      msg2 =
+        Message.new_request(:invite, "sip:bob@example.com")
         |> Message.put_via([Via.new("first.com", "tcp"), Via.new("second.com", "udp")])
+
       assert %Message{via: [%Via{host: "first.com"} | _]} = msg2
-      
+
       # No Via
       msg3 = Message.new_request(:invite, "sip:bob@example.com")
       assert %Message{via: nil} = msg3

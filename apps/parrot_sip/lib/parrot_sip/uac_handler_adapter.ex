@@ -255,7 +255,8 @@ defmodule ParrotSip.UacHandlerAdapter do
       from: from,
       call_id: call_id,
       cseq: cseq_for_ack,
-      via: [],  # Will be added by transport
+      # Will be added by transport
+      via: [],
       max_forwards: 70,
       content_length: byte_size(body),
       other_headers: %{}
@@ -264,11 +265,14 @@ defmodule ParrotSip.UacHandlerAdapter do
     # Add content-type if body present
     ack =
       if body != "" do
-        %{ack | content_type: %ParrotSip.Headers.ContentType{
-          type: "application",
-          subtype: "sdp",
-          parameters: %{}
-        }}
+        %{
+          ack
+          | content_type: %ParrotSip.Headers.ContentType{
+              type: "application",
+              subtype: "sdp",
+              parameters: %{}
+            }
+        }
       else
         ack
       end

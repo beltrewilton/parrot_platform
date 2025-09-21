@@ -133,7 +133,9 @@ defmodule ParrotSip.Parser.ComplexMessagesTest do
 
       assert message.method == :register
       assert message.other_headers["authorization"] =~ "Digest username=\"user\""
-      assert message.other_headers["authorization"] =~ "response=\"6629fae49393a05397450978507c4ef1\""
+
+      assert message.other_headers["authorization"] =~
+               "response=\"6629fae49393a05397450978507c4ef1\""
     end
 
     test "parses subscription with complex event package" do

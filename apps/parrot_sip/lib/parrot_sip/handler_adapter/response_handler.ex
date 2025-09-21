@@ -83,14 +83,14 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
     # Send provisional response for INVITE
     trying_resp = UAS.make_reply(100, "Trying", uas_obj, req_sip_msg)
     UAS.response(trying_resp, uas_obj)
-    
+
     do_proxy_request(uri, req_sip_msg, uas_obj)
   end
-  
+
   def proxy_request(uri, req_sip_msg, uas_obj) do
     do_proxy_request(uri, req_sip_msg, uas_obj)
   end
-  
+
   defp do_proxy_request(uri, req_sip_msg, uas_obj) do
     forward_sip_msg = prepare_request_for_forwarding(req_sip_msg, uri)
 
@@ -133,7 +133,7 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
   def prepare_request_for_forwarding(%Message{method: :invite} = req_sip_msg, target_uri) do
     # Process basic forwarding updates
     req = prepare_basic_forwarding(req_sip_msg, target_uri)
-    
+
     # Add Record-Route for INVITE
     local_uri = Application.get_env(:parrot_sip, :local_uri, "sip:localhost:5060")
     record_route_hdr = ParrotSip.Headers.RecordRoute.new(local_uri)
@@ -146,11 +146,11 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
 
     %{req | record_route: [record_route_hdr | existing_routes]}
   end
-  
+
   def prepare_request_for_forwarding(req_sip_msg, target_uri) do
     prepare_basic_forwarding(req_sip_msg, target_uri)
   end
-  
+
   defp prepare_basic_forwarding(req_sip_msg, target_uri) do
     # Set the new request URI
     req1 = %{req_sip_msg | request_uri: target_uri}
@@ -236,26 +236,64 @@ defmodule ParrotSip.HandlerAdapter.ResponseHandler do
   # Helper function to set header value on Message struct
   defp set_header_value(message, header_name, value) do
     case String.downcase(header_name) do
-      "from" -> %{message | from: value}
-      "to" -> %{message | to: value}
-      "via" -> %{message | via: value}
-      "call-id" -> %{message | call_id: value}
-      "cseq" -> %{message | cseq: value}
-      "contact" -> %{message | contact: value}
-      "route" -> %{message | route: value}
-      "record-route" -> %{message | record_route: value}
-      "max-forwards" -> %{message | max_forwards: value}
-      "content-type" -> %{message | content_type: value}
-      "content-length" -> %{message | content_length: value}
-      "expires" -> %{message | expires: value}
-      "allow" -> %{message | allow: value}
-      "supported" -> %{message | supported: value}
-      "accept" -> %{message | accept: value}
-      "event" -> %{message | event: value}
-      "subscription-state" -> %{message | subscription_state: value}
-      "refer-to" -> %{message | refer_to: value}
-      "subject" -> %{message | subject: value}
-      _ -> 
+      "from" ->
+        %{message | from: value}
+
+      "to" ->
+        %{message | to: value}
+
+      "via" ->
+        %{message | via: value}
+
+      "call-id" ->
+        %{message | call_id: value}
+
+      "cseq" ->
+        %{message | cseq: value}
+
+      "contact" ->
+        %{message | contact: value}
+
+      "route" ->
+        %{message | route: value}
+
+      "record-route" ->
+        %{message | record_route: value}
+
+      "max-forwards" ->
+        %{message | max_forwards: value}
+
+      "content-type" ->
+        %{message | content_type: value}
+
+      "content-length" ->
+        %{message | content_length: value}
+
+      "expires" ->
+        %{message | expires: value}
+
+      "allow" ->
+        %{message | allow: value}
+
+      "supported" ->
+        %{message | supported: value}
+
+      "accept" ->
+        %{message | accept: value}
+
+      "event" ->
+        %{message | event: value}
+
+      "subscription-state" ->
+        %{message | subscription_state: value}
+
+      "refer-to" ->
+        %{message | refer_to: value}
+
+      "subject" ->
+        %{message | subject: value}
+
+      _ ->
         other = message.other_headers || %{}
         %{message | other_headers: Map.put(other, header_name, value)}
     end

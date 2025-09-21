@@ -196,8 +196,12 @@ defmodule ParrotSip.Headers.From do
 
     params_part =
       case from.parameters do
-        nil -> ""
-        params when map_size(params) == 0 -> ""
+        nil ->
+          ""
+
+        params when map_size(params) == 0 ->
+          ""
+
         params ->
           params
           |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)

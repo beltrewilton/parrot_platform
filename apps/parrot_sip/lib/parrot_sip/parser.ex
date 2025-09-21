@@ -471,7 +471,7 @@ defmodule ParrotSip.Parser do
         :ok
     end
   end
-  
+
   # Collect missing required headers
   defp collect_missing_headers(message) do
     required = [
@@ -481,9 +481,9 @@ defmodule ParrotSip.Parser do
       {:cseq, "cseq"},
       {:via, "via"}
     ]
-    
+
     required
-    |> Enum.filter(fn {field, _name} -> 
+    |> Enum.filter(fn {field, _name} ->
       is_nil(Map.get(message, field))
     end)
     |> Enum.map(fn {_field, name} -> name end)
@@ -492,10 +492,10 @@ defmodule ParrotSip.Parser do
   # Create a request message from parsed parts
   defp create_request_message(parts) do
     headers = parts.headers
-    
+
     # Extract known headers and build other_headers map
     {known_headers, other_headers} = split_headers(headers)
-    
+
     %Message{
       method: parts.method,
       request_uri: parts.request_uri,
@@ -527,14 +527,14 @@ defmodule ParrotSip.Parser do
       other_headers: other_headers
     }
   end
-  
+
   # Create a response message from parsed parts
   defp create_response_message(parts) do
     headers = parts.headers
-    
+
     # Extract known headers and build other_headers map
     {known_headers, other_headers} = split_headers(headers)
-    
+
     %Message{
       status_code: parts.status_code,
       reason_phrase: parts.reason_phrase,
@@ -566,31 +566,46 @@ defmodule ParrotSip.Parser do
       other_headers: other_headers
     }
   end
-  
+
   # Extract transaction ID from Via headers
   defp extract_transaction_id(nil), do: nil
-  
+
   defp extract_transaction_id([top | _]) when is_map(top) do
     Map.get(top.parameters, "branch")
   end
-  
+
   defp extract_transaction_id([]), do: nil
-  
+
   defp extract_transaction_id(via) when is_map(via) do
     Map.get(via.parameters, "branch")
   end
-  
+
   defp extract_transaction_id(_), do: nil
-  
+
   # Split headers into known and unknown
   defp split_headers(headers) do
     known_header_names = [
-      "via", "from", "to", "call-id", "cseq", "max-forwards", "contact", 
-      "route", "record-route", "content-type", "content-length", "expires",
-      "allow", "supported", "accept", "event", "subscription-state", 
-      "refer-to", "subject"
+      "via",
+      "from",
+      "to",
+      "call-id",
+      "cseq",
+      "max-forwards",
+      "contact",
+      "route",
+      "record-route",
+      "content-type",
+      "content-length",
+      "expires",
+      "allow",
+      "supported",
+      "accept",
+      "event",
+      "subscription-state",
+      "refer-to",
+      "subject"
     ]
-    
+
     # Extract known headers
     known = %{
       via: parse_via_value(Map.get(headers, "via")),
@@ -613,21 +628,22 @@ defmodule ParrotSip.Parser do
       refer_to: Map.get(headers, "refer-to"),
       subject: Map.get(headers, "subject")
     }
-    
+
     # Build other_headers map with unknown headers
-    other = headers
+    other =
+      headers
       |> Enum.reject(fn {k, _} -> k in known_header_names end)
       |> Map.new()
-    
+
     {known, other}
   end
-  
+
   # Extract integer value from parsed header
   defp get_integer_value(nil), do: nil
   defp get_integer_value(%{value: value}) when is_integer(value), do: value
   defp get_integer_value(value) when is_integer(value), do: value
   defp get_integer_value(_), do: nil
-  
+
   # Extract string value from parsed header  
   defp get_string_value(nil), do: nil
   defp get_string_value(%{value: value}) when is_binary(value), do: value

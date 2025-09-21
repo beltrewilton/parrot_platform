@@ -74,7 +74,7 @@ defmodule ParrotSip.MessageViaTest do
 
     # Add received parameter
     updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
-    
+
     # Via is directly accessible as struct field
     assert is_struct(updated.via, Via)
     assert updated.via.parameters["received"] == "192.168.1.1"
@@ -85,7 +85,7 @@ defmodule ParrotSip.MessageViaTest do
 
     # Add rport parameter
     with_rport = MessageHelper.set_rport_parameter(message, 12345)
-    
+
     # Via is directly accessible as struct field
     assert is_struct(with_rport.via, Via)
     assert with_rport.via.parameters["rport"] == "12345"

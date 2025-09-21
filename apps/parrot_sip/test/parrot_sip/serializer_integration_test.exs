@@ -114,14 +114,17 @@ defmodule ParrotSip.SerializerIntegrationTest do
       ok_response = %{ok_response | contact: contact1}
 
       # Add Record-Route headers (simulating proxies)
-      ok_response = MessageHelper.add_record_route(ok_response, %RecordRoute{
-        uri: "sip:proxy2.biloxi.com;lr",
-        parameters: %{}
-      })
-      ok_response = MessageHelper.add_record_route(ok_response, %RecordRoute{
-        uri: "sip:proxy1.atlanta.com;lr",
-        parameters: %{}
-      })
+      ok_response =
+        MessageHelper.add_record_route(ok_response, %RecordRoute{
+          uri: "sip:proxy2.biloxi.com;lr",
+          parameters: %{}
+        })
+
+      ok_response =
+        MessageHelper.add_record_route(ok_response, %RecordRoute{
+          uri: "sip:proxy1.atlanta.com;lr",
+          parameters: %{}
+        })
 
       # UAS encodes the OK response
       encoded_ok = Serializer.encode(ok_response, uas_transport)
@@ -161,11 +164,12 @@ defmodule ParrotSip.SerializerIntegrationTest do
         end)
 
       # Copy dialog headers from original INVITE
-      ack_request = %{ack_request | 
-        from: invite_request.from,
-        to: received_ok.to,
-        call_id: invite_request.call_id,
-        cseq: %CSeq{number: 314159, method: :ack}
+      ack_request = %{
+        ack_request
+        | from: invite_request.from,
+          to: received_ok.to,
+          call_id: invite_request.call_id,
+          cseq: %CSeq{number: 314_159, method: :ack}
       }
 
       # UAC encodes and sends the ACK
@@ -203,10 +207,11 @@ defmodule ParrotSip.SerializerIntegrationTest do
       {:ok, received_invite} = Serializer.decode(encoded_invite, public_source)
 
       # Apply NAT handling
-      invite_with_nat = MessageHelper.apply_nat_handling(received_invite, %{
-        host: "203.0.113.1",
-        port: 12345
-      })
+      invite_with_nat =
+        MessageHelper.apply_nat_handling(received_invite, %{
+          host: "203.0.113.1",
+          port: 12345
+        })
 
       # Check that received and rport parameters were added
       via = invite_with_nat.via
@@ -221,26 +226,30 @@ defmodule ParrotSip.SerializerIntegrationTest do
       request = create_invite_with_headers(request)
 
       # Add additional Via headers (simulating proxies)
-      request = Message.add_via(request, %Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "proxy1.atlanta.com",
-        port: 5060,
-        parameters: %{"branch" => "z9hG4bKproxy1"}
-      })
+      request =
+        Message.add_via(request, %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "proxy1.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bKproxy1"}
+        })
 
       # Add Route headers
-      request = MessageHelper.add_route_header(request, %Route{
-        uri: "sip:proxy2.biloxi.com;lr",
-        parameters: %{}
-      })
+      request =
+        MessageHelper.add_route_header(request, %Route{
+          uri: "sip:proxy2.biloxi.com;lr",
+          parameters: %{}
+        })
 
       # Encode and decode
       transport = %{transport_type: :udp, local_host: "alice.atlanta.com", local_port: 5060}
       encoded = Serializer.encode(request, transport)
 
-      source = Serializer.create_source_info(:udp, "alice.atlanta.com", 5060, "bob.biloxi.com", 5060)
+      source =
+        Serializer.create_source_info(:udp, "alice.atlanta.com", 5060, "bob.biloxi.com", 5060)
+
       {:ok, decoded} = Serializer.decode(encoded, source)
 
       # Verify Via headers are preserved
@@ -255,32 +264,41 @@ defmodule ParrotSip.SerializerIntegrationTest do
     test "round-trip serialization preserves message structure" do
       # Create a complex message with many headers
       message = Message.new_request(:register, "sip:registrar.atlanta.com")
-      
-      message = %{message | 
-        from: %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        to: %To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{}
-        },
-        call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %CSeq{number: 314159, method: :invite},
-        contact: %Contact{
-          uri: "sip:alice@pc33.atlanta.com",
-          parameters: %{"expires" => "3600"}
-        },
-        expires: 7200
+
+      message = %{
+        message
+        | from: %From{
+            display_name: "Alice",
+            uri: "sip:alice@atlanta.com",
+            parameters: %{"tag" => "1928301774"}
+          },
+          to: %To{
+            display_name: "Bob",
+            uri: "sip:bob@biloxi.com",
+            parameters: %{}
+          },
+          call_id: "a84b4c76e66710@pc33.atlanta.com",
+          cseq: %CSeq{number: 314_159, method: :invite},
+          contact: %Contact{
+            uri: "sip:alice@pc33.atlanta.com",
+            parameters: %{"expires" => "3600"}
+          },
+          expires: 7200
       }
 
       # Encode and decode
       transport = %{transport_type: :udp, local_host: "alice.atlanta.com", local_port: 5060}
       encoded = Serializer.encode(message, transport)
 
-      source = Serializer.create_source_info(:udp, "alice.atlanta.com", 5060, "registrar.atlanta.com", 5060)
+      source =
+        Serializer.create_source_info(
+          :udp,
+          "alice.atlanta.com",
+          5060,
+          "registrar.atlanta.com",
+          5060
+        )
+
       {:ok, decoded} = Serializer.decode(encoded, source)
 
       # Verify all headers are preserved
@@ -297,25 +315,26 @@ defmodule ParrotSip.SerializerIntegrationTest do
     test "encodes and decodes multipart body correctly" do
       boundary = "boundary42"
       message = Message.new_request(:invite, "sip:bob@biloxi.com")
-        
-      message = %{message | 
-        from: %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        to: %To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{}
-        },
-        call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %CSeq{number: 314159, method: :invite},
-        content_type: %ParrotSip.Headers.ContentType{
-          type: "multipart",
-          subtype: "mixed",
-          parameters: %{"boundary" => boundary}
-        }
+
+      message = %{
+        message
+        | from: %From{
+            display_name: "Alice",
+            uri: "sip:alice@atlanta.com",
+            parameters: %{"tag" => "1928301774"}
+          },
+          to: %To{
+            display_name: "Bob",
+            uri: "sip:bob@biloxi.com",
+            parameters: %{}
+          },
+          call_id: "a84b4c76e66710@pc33.atlanta.com",
+          cseq: %CSeq{number: 314_159, method: :invite},
+          content_type: %ParrotSip.Headers.ContentType{
+            type: "multipart",
+            subtype: "mixed",
+            parameters: %{"boundary" => boundary}
+          }
       }
 
       # Create multipart body
@@ -332,19 +351,20 @@ defmodule ParrotSip.SerializerIntegrationTest do
       isup_data = <<0x01, 0x10, 0x48, 0x01>>
 
       # Store multipart parts in other_headers
-      message = %{message | 
-        other_headers: %{
-          "multipart-parts" => [
-            %{
-              headers: %{"content-type" => "application/sdp"},
-              body: sdp_part
-            },
-            %{
-              headers: %{"content-type" => "application/isup"},
-              body: Base.encode64(isup_data)
-            }
-          ]
-        }
+      message = %{
+        message
+        | other_headers: %{
+            "multipart-parts" => [
+              %{
+                headers: %{"content-type" => "application/sdp"},
+                body: sdp_part
+              },
+              %{
+                headers: %{"content-type" => "application/isup"},
+                body: Base.encode64(isup_data)
+              }
+            ]
+          }
       }
 
       # Extract the first part
@@ -356,41 +376,42 @@ defmodule ParrotSip.SerializerIntegrationTest do
   # Private helper functions
   defp create_invite_with_headers(invite) do
     # Add mandatory headers for a valid INVITE
-    %{invite | 
-      from: %From{
-        display_name: "Alice",
-        uri: %ParrotSip.Uri{
-          scheme: "sip",
-          user: "alice",
-          host: "atlanta.com",
-          port: nil,
+    %{
+      invite
+      | from: %From{
+          display_name: "Alice",
+          uri: %ParrotSip.Uri{
+            scheme: "sip",
+            user: "alice",
+            host: "atlanta.com",
+            port: nil,
+            parameters: %{}
+          },
+          parameters: %{"tag" => "1928301774"}
+        },
+        to: %To{
+          display_name: "Bob",
+          uri: %ParrotSip.Uri{
+            scheme: "sip",
+            user: "bob",
+            host: "biloxi.com",
+            port: nil,
+            parameters: %{}
+          },
           parameters: %{}
         },
-        parameters: %{"tag" => "1928301774"}
-      },
-      to: %To{
-        display_name: "Bob",
-        uri: %ParrotSip.Uri{
-          scheme: "sip",
-          user: "bob",
-          host: "biloxi.com",
-          port: nil,
+        call_id: "a84b4c76e66710@pc33.atlanta.com",
+        cseq: %CSeq{number: 314_159, method: :invite},
+        max_forwards: 70,
+        contact: %Contact{
+          uri: "sip:alice@pc33.atlanta.com",
           parameters: %{}
         },
-        parameters: %{}
-      },
-      call_id: "a84b4c76e66710@pc33.atlanta.com",
-      cseq: %CSeq{number: 314159, method: :invite},
-      max_forwards: 70,
-      contact: %Contact{
-        uri: "sip:alice@pc33.atlanta.com",
-        parameters: %{}
-      },
-      content_type: %ParrotSip.Headers.ContentType{
-        type: "application",
-        subtype: "sdp",
-        parameters: %{}
-      }
+        content_type: %ParrotSip.Headers.ContentType{
+          type: "application",
+          subtype: "sdp",
+          parameters: %{}
+        }
     }
   end
 
@@ -400,7 +421,7 @@ defmodule ParrotSip.SerializerIntegrationTest do
       # To header should have a tag from the response
       "to" => ok_response.to,
       "call-id" => invite_request.call_id,
-      "cseq" => %CSeq{number: 314159, method: :ack}
+      "cseq" => %CSeq{number: 314_159, method: :ack}
     }
   end
 
@@ -415,7 +436,7 @@ defmodule ParrotSip.SerializerIntegrationTest do
       # To header should have a tag from the response
       "to" => ok_response.to,
       "call-id" => invite_request.call_id,
-      "cseq" => %CSeq{number: 314160, method: :bye}
+      "cseq" => %CSeq{number: 314_160, method: :bye}
     }
   end
 

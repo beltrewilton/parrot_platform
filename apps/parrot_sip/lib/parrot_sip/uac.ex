@@ -113,14 +113,17 @@ defmodule ParrotSip.UAC do
 
   @spec add_branch_to_via(Message.t(), String.t()) :: Message.t()
   defp add_branch_to_via(%Message{via: nil} = msg, _branch), do: msg
+
   defp add_branch_to_via(%Message{via: via} = msg, branch) when is_struct(via, Via) do
     updated_via = Via.with_parameter(via, "branch", branch)
     %{msg | via: updated_via}
   end
+
   defp add_branch_to_via(%Message{via: [first_via | rest]} = msg, branch) when is_list(msg.via) do
     updated_via = Via.with_parameter(first_via, "branch", branch)
     %{msg | via: [updated_via | rest]}
   end
+
   defp add_branch_to_via(msg, _branch), do: msg
 
   @spec create_client_transaction(Message.t(), String.t()) :: {:ok, Transaction.t()}
@@ -148,20 +151,23 @@ defmodule ParrotSip.UAC do
         error
     end
   end
-  
+
   # Helper function to send messages via transport handler
   defp send_via_transport_handler(message, destination) do
     # Try to find the transport handler
-    transport_handler = case Process.whereis(ParrotSip.TransportHandler) do
-      nil ->
-        # Try to find via Registry
-        case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
-          [{_pid, handler_pid}] -> handler_pid
-          _ -> nil
-        end
-      pid -> pid
-    end
-    
+    transport_handler =
+      case Process.whereis(ParrotSip.TransportHandler) do
+        nil ->
+          # Try to find via Registry
+          case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
+            [{_pid, handler_pid}] -> handler_pid
+            _ -> nil
+          end
+
+        pid ->
+          pid
+      end
+
     if transport_handler do
       ParrotSip.TransportHandler.send_request(transport_handler, message, destination)
     else
