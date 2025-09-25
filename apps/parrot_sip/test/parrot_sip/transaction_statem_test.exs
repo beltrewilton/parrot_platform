@@ -9,7 +9,23 @@ defmodule ParrotSip.TransactionStatemTest do
   require Logger
 
   setup do
-    :ok
+    registry_name = ParrotSip.Registry
+
+    case Registry.start_link(keys: :unique, name: registry_name) do
+      {:ok, pid} ->
+        on_exit(fn -> Process.exit(pid, :shutdown) end)
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+    end
+
+    case ParrotSip.Transaction.Supervisor.start_link([]) do
+      {:ok, sup_pid} ->
+        on_exit(fn -> Process.exit(sup_pid, :shutdown) end)
+
+      {:error, {:already_started, _pid}} ->
+        {:ok, sup: Process.whereis(ParrotSip.Transaction.Supervisor)}
+    end
   end
 
   describe "message pattern matching" do
@@ -118,6 +134,12 @@ defmodule ParrotSip.TransactionStatemTest do
 
     test "create_server_response creates response properly" do
       request = create_invite_request_with_branch("z9hG4bKresp456")
+
+      {:ok, transaction} = ParrotSip.Transaction.create_invite_server(request)
+
+      handler = %ParrotSip.Handler{module: TestHandler, args: %{}}
+      {:ok, _pid} = ParrotSip.Transaction.Supervisor.start_child([transaction, handler])
+
       response = Message.reply(request, 200, "OK")
 
       # Should handle response creation

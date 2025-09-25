@@ -644,12 +644,6 @@ defmodule ParrotSip.Parser do
   defp get_integer_value(value) when is_integer(value), do: value
   defp get_integer_value(_), do: nil
 
-  # Extract string value from parsed header  
-  defp get_string_value(nil), do: nil
-  defp get_string_value(%{value: value}) when is_binary(value), do: value
-  defp get_string_value(value) when is_binary(value), do: value
-  defp get_string_value(_), do: nil
-
   # Parse record_route value into list of RecordRoute structs
   # Note: Record-Route headers are already parsed in process_header, so this just passes through
   defp parse_record_route_value(value), do: value

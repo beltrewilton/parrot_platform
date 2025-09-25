@@ -155,19 +155,19 @@ defmodule ParrotSip.TransactionStatem do
     :gen_statem.cast(via_tuple(transaction), {:send, resp})
   end
 
-  @spec create_server_response(term(), term()) :: :ok
+  @spec create_server_response(term(), term()) :: :ok | {:error, String.t()}
   def create_server_response(resp_sip_msg, req_sip_msg) do
     trans_id = Transaction.generate_id(req_sip_msg)
 
     case Registry.lookup(ParrotSip.Registry, trans_id) do
       [{pid, _}] when is_pid(pid) ->
+        Logger.debug("Found transaction to create reponse: #{inspect(trans_id, @inspect_opts)}")
         :gen_statem.cast(pid, {:send, resp_sip_msg})
 
       _ ->
-        Logger.debug("No transaction found for response, sending directly")
-        # TODO: Implement direct response sending with pure Elixir
-        # For now, just return :ok
-        :ok
+        Logger.error("No transaction found for response")
+        # TODO: should we support stateless responses. If so, when?
+        {:error, "No transaction found"}
     end
   end
 
