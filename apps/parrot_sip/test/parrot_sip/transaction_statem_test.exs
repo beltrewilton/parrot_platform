@@ -2,6 +2,7 @@ defmodule ParrotSip.TransactionStatemTest do
   use ExUnit.Case, async: false
 
   alias ParrotSip.TransactionStatem
+  alias ParrotSip.Transaction
   alias ParrotSip.Message
   alias ParrotSip.Headers.{Via, From, To, CSeq, Contact}
   alias ParrotSip.TestHandler
@@ -9,329 +10,814 @@ defmodule ParrotSip.TransactionStatemTest do
   require Logger
 
   setup do
-    registry_name = ParrotSip.Registry
+    start_supervised!({Registry, keys: :unique, name: ParrotSip.Registry})
+    start_supervised!(ParrotSip.Transaction.Supervisor)
+    :ok
+  end
 
-    case Registry.start_link(keys: :unique, name: registry_name) do
-      {:ok, pid} ->
-        on_exit(fn -> Process.exit(pid, :shutdown) end)
+  describe "INVITE server transaction lifecycle" do
+    test "trying -> proceeding -> completed -> confirmed -> terminated" do
+      request = build_invite("z9hG4bKlifecycle1")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
 
-      {:error, {:already_started, _pid}} ->
-        :ok
+      {:ok, pid} = start_transaction(transaction, handler)
+      assert_state(pid, :trying)
+
+      provisional = Message.reply(request, 180, "Ringing")
+      :ok = TransactionStatem.server_response(provisional, transaction)
+
+      assert_state(pid, :proceeding)
+      assert_last_response(pid, 180)
+      assert timer_active?(pid, :g)
+
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      assert_state(pid, :completed)
+      assert_last_response(pid, 404)
+      assert timer_active?(pid, :h)
+      refute timer_active?(pid, :c)
+
+      ack = build_ack(request)
+      :gen_statem.cast(pid, {:received, ack})
+
+      assert_state(pid, :confirmed)
+      refute timer_active?(pid, :h)
+      assert timer_active?(pid, :i)
+
+      send(pid, {:event, :i})
+      assert_process_terminates(pid)
     end
 
-    case ParrotSip.Transaction.Supervisor.start_link([]) do
-      {:ok, sup_pid} ->
-        on_exit(fn -> Process.exit(sup_pid, :shutdown) end)
+    test "trying -> completed (skip proceeding with immediate final)" do
+      request = build_invite("z9hG4bKskip1")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
 
-      {:error, {:already_started, _pid}} ->
-        {:ok, sup: Process.whereis(ParrotSip.Transaction.Supervisor)}
+      {:ok, pid} = start_transaction(transaction, handler)
+      assert_state(pid, :trying)
+
+      final = Message.reply(request, 486, "Busy Here")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      assert_state(pid, :completed)
+      assert_last_response(pid, 486)
+      assert timer_active?(pid, :h)
+    end
+
+    test "trying -> terminated (2xx response)" do
+      request = build_invite("z9hG4bK2xx")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      ok_response = Message.reply(request, 200, "OK")
+      :ok = TransactionStatem.server_response(ok_response, transaction)
+
+      assert_state(pid, :terminated)
+      assert_last_response(pid, 200)
+      refute timer_active?(pid, :g)
+      refute timer_active?(pid, :h)
+    end
+
+    test "proceeding -> terminated (2xx response)" do
+      request = build_invite("z9hG4bKproc2xx")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      provisional = Message.reply(request, 180, "Ringing")
+      :ok = TransactionStatem.server_response(provisional, transaction)
+      assert_state(pid, :proceeding)
+
+      ok_response = Message.reply(request, 200, "OK")
+      :ok = TransactionStatem.server_response(ok_response, transaction)
+
+      assert_state(pid, :terminated)
+    end
+
+    test "retransmission in proceeding keeps same state and response" do
+      request = build_invite("z9hG4bKretrans1")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      provisional = Message.reply(request, 180, "Ringing")
+      :ok = TransactionStatem.server_response(provisional, transaction)
+      assert_state(pid, :proceeding)
+      assert_last_response(pid, 180)
+
+      state_before = get_transaction_state(pid)
+
+      :gen_statem.cast(pid, {:received, request})
+      Process.sleep(50)
+
+      assert_state(pid, :proceeding)
+      assert_last_response(pid, 180)
+
+      state_after = get_transaction_state(pid)
+      assert state_before.last_response == state_after.last_response
+    end
+
+    test "retransmission in completed retransmits final response" do
+      request = build_invite("z9hG4bKretransComp")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+      assert_state(pid, :completed)
+
+      :gen_statem.cast(pid, {:received, request})
+      Process.sleep(50)
+
+      assert_state(pid, :completed)
+      assert_last_response(pid, 404)
     end
   end
 
-  describe "message pattern matching" do
-    test "correctly matches INVITE method" do
-      message = create_invite_request_with_branch("z9hG4bKpattern123")
-      assert message.method == :invite
-      assert Message.is_request?(message) == true
+  describe "non-INVITE server transaction lifecycle" do
+    test "trying -> completed -> terminated" do
+      request = build_register("z9hG4bKreg1")
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      assert_state(pid, :trying)
+
+      final = Message.reply(request, 200, "OK")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      assert_state(pid, :completed)
+      assert_last_response(pid, 200)
+      assert timer_active?(pid, :j)
+
+      send(pid, {:event, :j})
+      assert_process_terminates(pid)
     end
 
-    test "correctly matches response messages" do
-      request = create_invite_request_with_branch("z9hG4bKresp_pattern123")
-      response = Message.reply(request, 200, "OK")
+    test "trying -> proceeding -> completed (with provisional)" do
+      request = build_register("z9hG4bKreg2")
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+      handler = TestHandler.new()
 
-      assert Message.is_response?(response) == true
-      assert response.status_code == 200
-      assert response.reason_phrase == "OK"
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      provisional = Message.reply(request, 100, "Trying")
+      :ok = TransactionStatem.server_response(provisional, transaction)
+
+      assert_state(pid, :proceeding)
+      assert_last_response(pid, 100)
+
+      final = Message.reply(request, 200, "OK")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      assert_state(pid, :completed)
+      assert_last_response(pid, 200)
+      assert timer_active?(pid, :j)
     end
 
-    test "extracts header information cleanly" do
-      message = create_invite_request_with_branch("z9hG4bKheader123")
+    test "retransmission in trying retransmits last response if exists" do
+      request = build_register("z9hG4bKretransTrying")
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+      handler = TestHandler.new()
 
-      # Test improved pattern matching for headers
-      assert %Via{} = Message.top_via(message)
-      assert %From{} = message.from
-      assert %To{} = message.to
-      assert %CSeq{} = message.cseq
-      assert is_binary(message.call_id)
-    end
+      {:ok, pid} = start_transaction(transaction, handler)
 
-    test "handles in-dialog detection" do
-      # Create a message that appears to be in-dialog
-      message = create_bye_request_in_dialog()
+      provisional = Message.reply(request, 100, "Trying")
+      :ok = TransactionStatem.server_response(provisional, transaction)
 
-      assert Message.in_dialog?(message) == true
+      :gen_statem.cast(pid, {:received, request})
+      Process.sleep(50)
+
+      assert_state(pid, :proceeding)
+      assert_last_response(pid, 100)
     end
   end
 
-  describe "transaction server functions" do
-    test "server_process handles ACK requests" do
-      message = %Message{
-        method: :ack,
-        type: :request,
-        direction: :incoming,
-        request_uri: "sip:bob@biloxi.com",
-        version: "SIP/2.0",
-        via: %Via{
-          protocol: "SIP",
-          version: "2.0",
-          transport: :udp,
-          host: "pc33.atlanta.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKnashds8"}
-        },
-        from: %From{
-          display_name: "Alice",
-          uri: "sip:alice@atlanta.com",
-          parameters: %{"tag" => "1928301774"}
-        },
-        to: %To{
-          display_name: "Bob",
-          uri: "sip:bob@biloxi.com",
-          parameters: %{"tag" => "314159"}
-        },
-        call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %CSeq{number: 314_159, method: :ack},
-        other_headers: %{},
-        body: "",
-        source: %ParrotSip.Source{
-          local: {{127, 0, 0, 1}, 5060},
-          remote: {{192, 168, 1, 100}, 5060},
-          transport: :udp,
-          source_id: nil
-        }
-      }
+  describe "INVITE client transaction lifecycle" do
+    test "calling -> proceeding -> completed -> terminated" do
+      invite = build_invite("z9hG4bKclient1")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
 
+      callback = fn result -> send(self(), {:callback, result}) end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      assert_state(pid, :calling)
+
+      provisional = Message.reply(invite, 180, "Ringing")
+      :gen_statem.cast(pid, {:received, provisional})
+
+      assert_receive {:callback, {:response, ^provisional}}
+      assert_state(pid, :proceeding)
+
+      final = Message.reply(invite, 404, "Not Found")
+      :gen_statem.cast(pid, {:received, final})
+
+      assert_receive {:callback, {:response, ^final}}
+      assert_state(pid, :completed)
+    end
+
+    test "calling -> terminated (2xx response)" do
+      invite = build_invite("z9hG4bKclient2xx")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+
+      callback = fn result -> send(self(), {:callback, result}) end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      ok_response = Message.reply(invite, 200, "OK")
+      :gen_statem.cast(pid, {:received, ok_response})
+
+      assert_receive {:callback, {:response, ^ok_response}}
+      assert_state(pid, :completed)
+    end
+
+    test "client callback receives all responses in order" do
+      invite = build_invite("z9hG4bKcallback1")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+
+      callback = fn result -> send(self(), {:callback, result}) end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      trying = Message.reply(invite, 100, "Trying")
+      :gen_statem.cast(pid, {:received, trying})
+      assert_receive {:callback, {:response, %{status_code: 100}}}
+
+      ringing = Message.reply(invite, 180, "Ringing")
+      :gen_statem.cast(pid, {:received, ringing})
+      assert_receive {:callback, {:response, %{status_code: 180}}}
+
+      ok = Message.reply(invite, 200, "OK")
+      :gen_statem.cast(pid, {:received, ok})
+      assert_receive {:callback, {:response, %{status_code: 200}}}
+    end
+  end
+
+  describe "non-INVITE client transaction lifecycle" do
+    test "trying -> completed -> terminated" do
+      register = build_register("z9hG4bKclientReg")
+      {:ok, transaction} = Transaction.create_non_invite_client(register)
+
+      callback = fn result -> send(self(), {:callback, result}) end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      assert_state(pid, :calling)
+
+      ok_response = Message.reply(register, 200, "OK")
+      :gen_statem.cast(pid, {:received, ok_response})
+
+      assert_receive {:callback, {:response, ^ok_response}}
+      assert_state(pid, :completed)
+    end
+  end
+
+  describe "timer G behavior" do
+    test "timer G fires and reschedules itself in completed state" do
+      request = build_invite("z9hG4bKtimerG")
+      {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
-      # For ACK, should delegate to UAS.process_ack
-      # We'll mock this for now
-      assert :ok == TransactionStatem.server_process(message, handler)
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      timer_ref_before = get_timer_ref(pid, :g)
+      assert timer_ref_before != nil
+
+      send(pid, {:event, :g})
+      Process.sleep(50)
+
+      assert_state(pid, :completed)
+
+      timer_ref_after = get_timer_ref(pid, :g)
+      assert timer_ref_after != nil
+      assert timer_ref_after != timer_ref_before
     end
 
-    test "server_process handles INVITE requests - new transaction" do
-      message = create_invite_request_with_branch("z9hG4bKnew123")
+    test "timer G cancelled when ACK received" do
+      request = build_invite("z9hG4bKtimerGcancel")
+      {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
-      # Should create new transaction since no existing one
-      assert :ok == TransactionStatem.server_process(message, handler)
-    end
+      {:ok, pid} = start_transaction(transaction, handler)
 
-    test "server_process handles in-dialog requests" do
-      message = create_bye_request_in_dialog()
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      timer_g_ref = get_timer_ref(pid, :g)
+      assert timer_g_ref != nil
+      assert Process.read_timer(timer_g_ref) != false
+
+      ack = build_ack(request)
+      :gen_statem.cast(pid, {:received, ack})
+
+      assert get_timer_ref(pid, :g) == nil
+      assert Process.read_timer(timer_g_ref) == false
+    end
+  end
+
+  describe "timer H behavior" do
+    test "timer H terminates transaction when fired" do
+      request = build_invite("z9hG4bKtimerH")
+      {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
-      # Should handle in-dialog request
-      assert :ok == TransactionStatem.server_process(message, handler)
+      {:ok, pid} = start_transaction(transaction, handler)
+      ref = Process.monitor(pid)
+
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      send(pid, {:event, :h})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
     end
 
-    test "server_process handles REGISTER requests" do
-      message = create_register_request_with_branch("z9hG4bKreg123")
+    test "timer H cancelled when ACK received" do
+      request = build_invite("z9hG4bKtimerHcancel")
+      {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
-      # Should create new transaction
-      assert :ok == TransactionStatem.server_process(message, handler)
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      timer_h_ref = get_timer_ref(pid, :h)
+      assert timer_h_ref != nil
+      assert Process.read_timer(timer_h_ref) != false
+
+      ack = build_ack(request)
+      :gen_statem.cast(pid, {:received, ack})
+
+      assert get_timer_ref(pid, :h) == nil
+      assert Process.read_timer(timer_h_ref) == false
+    end
+  end
+
+  describe "timer I behavior" do
+    test "timer I terminates transaction when fired" do
+      request = build_invite("z9hG4bKtimerI")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      ref = Process.monitor(pid)
+
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      ack = build_ack(request)
+      :gen_statem.cast(pid, {:received, ack})
+      assert_state(pid, :confirmed)
+
+      send(pid, {:event, :i})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
     end
 
-    test "create_server_response creates response properly" do
-      request = create_invite_request_with_branch("z9hG4bKresp456")
+    test "timer I is started when ACK received in completed" do
+      request = build_invite("z9hG4bKtimerIstart")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
 
-      {:ok, transaction} = ParrotSip.Transaction.create_invite_server(request)
+      {:ok, pid} = start_transaction(transaction, handler)
 
-      handler = %ParrotSip.Handler{module: TestHandler, args: %{}}
-      {:ok, _pid} = ParrotSip.Transaction.Supervisor.start_child([transaction, handler])
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
 
-      response = Message.reply(request, 200, "OK")
+      assert get_timer_ref(pid, :i) == nil
 
-      # Should handle response creation
-      assert :ok == TransactionStatem.create_server_response(response, request)
+      ack = build_ack(request)
+      :gen_statem.cast(pid, {:received, ack})
+
+      assert get_timer_ref(pid, :i) != nil
+    end
+  end
+
+  describe "timer J behavior" do
+    test "timer J terminates non-INVITE server transaction" do
+      request = build_register("z9hG4bKtimerJ")
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      ref = Process.monitor(pid)
+
+      final = Message.reply(request, 200, "OK")
+      :ok = TransactionStatem.server_response(final, transaction)
+
+      assert timer_active?(pid, :j)
+
+      send(pid, {:event, :j})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
+    end
+  end
+
+  describe "CANCEL handling for server transactions" do
+    test "sets cancelled flag in client transaction" do
+      invite = build_invite("z9hG4bKcancelFlag")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+
+      callback = fn _ -> :ok end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      refute get_cancelled_flag(pid)
+
+      :ok = TransactionStatem.client_cancel({:trans, pid})
+      Process.sleep(50)
+
+      assert get_cancelled_flag(pid)
     end
 
-    test "server_cancel handles CANCEL for non-existent transaction" do
-      cancel = create_cancel_request_standalone()
+    test "cancel timeout terminates client transaction" do
+      invite = build_invite("z9hG4bKcancelTimeout")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
 
-      # Should return 481 response for non-existent transaction
+      callback = fn result -> send(self(), {:callback, result}) end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      ref = Process.monitor(pid)
+
+      :ok = TransactionStatem.client_cancel({:trans, pid})
+
+      send(pid, :state_timeout)
+
+      assert_receive {:callback, {:stop, :timeout}}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
+    end
+
+    test "server transaction processes CANCEL" do
+      invite = build_invite("z9hG4bKcancelServer")
+      {:ok, transaction} = Transaction.create_invite_server(invite)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      :gen_statem.cast(pid, :cancel)
+
+      assert_state(pid, :trying)
+      assert Process.alive?(pid)
+    end
+
+    test "already cancelled client ignores second cancel" do
+      invite = build_invite("z9hG4bKdoubleCancel")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+
+      callback = fn _ -> :ok end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      :ok = TransactionStatem.client_cancel({:trans, pid})
+      Process.sleep(50)
+      assert get_cancelled_flag(pid)
+
+      :ok = TransactionStatem.client_cancel({:trans, pid})
+      Process.sleep(50)
+
+      assert get_cancelled_flag(pid)
+      assert Process.alive?(pid)
+    end
+  end
+
+  describe "owner process monitoring" do
+    test "monitors owner process when set" do
+      request = build_invite("z9hG4bKmonitor")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      assert get_owner_monitor(pid) == nil
+
+      owner = spawn(fn -> Process.sleep(10_000) end)
+      :ok = TransactionStatem.server_set_owner(503, owner, transaction)
+
+      monitor_ref = get_owner_monitor(pid)
+      assert monitor_ref != nil
+      assert is_reference(monitor_ref)
+
+      Process.exit(owner, :kill)
+    end
+
+    test "stores auto_resp code when owner set" do
+      request = build_invite("z9hG4bKautoResp")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      owner = spawn(fn -> Process.sleep(10_000) end)
+      :ok = TransactionStatem.server_set_owner(503, owner, transaction)
+
+      assert get_auto_resp_code(pid) == 503
+
+      Process.exit(owner, :kill)
+    end
+
+    test "updates monitor when owner changed" do
+      request = build_invite("z9hG4bKchangeOwner")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      owner1 = spawn(fn -> Process.sleep(10_000) end)
+      :ok = TransactionStatem.server_set_owner(503, owner1, transaction)
+
+      ref1 = get_owner_monitor(pid)
+
+      owner2 = spawn(fn -> Process.sleep(10_000) end)
+      :ok = TransactionStatem.server_set_owner(486, owner2, transaction)
+
+      ref2 = get_owner_monitor(pid)
+
+      assert ref1 != ref2
+      assert get_auto_resp_code(pid) == 486
+
+      Process.exit(owner1, :kill)
+      Process.exit(owner2, :kill)
+    end
+
+    test "owner death sends auto response when no final sent" do
+      request = build_invite("z9hG4bKownerDies")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      owner = spawn(fn -> receive do end end)
+      :ok = TransactionStatem.server_set_owner(503, owner, transaction)
+
+      Process.exit(owner, :kill)
+      Process.sleep(100)
+
+      assert_state(pid, :completed)
+      assert_last_response(pid, 503)
+    end
+
+    test "owner death does not send auto response when final already sent" do
+      request = build_invite("z9hG4bKownerAfterFinal")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      final = Message.reply(request, 200, "OK")
+      :ok = TransactionStatem.server_response(final, transaction)
+      assert_state(pid, :terminated)
+      assert_last_response(pid, 200)
+
+      owner = spawn(fn -> receive do end end)
+      :ok = TransactionStatem.server_set_owner(503, owner, transaction)
+
+      last_response_before = get_last_response(pid)
+
+      Process.exit(owner, :kill)
+      Process.sleep(100)
+
+      last_response_after = get_last_response(pid)
+      assert last_response_before.status_code == last_response_after.status_code
+      assert last_response_after.status_code == 200
+    end
+
+    test "owner death for INVITE client cancels transaction" do
+      invite = build_invite("z9hG4bKownerClientDies")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+
+      callback = fn _ -> :ok end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      owner = spawn(fn -> receive do end end)
+
+      state_data = :sys.get_state(pid)
+      data = elem(state_data, 1)
+      ref = Process.monitor(owner)
+      new_data = %{data | owner_mon: ref}
+      :sys.replace_state(pid, fn {state_name, _} -> {state_name, new_data} end)
+
+      refute get_cancelled_flag(pid)
+
+      Process.exit(owner, :kill)
+      Process.sleep(100)
+
+      assert get_cancelled_flag(pid)
+    end
+  end
+
+  describe "server_process/2 - transaction routing" do
+    test "routes ACK to existing transaction" do
+      invite = build_invite("z9hG4bKackRoute")
+      {:ok, transaction} = Transaction.create_invite_server(invite)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      final = Message.reply(invite, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+      assert_state(pid, :completed)
+
+      ack = build_ack(invite)
+      :ok = TransactionStatem.server_process(ack, handler)
+
+      assert_state(pid, :confirmed)
+    end
+
+    test "creates new transaction for new INVITE" do
+      invite = build_invite("z9hG4bKnewInvite")
+      handler = TestHandler.new()
+
+      initial_count = TransactionStatem.count()
+
+      :ok = TransactionStatem.server_process(invite, handler)
+      Process.sleep(50)
+
+      assert TransactionStatem.count() == initial_count + 1
+    end
+
+    test "routes retransmitted request to existing transaction" do
+      register = build_register("z9hG4bKretransRoute")
+      {:ok, transaction} = Transaction.create_non_invite_server(register)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+
+      provisional = Message.reply(register, 100, "Trying")
+      :ok = TransactionStatem.server_response(provisional, transaction)
+
+      state_before = get_transaction_state(pid)
+
+      :ok = TransactionStatem.server_process(register, handler)
+      Process.sleep(50)
+
+      state_after = get_transaction_state(pid)
+      assert state_before.last_response == state_after.last_response
+    end
+
+    test "handles in-dialog requests by creating new transaction" do
+      bye = build_bye_in_dialog("z9hG4bKinDialog")
+      handler = TestHandler.new()
+
+      initial_count = TransactionStatem.count()
+
+      :ok = TransactionStatem.server_process(bye, handler)
+      Process.sleep(50)
+
+      assert TransactionStatem.count() == initial_count + 1
+    end
+  end
+
+  describe "client_response/2 - response routing" do
+    test "routes response to correct client transaction" do
+      invite = build_invite("z9hG4bKclientResp")
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+
+      callback = fn result -> send(self(), {:callback, result}) end
+      {:trans, _pid} = TransactionStatem.client_new(transaction, %{}, callback)
+
+      response = Message.reply(invite, 180, "Ringing")
+      response_binary = ParrotSip.Encoder.encode(response)
+
+      via = Message.top_via(invite)
+      :ok = TransactionStatem.client_response(via, response_binary)
+
+      assert_receive {:callback, {:response, %{status_code: 180}}}, 1000
+    end
+
+    test "handles response with no matching transaction" do
+      invite = build_invite("z9hG4bKnoMatch")
+      response = Message.reply(invite, 200, "OK")
+      response_binary = ParrotSip.Encoder.encode(response)
+
+      via = %Via{parameters: %{"branch" => "z9hG4bKnonexistent"}}
+
+      assert :ok = TransactionStatem.client_response(via, response_binary)
+    end
+  end
+
+  describe "server_cancel/1" do
+    test "returns 481 for non-existent transaction" do
+      cancel = build_cancel("z9hG4bKnonexistent")
+
       assert {:reply, response} = TransactionStatem.server_cancel(cancel)
       assert response.status_code == 481
       assert response.reason_phrase == "Call/Transaction Does Not Exist"
     end
 
-    test "server_cancel handles CANCEL request properly" do
-      cancel = create_cancel_request_standalone()
+    test "returns 200 OK for existing transaction" do
+      invite = build_invite("z9hG4bKcancelOk")
+      {:ok, transaction} = Transaction.create_invite_server(invite)
+      handler = TestHandler.new()
 
-      # Should return proper response structure
+      {:ok, _pid} = start_transaction(transaction, handler)
+
+      cancel = build_cancel_for_invite(invite)
+
       assert {:reply, response} = TransactionStatem.server_cancel(cancel)
-      assert Message.is_response?(response)
-      assert response.status_code in [200, 481]
-    end
-
-    test "count function returns integer" do
-      count = TransactionStatem.count()
-      assert is_integer(count)
+      assert response.status_code == 200
+      assert response.reason_phrase == "OK"
     end
   end
 
-  describe "transaction ID generation and matching" do
-    test "generates consistent transaction IDs" do
-      message1 = create_invite_request_with_branch("z9hG4bKsame123")
-      message2 = create_invite_request_with_branch("z9hG4bKsame123")
+  describe "transaction count" do
+    test "count returns number of active transactions" do
+      count_before = TransactionStatem.count()
 
-      # Same branch should generate same transaction ID
-      id1 = ParrotSip.Transaction.generate_id(message1)
-      id2 = ParrotSip.Transaction.generate_id(message2)
+      invite1 = build_invite("z9hG4bKcount1")
+      {:ok, trans1} = Transaction.create_invite_server(invite1)
+      handler = TestHandler.new()
+      {:ok, _pid1} = start_transaction(trans1, handler)
 
-      assert id1 == id2
-    end
+      invite2 = build_invite("z9hG4bKcount2")
+      {:ok, trans2} = Transaction.create_invite_server(invite2)
+      {:ok, _pid2} = start_transaction(trans2, handler)
 
-    test "generates different transaction IDs for different branches" do
-      message1 = create_invite_request_with_branch("z9hG4bKdiff1")
-      message2 = create_invite_request_with_branch("z9hG4bKdiff2")
-
-      # Different branches should generate different transaction IDs
-      id1 = ParrotSip.Transaction.generate_id(message1)
-      id2 = ParrotSip.Transaction.generate_id(message2)
-
-      assert id1 != id2
-    end
-
-    test "handles RFC 2543 transaction ID generation" do
-      message = create_invite_request_without_branch()
-
-      # Should generate transaction ID even without branch parameter
-      id = ParrotSip.Transaction.generate_id(message)
-      assert is_tuple(id) or is_binary(id)
+      assert TransactionStatem.count() == count_before + 2
     end
   end
 
-  describe "improved pattern matching" do
-    test "matches dialog state correctly" do
-      # Request with no To tag - not in dialog
-      new_dialog_msg = create_invite_request_with_branch("z9hG4bKnew789")
-      assert Message.in_dialog?(new_dialog_msg) == false
+  # ============================================================================
+  # Helper Functions - State Inspection
+  # ============================================================================
 
-      # Request with both From and To tags - in dialog
-      in_dialog_msg = create_bye_request_in_dialog()
-      assert Message.in_dialog?(in_dialog_msg) == true
-    end
+  defp start_transaction(transaction, handler) do
+    ParrotSip.Transaction.Supervisor.start_child([transaction, handler])
+  end
 
-    test "extracts branch parameter correctly" do
-      message = create_invite_request_with_branch("z9hG4bKbranch456")
-      via = Message.top_via(message)
+  defp get_transaction_state(pid) do
+    state = :sys.get_state(pid)
+    data = elem(state, 1)
+    data.data.transaction
+  end
 
-      assert via.parameters["branch"] == "z9hG4bKbranch456"
-    end
+  defp get_timer_ref(pid, timer_name) do
+    state = :sys.get_state(pid)
+    data = elem(state, 1)
+    timers = data.timers || %{}
+    Map.get(timers, timer_name)
+  end
 
-    test "handles missing branch parameter gracefully" do
-      message = create_invite_request_without_branch()
-      via = Message.top_via(message)
-
-      # Should not have branch parameter
-      assert Map.get(via.parameters, "branch") == nil
-    end
-
-    test "identifies transaction types by method" do
-      invite_msg = create_invite_request_with_branch("z9hG4bKinvite123")
-      register_msg = create_register_request_with_branch("z9hG4bKreg123")
-      ack_msg = %Message{method: :ack}
-      bye_msg = create_bye_request_in_dialog()
-
-      assert invite_msg.method == :invite
-      assert register_msg.method == :register
-      assert ack_msg.method == :ack
-      assert bye_msg.method == :bye
+  defp timer_active?(pid, timer_name) do
+    case get_timer_ref(pid, timer_name) do
+      nil -> false
+      ref -> Process.read_timer(ref) != false
     end
   end
 
-  describe "response handling improvements" do
-    test "creates proper response structure" do
-      request = create_invite_request_with_branch("z9hG4bKtest789")
-      response = Message.reply(request, 180, "Ringing")
-
-      assert Message.is_response?(response)
-      assert response.status_code == 180
-      assert response.reason_phrase == "Ringing"
-
-      # Should copy headers from request appropriately
-      assert response.via == request.via
-      assert response.from == request.from
-      assert response.call_id == request.call_id
-      assert response.cseq == request.cseq
-    end
-
-    test "handles different response codes" do
-      request = create_invite_request_with_branch("z9hG4bKcodes123")
-
-      # Test different response types
-      trying = Message.reply(request, 100, "Trying")
-      ringing = Message.reply(request, 180, "Ringing")
-      ok = Message.reply(request, 200, "OK")
-      not_found = Message.reply(request, 404, "Not Found")
-
-      assert Message.is_provisional?(trying)
-      assert Message.is_provisional?(ringing)
-      assert Message.is_success?(ok)
-      assert Message.is_client_error?(not_found)
-    end
-
-    test "maintains transaction correlation in responses" do
-      request = create_invite_request_with_branch("z9hG4bKcorr123")
-      response = Message.reply(request, 200, "OK")
-
-      # Response should have same branch as request
-      req_via = Message.top_via(request)
-      resp_via = Message.top_via(response)
-
-      assert req_via.parameters["branch"] == resp_via.parameters["branch"]
-    end
+  defp get_cancelled_flag(pid) do
+    state = :sys.get_state(pid)
+    data = elem(state, 1)
+    get_in(data, [:data, :cancelled]) || false
   end
 
-  # Helper functions for creating test messages
+  defp get_owner_monitor(pid) do
+    state = :sys.get_state(pid)
+    data = elem(state, 1)
+    data.owner_mon
+  end
 
-  defp create_invite_request_without_branch do
+  defp get_auto_resp_code(pid) do
+    state = :sys.get_state(pid)
+    data = elem(state, 1)
+    get_in(data, [:data, :auto_resp])
+  end
+
+  defp get_last_response(pid) do
+    trans = get_transaction_state(pid)
+    trans.last_response
+  end
+
+  defp assert_last_response(pid, status_code) do
+    trans = get_transaction_state(pid)
+    assert trans.last_response.status_code == status_code
+  end
+
+  defp assert_state(pid, expected_state) do
+    state = :sys.get_state(pid)
+    actual_state = elem(state, 0)
+    
+    assert actual_state == expected_state,
+      "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
+  defp assert_process_terminates(pid) do
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
+  end
+
+  # ============================================================================
+  # Message Builders
+  # ============================================================================
+
+  defp build_invite(branch) do
     %Message{
       type: :request,
-      direction: :incoming,
-      method: :invite,
-      request_uri: "sip:bob@biloxi.com",
-      version: "SIP/2.0",
-      via: %Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "pc33.atlanta.com",
-        port: 5060,
-        # No branch parameter for RFC 2543 style
-        parameters: %{}
-      },
-      from: %From{
-        display_name: "Alice",
-        uri: "sip:alice@atlanta.com",
-        parameters: %{"tag" => "1928301774"}
-      },
-      to: %To{
-        display_name: "Bob",
-        uri: "sip:bob@biloxi.com",
-        # With tag to make it appear in-dialog for RFC 2543 ID generation
-        parameters: %{"tag" => "314159"}
-      },
-      call_id: "a84b4c76e66710@pc33.atlanta.com",
-      cseq: %CSeq{
-        number: 314_159,
-        method: :invite
-      },
-      contact: %Contact{
-        display_name: nil,
-        uri: "sip:alice@pc33.atlanta.com",
-        parameters: %{}
-      },
-      other_headers: %{},
-      body: ""
-    }
-  end
-
-  defp create_invite_request_with_branch(branch) do
-    %Message{
-      type: :request,
-      direction: :incoming,
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
@@ -363,15 +849,14 @@ defmodule ParrotSip.TransactionStatemTest do
         uri: "sip:alice@pc33.atlanta.com",
         parameters: %{}
       },
-      other_headers: %{},
-      body: ""
+      body: "",
+      other_headers: %{}
     }
   end
 
-  defp create_register_request_with_branch(branch) do
+  defp build_register(branch) do
     %Message{
       type: :request,
-      direction: :incoming,
       method: :register,
       request_uri: "sip:registrar.biloxi.com",
       version: "SIP/2.0",
@@ -403,15 +888,18 @@ defmodule ParrotSip.TransactionStatemTest do
         uri: "sip:alice@pc33.atlanta.com",
         parameters: %{}
       },
-      other_headers: %{},
-      body: ""
+      body: "",
+      other_headers: %{}
     }
   end
 
-  defp create_cancel_request_standalone do
+  defp build_ack(invite) do
+    %{invite | method: :ack, cseq: %{invite.cseq | method: :ack}}
+  end
+
+  defp build_cancel(branch) do
     %Message{
       type: :request,
-      direction: :incoming,
       method: :cancel,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
@@ -421,7 +909,7 @@ defmodule ParrotSip.TransactionStatemTest do
         transport: :udp,
         host: "pc33.atlanta.com",
         port: 5060,
-        parameters: %{"branch" => "z9hG4bKnonexistent"}
+        parameters: %{"branch" => branch}
       },
       from: %From{
         display_name: "Alice",
@@ -433,7 +921,7 @@ defmodule ParrotSip.TransactionStatemTest do
         uri: "sip:bob@biloxi.com",
         parameters: %{}
       },
-      call_id: "nonexistent@pc33.atlanta.com",
+      call_id: "cancel@pc33.atlanta.com",
       cseq: %CSeq{
         number: 314_159,
         method: :cancel
@@ -443,10 +931,17 @@ defmodule ParrotSip.TransactionStatemTest do
     }
   end
 
-  defp create_bye_request_in_dialog do
+  defp build_cancel_for_invite(invite) do
+    %{
+      invite
+      | method: :cancel,
+        cseq: %{invite.cseq | method: :cancel}
+    }
+  end
+
+  defp build_bye_in_dialog(branch) do
     %Message{
       type: :request,
-      direction: :incoming,
       method: :bye,
       request_uri: "sip:alice@pc33.atlanta.com",
       version: "SIP/2.0",
@@ -456,7 +951,7 @@ defmodule ParrotSip.TransactionStatemTest do
         transport: :udp,
         host: "biloxi.com",
         port: 5060,
-        parameters: %{"branch" => "z9hG4bKbye123"}
+        parameters: %{"branch" => branch}
       },
       from: %From{
         display_name: "Bob",
@@ -466,7 +961,6 @@ defmodule ParrotSip.TransactionStatemTest do
       to: %To{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
-        # Both tags present = in-dialog
         parameters: %{"tag" => "1928301774"}
       },
       call_id: "a84b4c76e66710@pc33.atlanta.com",
