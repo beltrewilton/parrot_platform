@@ -1,5 +1,8 @@
 require Logger
 
+# Start the application before running tests
+{:ok, _} = Application.ensure_all_started(:parrot_sip)
+
 # Suppress all logs during tests unless SIP_TRACE is enabled
 if System.get_env("FULL_TRACE") == "true" do
   IO.puts("FULL_TRACE enabled - setting log level to :debug")

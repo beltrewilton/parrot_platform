@@ -41,14 +41,12 @@ defmodule ParrotSip.Transaction do
   @type transaction_type ::
           :invite_client | :non_invite_client | :invite_server | :non_invite_server
   @type transaction_state ::
-          :init
-          | :calling
+          :calling
+          | :trying
           | :proceeding
           | :completed
           | :confirmed
           | :terminated
-          | :trying
-          | :completed
 
   @doc """
   Facade function for generating a transaction branch parameter.
@@ -108,16 +106,8 @@ defmodule ParrotSip.Transaction do
   end
 
   # Temporary helper function until Message.cseq is implemented
-  defp get_cseq_method(message) do
-    cond do
-      is_map(message) && Map.get(message, :headers, %{})["cseq"] ->
-        cseq = message.cseq
-        if is_map(cseq), do: cseq.method, else: :unknown
-
-      true ->
-        :unknown
-    end
-  end
+  defp get_cseq_method(%{cseq: %{method: method}}), do: method
+  defp get_cseq_method(_), do: :unknown
 
   # This function is already defined as a private function below
   # Removing the duplicate implementation
@@ -168,45 +158,14 @@ defmodule ParrotSip.Transaction do
   end
 
   defstruct [
-    # Transaction ID
     :id,
-    # Type of transaction
     :type,
-    # Current state of the transaction
     :state,
-    # Original request
     :request,
-    # Last received/sent response
     :last_response,
-    # Branch parameter from Via header
     :branch,
-    # SIP method of the transaction
     :method,
-    # INVITE client retransmission timer
-    :timer_a,
-    # INVITE client transaction timeout timer
-    :timer_b,
-    # INVITE server provisional response timer
-    :timer_c,
-    # Wait time for response retransmits
-    :timer_d,
-    # Non-INVITE client retransmission timer
-    :timer_e,
-    # Non-INVITE client transaction timeout timer
-    :timer_f,
-    # INVITE server response retransmission timer
-    :timer_g,
-    # Wait time for ACK
-    :timer_h,
-    # Wait time for ACK retransmits
-    :timer_i,
-    # Wait time for non-INVITE request retransmits
-    :timer_j,
-    # Wait time for response retransmits
-    :timer_k,
-    # Timestamp when transaction was created
     :created_at,
-    # Transaction role: :uas or :uac
     :role
   ]
 
@@ -218,222 +177,15 @@ defmodule ParrotSip.Transaction do
           last_response: Message.t() | nil,
           branch: String.t(),
           method: atom(),
-          timer_a: reference() | nil,
-          timer_b: reference() | nil,
-          timer_c: reference() | nil,
-          timer_d: reference() | nil,
-          timer_e: reference() | nil,
-          timer_f: reference() | nil,
-          timer_g: reference() | nil,
-          timer_h: reference() | nil,
-          timer_i: reference() | nil,
-          timer_j: reference() | nil,
-          timer_k: reference() | nil,
           created_at: integer(),
           role: :uas | :uac | nil
         }
 
-  # Timer defaults (in milliseconds) per RFC 3261
-  # These will be used once we replace ERSIP with our pure Elixir implementation
-  # Default RTT estimate - used in Timer A, E calculations
-  # @timer_t1 500
-  # Maximum retransmission interval - used in Timer G calculations
-  # @timer_t2 4000
-  # Maximum duration a message remains in the network - used in Timer K, I calculations
-  # @timer_t4 5000
-
-  @doc """
-  Processes an incoming SIP message by routing it to the appropriate transaction.
-
-  This function:
-  1. Extracts the transaction ID from the message
-  2. Looks up existing transaction or creates a new one
-  3. Routes the message to the transaction state machine
-
-  ## Parameters
-
-  - `message`: The parsed SIP message to process
-
-  ## Returns
-
-  - `:ok` if the message was successfully processed by a transaction
-  - `{:error, :no_transaction}` if no transaction handles this message
-  - `{:error, reason}` for other errors
-  """
-  @spec process_message(Message.t()) :: :ok | {:error, term()}
-  def process_message(%Message{type: :request} = message) do
-    process_request(message)
-  end
-
-  def process_message(%Message{type: :response} = message) do
-    process_response(message)
-  end
-
-  def process_message(_message) do
-    {:error, :invalid_message_type}
-  end
-
-  defp process_request(request) do
-    # Generate transaction ID
-    transaction_id = generate_id(request)
-
-    # Check if transaction exists
-    case lookup_transaction(transaction_id) do
-      {:ok, pid} ->
-        # Existing transaction - send message to it
-        send(pid, {:sip_request, request})
-        :ok
-
-      {:error, :not_found} ->
-        # New transaction - check if we should create one
-        if should_create_transaction?(request) do
-          # Start new server transaction
-          start_server_transaction_for_request(request)
-        else
-          # Not a transaction-creating request (e.g., ACK for 2xx)
-          {:error, :no_transaction}
-        end
-    end
-  end
-
-  defp process_response(response) do
-    # Extract transaction ID from Via branch
-    case get_branch_from_response(response) do
-      {:ok, branch} ->
-        cseq_method = if response.cseq, do: response.cseq.method, else: nil
-        transaction_id = "#{branch}_#{cseq_method}"
-
-        case lookup_transaction(transaction_id) do
-          {:ok, pid} ->
-            # Send response to transaction
-            send(pid, {:sip_response, response})
-            :ok
-
-          {:error, :not_found} ->
-            # No matching transaction
-            Logger.debug("No transaction found for response: #{transaction_id}")
-            {:error, :no_transaction}
-        end
-
-      {:error, reason} ->
-        Logger.warning("Could not extract branch from response: #{reason}")
-        {:error, :no_transaction}
-    end
-  end
-
-  defp should_create_transaction?(request) do
-    # ACK for 2xx responses don't create transactions
-    # All other requests do
-    not (request.method == :ack)
-  end
-
-  defp start_server_transaction_for_request(%{method: :invite} = request) do
-    # Create INVITE server transaction
-    transaction_result = create_invite_server(request)
-
-    case transaction_result do
-      {:ok, transaction} ->
-        # Start the transaction state machine
-        case ParrotSip.Transaction.Supervisor.start_child([transaction]) do
-          {:ok, _pid} ->
-            :ok
-
-          {:error, reason} ->
-            Logger.error("Failed to start server transaction: #{inspect(reason)}")
-            {:error, reason}
-        end
-    end
-  end
-
-  defp start_server_transaction_for_request(request) do
-    # Create non-INVITE server transaction
-    transaction_result = create_non_invite_server(request)
-
-    case transaction_result do
-      {:ok, transaction} ->
-        # Start the transaction state machine
-        case ParrotSip.Transaction.Supervisor.start_child([transaction]) do
-          {:ok, _pid} ->
-            :ok
-
-          {:error, reason} ->
-            Logger.error("Failed to start server transaction: #{inspect(reason)}")
-            {:error, reason}
-        end
-    end
-  end
-
-  defp get_branch_from_response(%{via: [%{parameters: %{"branch" => branch}} | _]}) do
-    {:ok, branch}
-  end
-
-  defp get_branch_from_response(%{via: [%{parameters: params} | _]}) when is_map(params) do
-    case Map.get(params, "branch") do
-      nil -> {:error, :no_branch}
-      branch -> {:ok, branch}
-    end
-  end
-
-  defp get_branch_from_response(%{via: [via | _]}) when is_binary(via) do
-    # Fallback for legacy string-based Via headers
-    if String.contains?(via, "branch=") do
-      branch =
-        via
-        |> String.split(";")
-        |> Enum.find(&String.starts_with?(&1, "branch="))
-        |> String.replace("branch=", "")
-        |> String.trim()
-
-      {:ok, branch}
-    else
-      {:error, :no_branch}
-    end
-  end
-
-  defp get_branch_from_response(_response) do
-    {:error, :no_via}
-  end
-
-  defp lookup_transaction(transaction_id) do
-    # Look up in Registry
-    case Registry.lookup(ParrotSip.Registry, {:transaction, transaction_id}) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> {:error, :not_found}
-    end
-  end
-
-  @doc """
-  Gets the current state of a transaction.
-
-  ## Parameters
-
-  - `transaction_id`: The transaction identifier
-
-  ## Returns
-
-  - `{:ok, state}` where state is the current transaction state
-  - `{:error, :not_found}` if transaction doesn't exist
-  """
-  @spec get_state(String.t()) :: {:ok, transaction_state()} | {:error, :not_found}
-  def get_state(transaction_id) do
-    case lookup_transaction(transaction_id) do
-      {:ok, pid} ->
-        # Query the transaction process for its state
-        try do
-          state = GenServer.call(pid, :get_state, 5000)
-          {:ok, state}
-        catch
-          :exit, _ ->
-            {:error, :not_found}
-        end
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-    end
-  end
 
   @doc """
   Creates a new client transaction for an INVITE request.
+
+  Per RFC 3261 Section 17.1.1, INVITE client transactions start in the calling state.
 
   ## Parameters
 
@@ -441,7 +193,7 @@ defmodule ParrotSip.Transaction do
 
   ## Returns
 
-  - `{:ok, transaction}`: A new transaction struct
+  - `{:ok, transaction}`: A new transaction struct in calling state
   """
   @spec create_invite_client(Message.t()) :: {:ok, t()}
   def create_invite_client(request) do
@@ -451,26 +203,15 @@ defmodule ParrotSip.Transaction do
     # Create transaction ID
     id = generate_transaction_id(:invite_client, branch, request)
 
-    # Create the transaction in initial state
+    # Create the transaction in calling state (RFC 3261 17.1.1)
     transaction = %__MODULE__{
       id: id,
       type: :invite_client,
-      state: :init,
+      state: :calling,
       request: request,
       last_response: nil,
       branch: branch,
       method: :invite,
-      timer_a: nil,
-      timer_b: nil,
-      timer_c: nil,
-      timer_d: nil,
-      timer_e: nil,
-      timer_f: nil,
-      timer_g: nil,
-      timer_h: nil,
-      timer_i: nil,
-      timer_j: nil,
-      timer_k: nil,
       created_at: System.system_time(:millisecond),
       role: :uac
     }
@@ -481,13 +222,15 @@ defmodule ParrotSip.Transaction do
   @doc """
   Creates a new client transaction for a non-INVITE request.
 
+  Per RFC 3261 Section 17.1.2, non-INVITE client transactions start in the trying state.
+
   ## Parameters
 
   - `request`: The SIP request that initiates the transaction
 
   ## Returns
 
-  - `{:ok, transaction}`: A new transaction struct
+  - `{:ok, transaction}`: A new transaction struct in trying state
   """
   @spec create_non_invite_client(Message.t()) :: {:ok, t()}
   def create_non_invite_client(request) do
@@ -497,26 +240,15 @@ defmodule ParrotSip.Transaction do
     # Create transaction ID
     id = generate_transaction_id(:non_invite_client, branch, request)
 
-    # Create the transaction in initial state
+    # Create the transaction in trying state (RFC 3261 17.1.2)
     transaction = %__MODULE__{
       id: id,
       type: :non_invite_client,
-      state: :init,
+      state: :trying,
       request: request,
       last_response: nil,
       branch: branch,
       method: request.method,
-      timer_a: nil,
-      timer_b: nil,
-      timer_c: nil,
-      timer_d: nil,
-      timer_e: nil,
-      timer_f: nil,
-      timer_g: nil,
-      timer_h: nil,
-      timer_i: nil,
-      timer_j: nil,
-      timer_k: nil,
       created_at: System.system_time(:millisecond),
       role: :uac
     }
@@ -552,17 +284,6 @@ defmodule ParrotSip.Transaction do
       last_response: nil,
       branch: branch,
       method: :invite,
-      timer_a: nil,
-      timer_b: nil,
-      timer_c: nil,
-      timer_d: nil,
-      timer_e: nil,
-      timer_f: nil,
-      timer_g: nil,
-      timer_h: nil,
-      timer_i: nil,
-      timer_j: nil,
-      timer_k: nil,
       created_at: System.system_time(:millisecond),
       role: :uas
     }
@@ -598,17 +319,6 @@ defmodule ParrotSip.Transaction do
       last_response: nil,
       branch: branch,
       method: request.method,
-      timer_a: nil,
-      timer_b: nil,
-      timer_c: nil,
-      timer_d: nil,
-      timer_e: nil,
-      timer_f: nil,
-      timer_g: nil,
-      timer_h: nil,
-      timer_i: nil,
-      timer_j: nil,
-      timer_k: nil,
       created_at: System.system_time(:millisecond),
       role: :uas
     }
@@ -642,259 +352,6 @@ defmodule ParrotSip.Transaction do
     end
   end
 
-  @doc """
-  Processes a response within a client transaction.
-
-  Updates the transaction state based on the received response.
-
-  ## Parameters
-
-  - `response`: The SIP response received
-  - `transaction`: The current transaction state
-
-  ## Returns
-
-  - `{:ok, updated_transaction}`: The updated transaction
-  """
-  @spec receive_response(Message.t(), t()) :: {:ok, t()}
-  def receive_response(response, transaction) do
-    # Get the response status code
-    status_code = response.status_code
-
-    # Define new state based on transaction type and current state
-    {new_state, actions} =
-      case {transaction.type, transaction.state, status_code} do
-        # INVITE client transaction state transitions
-        {:invite_client, :calling, code} when code >= 100 and code <= 199 ->
-          {:proceeding, [:cancel_timer_a, :cancel_timer_b]}
-
-        {:invite_client, :calling, code} when code >= 200 and code <= 299 ->
-          {:terminated, [:cancel_timer_a, :cancel_timer_b]}
-
-        {:invite_client, :calling, code} when code >= 300 and code <= 699 ->
-          {:completed, [:cancel_timer_a, :cancel_timer_b, :start_timer_d]}
-
-        {:invite_client, :proceeding, code} when code >= 100 and code <= 199 ->
-          {:proceeding, []}
-
-        {:invite_client, :proceeding, code} when code >= 200 and code <= 299 ->
-          {:terminated, []}
-
-        {:invite_client, :proceeding, code} when code >= 300 and code <= 699 ->
-          {:completed, [:start_timer_d]}
-
-        # Non-INVITE client transaction state transitions
-        {:non_invite_client, :trying, code} when code >= 100 and code <= 199 ->
-          {:proceeding, [:cancel_timer_e, :cancel_timer_f]}
-
-        {:non_invite_client, :trying, code} when code >= 200 and code <= 699 ->
-          {:completed, [:cancel_timer_e, :cancel_timer_f, :start_timer_k]}
-
-        {:non_invite_client, :proceeding, code} when code >= 100 and code <= 199 ->
-          {:proceeding, []}
-
-        {:non_invite_client, :proceeding, code} when code >= 200 and code <= 699 ->
-          {:completed, [:start_timer_k]}
-
-        # Default: keep current state
-        _ ->
-          {transaction.state, []}
-      end
-
-    # Apply the timer actions
-    transaction = apply_timer_actions(transaction, actions)
-
-    # Update the transaction with the new state and response
-    updated_transaction = %{transaction | state: new_state, last_response: response}
-
-    {:ok, updated_transaction}
-  end
-
-  @doc """
-  Processes a request within a server transaction.
-
-  Updates the transaction state based on the received request.
-
-  ## Parameters
-
-  - `request`: The SIP request received
-  - `transaction`: The current transaction state
-
-  ## Returns
-
-  - `{:ok, updated_transaction}`: The updated transaction
-  """
-  @spec receive_request(Message.t(), t()) :: {:ok, t()}
-  def receive_request(request, transaction) do
-    # Define new state based on transaction type, current state, and request method
-    {new_state, actions} =
-      case {transaction.type, transaction.state, request.method} do
-        # INVITE server transaction: ACK in completed state
-        {:invite_server, :completed, :ack} ->
-          {:confirmed, [:cancel_timer_g, :cancel_timer_h, :start_timer_i]}
-
-        # Non-INVITE server transactions don't typically receive in-transaction requests
-        # other than retransmissions, which are handled at the transport layer
-
-        # Default: keep current state
-        _ ->
-          {transaction.state, []}
-      end
-
-    # Apply the timer actions
-    transaction = apply_timer_actions(transaction, actions)
-
-    # Update the transaction with the new state
-    updated_transaction = %{transaction | state: new_state}
-
-    {:ok, updated_transaction}
-  end
-
-  @doc """
-  Sends a provisional response (1xx) in a server transaction.
-
-  ## Parameters
-
-  - `response`: The SIP response to send
-  - `transaction`: The current transaction state
-
-  ## Returns
-
-  - `{:ok, updated_transaction}`: The updated transaction
-  """
-  @spec send_provisional_response(Message.t(), t()) :: {:ok, t()}
-  def send_provisional_response(response, transaction) do
-    # Validate that response is provisional (1xx)
-    unless response.status_code >= 100 and response.status_code <= 199 do
-      raise ArgumentError, "Response must be provisional (1xx)"
-    end
-
-    # Define new state and actions based on transaction type and current state
-    {new_state, actions} =
-      case {transaction.type, transaction.state} do
-        # INVITE server transaction: sending provisional response
-        {:invite_server, :init} ->
-          {:proceeding, [:start_timer_c]}
-
-        {:invite_server, :proceeding} ->
-          {:proceeding, [:start_timer_c]}
-
-        # Default: invalid state transition
-        _ ->
-          raise ArgumentError, "Invalid state transition"
-      end
-
-    # Apply the timer actions
-    transaction = apply_timer_actions(transaction, actions)
-
-    # Update the transaction with the new state and response
-    updated_transaction = %{transaction | state: new_state, last_response: response}
-
-    {:ok, updated_transaction}
-  end
-
-  @doc """
-  Sends a final response (2xx-6xx) in a server transaction.
-
-  ## Parameters
-
-  - `response`: The SIP response to send
-  - `transaction`: The current transaction state
-
-  ## Returns
-
-  - `{:ok, updated_transaction}`: The updated transaction
-  """
-  @spec send_final_response(Message.t(), t()) :: {:ok, t()}
-  def send_final_response(response, transaction) do
-    # Validate that response is final (2xx-6xx)
-    unless response.status_code >= 200 and response.status_code <= 699 do
-      raise ArgumentError, "Response must be final (2xx-6xx)"
-    end
-
-    # Get the response status code
-    status_code = response.status_code
-
-    # Define new state and actions based on transaction type, current state, and status code
-    {new_state, actions} =
-      case {transaction.type, transaction.state, status_code} do
-        # INVITE server transaction: sending 2xx response
-        {:invite_server, state, code}
-        when state in [:init, :proceeding] and code >= 200 and code <= 299 ->
-          {:terminated, [:cancel_timer_c]}
-
-        # INVITE server transaction: sending 3xx-6xx response
-        {:invite_server, state, code}
-        when state in [:init, :proceeding] and code >= 300 and code <= 699 ->
-          {:completed, [:cancel_timer_c, :start_timer_g, :start_timer_h]}
-
-        # Non-INVITE server transaction: sending final response
-        {:non_invite_server, :trying, _code} ->
-          {:completed, [:start_timer_j]}
-
-        {:non_invite_server, :proceeding, _code} ->
-          {:completed, [:start_timer_j]}
-
-        # Default: invalid state transition
-        _ ->
-          raise ArgumentError, "Invalid state transition"
-      end
-
-    # Apply the timer actions
-    transaction = apply_timer_actions(transaction, actions)
-
-    # Update the transaction with the new state and response
-    updated_transaction = %{transaction | state: new_state, last_response: response}
-
-    {:ok, updated_transaction}
-  end
-
-  @doc """
-  Starts a client transaction by sending the initial request.
-
-  ## Parameters
-
-  - `transaction`: The transaction to start
-
-  ## Returns
-
-  - `{:ok, updated_transaction}`: The updated transaction
-  """
-  @spec start_client_transaction(t()) :: {:ok, t()}
-  def start_client_transaction(transaction) do
-    # Define initial state and actions based on transaction type
-    {new_state, actions} = get_client_initial_state_actions(transaction.type)
-
-    # Apply the timer actions
-    transaction = apply_timer_actions(transaction, actions)
-
-    # Update the transaction with the new state
-    updated_transaction = %{transaction | state: new_state}
-
-    {:ok, updated_transaction}
-  end
-
-  @doc """
-  Starts a server transaction upon receiving an initial request.
-
-  ## Parameters
-
-  - `transaction`: The transaction to start
-
-  ## Returns
-
-  - `{:ok, updated_transaction}`: The updated transaction
-  """
-  @spec start_server_transaction(t()) :: {:ok, t()}
-  def start_server_transaction(transaction) do
-    # Define initial state based on transaction type
-    new_state = get_server_initial_state(transaction.type)
-
-    # Update the transaction with the new state
-    updated_transaction = %{transaction | state: new_state}
-
-    {:ok, updated_transaction}
-  end
 
   @doc """
   Checks if a transaction matches the given response.
@@ -909,22 +366,18 @@ defmodule ParrotSip.Transaction do
   - `true` if the transaction matches the response, `false` otherwise
   """
   @spec matches_response?(t(), Message.t()) :: boolean()
-  def matches_response?(transaction, response) do
-    # Extract the top Via header from the response
-    via = extract_top_via(response.via)
-
-    if via == nil do
-      false
-    else
-      # Get the branch parameter from the Via header
-      response_branch = via.parameters["branch"]
-
-      # Match based on branch, method, and CSeq
-      response_branch == transaction.branch &&
-        response.cseq && response.cseq.method == transaction.method &&
-        is_client_transaction?(transaction)
+  def matches_response?(%{role: :uac, branch: branch, method: method}, %Message{
+        via: via,
+        cseq: %{method: cseq_method}
+      })
+      when cseq_method == method do
+    case extract_top_via(via) do
+      %Headers.Via{parameters: %{"branch" => ^branch}} -> true
+      _ -> false
     end
   end
+
+  def matches_response?(_, _), do: false
 
   @doc """
   Checks if a transaction matches the given request.
@@ -939,63 +392,246 @@ defmodule ParrotSip.Transaction do
   - `true` if the transaction matches the request, `false` otherwise
   """
   @spec matches_request?(t(), Message.t()) :: boolean()
-  def matches_request?(transaction, request) do
-    # Extract the top Via header from the request
-    via = extract_top_via(request.via)
-
-    if via == nil do
-      false
-    else
-      # Get the branch parameter from the Via header
-      request_branch = via.parameters["branch"]
-
-      # Match based on branch and method (special case for ACK)
-      if request.method == :ack && transaction.method == :invite do
-        # For ACK, we match against the original INVITE transaction
-        request_branch == transaction.branch &&
-          is_server_transaction?(transaction)
-      else
-        # For other requests, we match directly
-        request_branch == transaction.branch &&
-          request.method == transaction.method &&
-          is_server_transaction?(transaction)
-      end
+  def matches_request?(%{role: :uas, branch: branch, method: :invite}, %Message{
+        method: :ack,
+        via: via
+      }) do
+    case extract_top_via(via) do
+      %Headers.Via{parameters: %{"branch" => ^branch}} -> true
+      _ -> false
     end
   end
 
+  def matches_request?(%{role: :uas, branch: branch, method: method}, %Message{
+        method: req_method,
+        via: via
+      })
+      when method == req_method do
+    case extract_top_via(via) do
+      %Headers.Via{parameters: %{"branch" => ^branch}} -> true
+      _ -> false
+    end
+  end
+
+  def matches_request?(_, _), do: false
+
+
   @doc """
-  Terminates a transaction, canceling all timers.
+  Extracts the branch parameter from a SIP message's Via header.
 
   ## Parameters
 
-  - `transaction`: The transaction to terminate
+  - `message`: The SIP message
 
   ## Returns
 
-  - `{:ok, updated_transaction}`: The updated transaction
+  - `{:ok, branch}` if branch found
+  - `{:error, :no_via}` if no Via header
+  - `{:error, :no_branch}` if Via exists but no branch parameter
   """
-  @spec terminate(t()) :: {:ok, t()}
-  def terminate(transaction) do
-    # Cancel all timers
-    transaction =
-      apply_timer_actions(transaction, [
-        :cancel_timer_a,
-        :cancel_timer_b,
-        :cancel_timer_c,
-        :cancel_timer_d,
-        :cancel_timer_e,
-        :cancel_timer_f,
-        :cancel_timer_g,
-        :cancel_timer_h,
-        :cancel_timer_i,
-        :cancel_timer_j,
-        :cancel_timer_k
-      ])
+  @spec extract_branch(Message.t()) :: {:ok, String.t()} | {:error, atom()}
+  def extract_branch(%Message{via: nil}), do: {:error, :no_via}
 
-    # Update the transaction state to terminated
-    updated_transaction = %{transaction | state: :terminated}
+  def extract_branch(%Message{via: %Headers.Via{parameters: %{"branch" => branch}}}),
+    do: {:ok, branch}
 
-    {:ok, updated_transaction}
+  def extract_branch(%Message{via: [%Headers.Via{parameters: %{"branch" => branch}} | _]}),
+    do: {:ok, branch}
+
+  def extract_branch(%Message{via: %Headers.Via{}}), do: {:error, :no_branch}
+  def extract_branch(%Message{via: [%Headers.Via{} | _]}), do: {:error, :no_branch}
+  def extract_branch(_), do: {:error, :no_via}
+
+  @doc """
+  Classifies a SIP response by status code.
+
+  ## Parameters
+
+  - `status_code`: The SIP response status code
+
+  ## Returns
+
+  - `:provisional` for 1xx responses
+  - `:success` for 2xx responses
+  - `:failure` for 3xx-6xx responses
+  """
+  @spec classify_response(integer()) :: :provisional | :success | :failure
+  def classify_response(code) when code >= 100 and code < 200, do: :provisional
+  def classify_response(code) when code >= 200 and code < 300, do: :success
+  def classify_response(code) when code >= 300 and code <= 699, do: :failure
+
+  @doc """
+  Pure state transition function - returns next state and actions without side effects.
+
+  ## Parameters
+
+  - `transaction`: Current transaction struct
+  - `event`: Event tuple like `{:send_provisional, status}`, `{:receive_response, status}`, `{:timer, :g}`, etc.
+
+  ## Returns
+
+  - `{:ok, new_state, actions}` where actions is a list of atoms like `:start_timer_g`, `:cancel_timer_h`
+  - `{:error, :invalid_transition}` for invalid state transitions
+  """
+  @spec next_state(t(), term()) :: {:ok, transaction_state(), [atom()]} | {:error, atom()}
+  def next_state(%{type: :invite_server, state: :trying}, {:send_provisional, _status}) do
+    {:ok, :proceeding, [:start_timer_g]}
+  end
+
+  def next_state(%{type: :invite_server, state: :trying}, {:send_final, status})
+      when status >= 300 and status <= 699 do
+    {:ok, :completed, [:start_timer_g, :start_timer_h]}
+  end
+
+  def next_state(%{type: :invite_server, state: :trying}, {:send_final, status})
+      when status >= 200 and status < 300 do
+    {:ok, :terminated, []}
+  end
+
+  def next_state(%{type: :invite_server, state: :proceeding}, {:send_provisional, _status}) do
+    {:ok, :proceeding, []}
+  end
+
+  def next_state(%{type: :invite_server, state: :proceeding}, {:send_final, status})
+      when status >= 300 and status <= 699 do
+    {:ok, :completed, [:cancel_timer_c, :start_timer_g, :start_timer_h]}
+  end
+
+  def next_state(%{type: :invite_server, state: :proceeding}, {:send_final, status})
+      when status >= 200 and status < 300 do
+    {:ok, :terminated, [:cancel_timer_c]}
+  end
+
+  def next_state(%{type: :invite_server, state: :completed}, {:receive_ack}) do
+    {:ok, :confirmed, [:cancel_timer_g, :cancel_timer_h, :start_timer_i]}
+  end
+
+  def next_state(%{type: :invite_server, state: :completed}, {:timer, :h}) do
+    {:ok, :terminated, [:terminate]}
+  end
+
+  def next_state(%{type: :invite_server, state: :confirmed}, {:timer, :i}) do
+    {:ok, :terminated, [:terminate]}
+  end
+
+  def next_state(%{type: :non_invite_server, state: :trying}, {:send_provisional, _status}) do
+    {:ok, :proceeding, []}
+  end
+
+  def next_state(%{type: :non_invite_server, state: :trying}, {:send_final, _status}) do
+    {:ok, :completed, [:start_timer_j]}
+  end
+
+  def next_state(%{type: :non_invite_server, state: :proceeding}, {:send_provisional, _status}) do
+    {:ok, :proceeding, []}
+  end
+
+  def next_state(%{type: :non_invite_server, state: :proceeding}, {:send_final, _status}) do
+    {:ok, :completed, [:start_timer_j]}
+  end
+
+  def next_state(%{type: :non_invite_server, state: :completed}, {:timer, :j}) do
+    {:ok, :terminated, [:terminate]}
+  end
+
+  def next_state(%{type: :invite_client, state: :calling}, {:receive_response, status})
+      when status >= 100 and status < 200 do
+    {:ok, :proceeding, [:cancel_timer_a, :cancel_timer_b]}
+  end
+
+  def next_state(%{type: :invite_client, state: :calling}, {:receive_response, status})
+      when status >= 200 and status < 300 do
+    {:ok, :terminated, [:cancel_timer_a, :cancel_timer_b]}
+  end
+
+  def next_state(%{type: :invite_client, state: :calling}, {:receive_response, status})
+      when status >= 300 and status <= 699 do
+    {:ok, :completed, [:cancel_timer_a, :cancel_timer_b, :start_timer_d]}
+  end
+
+  def next_state(%{type: :invite_client, state: :proceeding}, {:receive_response, status})
+      when status >= 200 and status < 300 do
+    {:ok, :terminated, []}
+  end
+
+  def next_state(%{type: :invite_client, state: :proceeding}, {:receive_response, status})
+      when status >= 300 and status <= 699 do
+    {:ok, :completed, [:start_timer_d]}
+  end
+
+  def next_state(%{type: :invite_client, state: :completed}, {:timer, :d}) do
+    {:ok, :terminated, [:terminate]}
+  end
+
+  def next_state(%{type: :non_invite_client, state: :trying}, {:receive_response, status})
+      when status >= 100 and status < 200 do
+    {:ok, :proceeding, [:cancel_timer_e, :cancel_timer_f]}
+  end
+
+  def next_state(%{type: :non_invite_client, state: :trying}, {:receive_response, status})
+      when status >= 200 and status <= 699 do
+    {:ok, :completed, [:cancel_timer_e, :cancel_timer_f, :start_timer_k]}
+  end
+
+  def next_state(%{type: :non_invite_client, state: :proceeding}, {:receive_response, status})
+      when status >= 200 and status <= 699 do
+    {:ok, :completed, [:start_timer_k]}
+  end
+
+  def next_state(%{type: :non_invite_client, state: :completed}, {:timer, :k}) do
+    {:ok, :terminated, [:terminate]}
+  end
+
+  def next_state(_transaction, _event), do: {:error, :invalid_transition}
+
+  @doc """
+  Returns retransmission action based on transaction's last_response.
+
+  ## Parameters
+
+  - `transaction`: The transaction to check
+
+  ## Returns
+
+  - `{:retransmit_response, response}` if last_response exists
+  - `:ignore` if no last_response
+  """
+  @spec retransmission_action(t()) :: {:retransmit_response, Message.t()} | :ignore
+  def retransmission_action(%{last_response: nil}), do: :ignore
+  def retransmission_action(%{last_response: response}), do: {:retransmit_response, response}
+
+  @doc """
+  Updates the last_response in a transaction.
+
+  ## Parameters
+
+  - `transaction`: The transaction to update
+  - `response`: The response to store
+
+  ## Returns
+
+  - Updated transaction struct
+  """
+  @spec update_last_response(t(), Message.t()) :: t()
+  def update_last_response(transaction, response) do
+    %{transaction | last_response: response}
+  end
+
+  @doc """
+  Updates the state in a transaction.
+
+  ## Parameters
+
+  - `transaction`: The transaction to update
+  - `state`: The new state
+
+  ## Returns
+
+  - Updated transaction struct
+  """
+  @spec update_state(t(), transaction_state()) :: t()
+  def update_state(transaction, state) do
+    %{transaction | state: state}
   end
 
   @doc """
@@ -1046,559 +682,18 @@ defmodule ParrotSip.Transaction do
     transaction.state == :terminated
   end
 
-  # Private helper functions
-
-  # Get the branch parameter from a request's Via header
   defp get_branch(request) do
     via = extract_top_via_strict(request.via)
     via.parameters["branch"]
   end
 
-  # Extract top Via header (returns nil if not found)
   defp extract_top_via(%Headers.Via{} = via), do: via
   defp extract_top_via([via | _]) when is_struct(via, Headers.Via), do: via
   defp extract_top_via(_), do: nil
 
-  # Extract top Via header (raises if not found)
   defp extract_top_via_strict(%Headers.Via{} = via), do: via
   defp extract_top_via_strict([via | _]) when is_struct(via, Headers.Via), do: via
   defp extract_top_via_strict(_), do: raise(ArgumentError, "Request must have a Via header")
 
-  # Get initial state and actions for client transactions
-  defp get_client_initial_state_actions(:invite_client) do
-    {:calling, [:start_timer_a, :start_timer_b]}
-  end
 
-  defp get_client_initial_state_actions(:non_invite_client) do
-    {:trying, [:start_timer_e, :start_timer_f]}
-  end
-
-  defp get_client_initial_state_actions(_) do
-    raise(ArgumentError, "Not a client transaction")
-  end
-
-  # Get initial state for server transactions  
-  defp get_server_initial_state(:invite_server), do: :proceeding
-  defp get_server_initial_state(:non_invite_server), do: :trying
-  defp get_server_initial_state(_), do: raise(ArgumentError, "Not a server transaction")
-
-  # Apply timer actions to a transaction
-  defp apply_timer_actions(transaction, actions) do
-    Enum.reduce(actions, transaction, fn action, acc ->
-      case action do
-        :start_timer_a -> start_timer_a(acc)
-        :start_timer_b -> start_timer_b(acc)
-        :start_timer_c -> start_timer_c(acc)
-        :start_timer_d -> start_timer_d(acc)
-        :start_timer_e -> start_timer_e(acc)
-        :start_timer_f -> start_timer_f(acc)
-        :start_timer_g -> start_timer_g(acc)
-        :start_timer_h -> start_timer_h(acc)
-        :start_timer_i -> start_timer_i(acc)
-        :start_timer_j -> start_timer_j(acc)
-        :start_timer_k -> start_timer_k(acc)
-        :cancel_timer_a -> cancel_timer(acc, :timer_a)
-        :cancel_timer_b -> cancel_timer(acc, :timer_b)
-        :cancel_timer_c -> cancel_timer(acc, :timer_c)
-        :cancel_timer_d -> cancel_timer(acc, :timer_d)
-        :cancel_timer_e -> cancel_timer(acc, :timer_e)
-        :cancel_timer_f -> cancel_timer(acc, :timer_f)
-        :cancel_timer_g -> cancel_timer(acc, :timer_g)
-        :cancel_timer_h -> cancel_timer(acc, :timer_h)
-        :cancel_timer_i -> cancel_timer(acc, :timer_i)
-        :cancel_timer_j -> cancel_timer(acc, :timer_j)
-        :cancel_timer_k -> cancel_timer(acc, :timer_k)
-      end
-    end)
-  end
-
-  # Timer functions
-  # In a real implementation, these would start actual timers
-  # For now, we just set a reference to simulate timer creation
-
-  defp start_timer_a(transaction) do
-    # Timer A: INVITE request retransmission timer (T1)
-    %{transaction | timer_a: make_ref()}
-  end
-
-  defp start_timer_b(transaction) do
-    # Timer B: INVITE transaction timeout timer (64*T1)
-    %{transaction | timer_b: make_ref()}
-  end
-
-  defp start_timer_c(transaction) do
-    # Timer C: Proxy INVITE transaction timeout (3 min RFC 3261)
-    # Cancel existing timer if any
-    transaction = cancel_timer(transaction, :timer_c)
-    %{transaction | timer_c: make_ref()}
-  end
-
-  defp start_timer_d(transaction) do
-    # Timer D: Wait time for response retransmits (32s for UDP, 0s for TCP/SCTP)
-    %{transaction | timer_d: make_ref()}
-  end
-
-  defp start_timer_e(transaction) do
-    # Timer E: Non-INVITE request retransmission timer (T1)
-    %{transaction | timer_e: make_ref()}
-  end
-
-  defp start_timer_f(transaction) do
-    # Timer F: Non-INVITE transaction timeout timer (64*T1)
-    %{transaction | timer_f: make_ref()}
-  end
-
-  defp start_timer_g(transaction) do
-    # Timer G: INVITE response retransmission timer (T1)
-    %{transaction | timer_g: make_ref()}
-  end
-
-  defp start_timer_h(transaction) do
-    # Timer H: Wait time for ACK receipt (64*T1)
-    %{transaction | timer_h: make_ref()}
-  end
-
-  defp start_timer_i(transaction) do
-    # Timer I: Wait time for ACK retransmits (@t4 for UDP, 0s for TCP/SCTP)
-    %{transaction | timer_i: make_ref()}
-  end
-
-  defp start_timer_j(transaction) do
-    # Timer J: Wait time for non-INVITE request retransmits (64*T1 for UDP, 0s for TCP/SCTP)
-    %{transaction | timer_j: make_ref()}
-  end
-
-  defp start_timer_k(transaction) do
-    # Timer K: Wait time for response retransmits (@t4 for UDP, 0s for TCP/SCTP)
-    %{transaction | timer_k: make_ref()}
-  end
-
-  # Stub for cancel_timer/2 to fix undefined function error.
-  # In this pure state machine, this can simply return the transaction unchanged,
-  # or you can update the struct if you track timer refs in the struct.
-  defp cancel_timer(transaction, _timer_key), do: transaction
-
-  @doc """
-  Handles SIP transaction state machine events.
-
-  This function processes an event for the given transaction, returning the updated
-  transaction struct and a list of actions for the transaction server to execute.
-
-  ## Parameters
-
-    * `event` - The event to process (e.g., `{:send, response}`, `{:received, request}`, `{:timer, :g}`)
-    * `transaction` - The `%ParrotSip.Transaction{}` struct representing the current transaction state
-
-  ## Returns
-
-    * `{new_transaction, actions}` - The updated transaction and a list of actions (atoms or tuples)
-
-  ## Example
-
-      {new_trans, actions} = ParrotSip.Transaction.handle_event({:send, response}, transaction)
-
-  Supported actions include:
-    * `{:send_response, response}`
-    * `{:send_request, request}`
-    * `{:start_timer, timer_name, timeout_ms}`
-    * `{:cancel_timer, timer_name}`
-    * `:terminate_transaction`
-    * `:ignore`
-  """
-  @spec handle_event(term(), t()) :: {t(), [term()]}
-  def handle_event(
-        {:send, response},
-        %__MODULE__{state: :trying, type: :invite_server} = transaction
-      )
-      when is_map(response) do
-    Logger.debug(
-      "[handle_event] ({:send, response}) in :trying/:invite. Transaction: #{inspect(transaction)}, Response: #{inspect(response)}"
-    )
-
-    cond do
-      is_provisional_response(response) ->
-        # Move to proceeding, send provisional response, start timer G
-        new_transaction = %{transaction | state: :proceeding, last_response: response}
-        actions = [{:send_response, response}, {:start_timer, :g, timer_g_timeout(transaction)}]
-        {new_transaction, actions}
-
-      is_final_response(response) ->
-        # Move to completed, send final response, start timer H
-        new_transaction = %{transaction | state: :completed, last_response: response}
-        actions = [{:send_response, response}, {:start_timer, :h, timer_h_timeout(transaction)}]
-        {new_transaction, actions}
-
-      true ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :trying, type: :invite_server} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :trying/:invite_server. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:received, _request} ->
-        # Retransmit last response if any
-        actions = get_retransmit_actions(transaction.last_response)
-
-        {transaction, actions}
-
-      {:timer, timer} ->
-        handle_timer_event(timer, transaction)
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(
-        {:send, response},
-        %__MODULE__{state: :proceeding, type: :invite_server} = transaction
-      )
-      when is_map(response) do
-    Logger.debug(
-      "[handle_event] ({:send, response}) in :proceeding/:invite_server. Transaction: #{inspect(transaction)}, Response: #{inspect(response)}"
-    )
-
-    if is_final_response(response) do
-      # Move to completed, send final response, start timer H
-      new_transaction = %{transaction | state: :completed, last_response: response}
-      actions = [{:send_response, response}, {:start_timer, :h, timer_h_timeout(transaction)}]
-      {new_transaction, actions}
-    else
-      # TODO: this is swallowing the 180 after the 100 Trying
-      Logger.warning("Unexpected response: #{inspect(response)}")
-      {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :proceeding, type: :invite_server} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :proceeding/:invite_server. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:received, _request} ->
-        # Retransmit last response if any
-        actions = get_retransmit_actions(transaction.last_response)
-
-        {transaction, actions}
-
-      {:timer, timer} ->
-        handle_timer_event(timer, transaction)
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :completed, type: :invite_server} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :completed/:invite_server. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:received, ack} ->
-        if is_ack(ack) do
-          # Move to confirmed, stop timer H, start timer I
-          new_transaction = %{transaction | state: :confirmed}
-          actions = [{:cancel_timer, :h}, {:start_timer, :i, timer_i_timeout(transaction)}]
-          {new_transaction, actions}
-        else
-          # Not an ACK, retransmit last response
-          actions = get_retransmit_actions(transaction.last_response)
-
-          {transaction, actions}
-        end
-
-      {:timer, :h} ->
-        # Timer H expired, move to terminated
-        new_transaction = %{transaction | state: :terminated}
-        actions = [:terminate_transaction]
-        {new_transaction, actions}
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :confirmed, type: :invite_server} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :confirmed/:invite_server. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:timer, :i} ->
-        # Timer I expired, move to terminated
-        new_transaction = %{transaction | state: :terminated}
-        actions = [:terminate_transaction]
-        {new_transaction, actions}
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :terminated} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :terminated. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    # No further processing, transaction is done
-    {transaction, [:ignore]}
-  end
-
-  # Non-INVITE server transaction states
-  def handle_event({:send, response}, %__MODULE__{state: :trying, type: type} = transaction)
-      when type != :invite and is_map(response) do
-    Logger.debug(
-      "[handle_event] ({:send, response}) in :trying/#{inspect(type)}. Transaction: #{inspect(transaction)}, Response: #{inspect(response)}"
-    )
-
-    cond do
-      is_provisional_response(response) ->
-        # Move to proceeding, send provisional response
-        new_transaction = %{transaction | state: :proceeding, last_response: response}
-        actions = [{:send_response, response}]
-        {new_transaction, actions}
-
-      is_final_response(response) ->
-        # Move to completed, send final response, start timer J
-        new_transaction = %{transaction | state: :completed, last_response: response}
-        actions = [{:send_response, response}, {:start_timer, :j, timer_j_timeout(transaction)}]
-        {new_transaction, actions}
-
-      true ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :trying, type: type} = transaction)
-      when type != :invite do
-    Logger.debug(
-      "[handle_event] (event) in :trying/#{inspect(type)}. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:received, _request} ->
-        # Retransmit last response if any
-        actions = get_retransmit_actions(transaction.last_response)
-
-        {transaction, actions}
-
-      {:timer, timer} ->
-        handle_timer_event(timer, transaction)
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event({:send, response}, %__MODULE__{state: :proceeding, type: type} = transaction)
-      when type != :invite and is_map(response) do
-    Logger.debug(
-      "[handle_event] ({:send, response}) in :proceeding/#{inspect(type)}. Transaction: #{inspect(transaction)}, Response: #{inspect(response)}"
-    )
-
-    if is_final_response(response) do
-      # Move to completed, send final response, start timer J
-      new_transaction = %{transaction | state: :completed, last_response: response}
-      actions = [{:send_response, response}, {:start_timer, :j, timer_j_timeout(transaction)}]
-      {new_transaction, actions}
-    else
-      {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :proceeding, type: type} = transaction)
-      when type != :invite do
-    Logger.debug(
-      "[handle_event] (event) in :proceeding/#{inspect(type)}. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:received, _request} ->
-        # Retransmit last response if any
-        actions = get_retransmit_actions(transaction.last_response)
-
-        {transaction, actions}
-
-      {:timer, timer} ->
-        handle_timer_event(timer, transaction)
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :completed, type: type} = transaction)
-      when type != :invite do
-    Logger.debug(
-      "[handle_event] (event) in :completed/#{inspect(type)}. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:timer, :j} ->
-        # Timer J expired, move to terminated
-        new_transaction = %{transaction | state: :terminated}
-        actions = [:terminate_transaction]
-        {new_transaction, actions}
-
-      {:received, _request} ->
-        # Retransmit last response
-        actions = get_retransmit_actions(transaction.last_response)
-
-        {transaction, actions}
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  # Client transaction states (simplified, expand as needed)
-  def handle_event(
-        {:received, response},
-        %__MODULE__{state: :calling, type: :invite_client} = transaction
-      ) do
-    Logger.debug(
-      "[handle_event] ({:received, response}) in :calling/:invite_client. Transaction: #{inspect(transaction)}, Response: #{inspect(response)}"
-    )
-
-    cond do
-      is_provisional_response(response) ->
-        # Move to proceeding, start timer 100rel if needed
-        new_transaction = %{transaction | state: :proceeding, last_response: response}
-        actions = [{:start_timer, :rel1xx, timer_rel1xx_timeout(transaction)}]
-        {new_transaction, actions}
-
-      is_final_response(response) ->
-        # Move to completed, stop timers, notify user
-        new_transaction = %{transaction | state: :completed, last_response: response}
-        actions = [{:cancel_timer, :a}, {:cancel_timer, :b}, {:notify_user, response}]
-        {new_transaction, actions}
-
-      true ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :calling, type: :invite_client} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :calling/:invite_client. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:timer, timer} ->
-        handle_timer_event(timer, transaction)
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(
-        {:received, response},
-        %__MODULE__{state: :proceeding, type: :invite_client} = transaction
-      ) do
-    Logger.debug(
-      "[handle_event] ({:received, response}) in :proceeding/:invite_client. Transaction: #{inspect(transaction)}, Response: #{inspect(response)}"
-    )
-
-    if is_final_response(response) do
-      # Move to completed, stop timers, notify user
-      new_transaction = %{transaction | state: :completed, last_response: response}
-      actions = [{:cancel_timer, :a}, {:cancel_timer, :b}, {:notify_user, response}]
-      {new_transaction, actions}
-    else
-      {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :proceeding, type: :invite_client} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :proceeding/:invite_client. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:timer, timer} ->
-        handle_timer_event(timer, transaction)
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  def handle_event(event, %__MODULE__{state: :completed, type: :invite_client} = transaction) do
-    Logger.debug(
-      "[handle_event] (event) in :completed/:invite_client. Transaction: #{inspect(transaction)}, Event: #{inspect(event)}"
-    )
-
-    case event do
-      {:timer, :d} ->
-        # Timer D expired, move to terminated
-        new_transaction = %{transaction | state: :terminated}
-        actions = [:terminate_transaction]
-        {new_transaction, actions}
-
-      _ ->
-        {transaction, [:ignore]}
-    end
-  end
-
-  # Fallback for any other state/event
-  def handle_event(_event, transaction) do
-    Logger.debug("[handle_event] (fallback) Any state. Transaction: #{inspect(transaction)}")
-    {transaction, [:ignore]}
-  end
-
-  # --- Helper functions ---
-
-  defp is_provisional_response(%{status_code: code})
-       when is_integer(code) and code >= 100 and code < 200,
-       do: true
-
-  defp is_provisional_response(_), do: false
-
-  defp is_final_response(%{status_code: code}) when is_integer(code) and code >= 200, do: true
-  defp is_final_response(_), do: false
-
-  defp is_ack(%{method: :ack}), do: true
-  defp is_ack(_), do: false
-
-  # ms, example value
-  defp timer_g_timeout(_transaction), do: 500
-  defp timer_h_timeout(_transaction), do: 64_000
-  defp timer_i_timeout(_transaction), do: 5_000
-  defp timer_j_timeout(_transaction), do: 5_000
-  defp timer_rel1xx_timeout(_transaction), do: 10_000
-
-  # Get retransmit actions based on last response
-  defp get_retransmit_actions(nil), do: [:ignore]
-  defp get_retransmit_actions(response), do: [{:send_response, response}]
-
-  defp handle_timer_event(:g, transaction) do
-    {transaction, [:retransmit_last_response, {:start_timer, :g, timer_g_timeout(transaction)}]}
-  end
-
-  defp handle_timer_event(:h, transaction) do
-    {transaction, [:move_to_terminated]}
-  end
-
-  defp handle_timer_event(:i, transaction) do
-    {transaction, [:move_to_terminated]}
-  end
-
-  defp handle_timer_event(:j, transaction) do
-    {transaction, [:move_to_terminated]}
-  end
-
-  defp handle_timer_event(:d, transaction) do
-    {transaction, [:move_to_terminated]}
-  end
-
-  defp handle_timer_event(_, transaction) do
-    {transaction, [:ignore]}
-  end
 end

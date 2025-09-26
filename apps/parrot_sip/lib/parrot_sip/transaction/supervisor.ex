@@ -16,10 +16,9 @@ defmodule ParrotSip.Transaction.Supervisor do
 
   @impl true
   def init([]) do
-    DynamicSupervisor.init(
-      strategy: :one_for_one,
-      max_restarts: 1000,
-      max_seconds: 1
-    )
+    # Transaction processes are designed to terminate normally as part of their lifecycle.
+    # Normal terminations should not count against restart limits.
+    # DynamicSupervisor with :one_for_one handles each child independently.
+    DynamicSupervisor.init(strategy: :one_for_one)
   end
 end

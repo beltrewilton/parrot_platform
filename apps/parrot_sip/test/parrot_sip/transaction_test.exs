@@ -6,12 +6,12 @@ defmodule ParrotSip.TransactionTest do
   alias ParrotSip.Headers
 
   describe "create_invite_client/1" do
-    test "creates transaction struct with correct initial values" do
+    test "creates transaction struct with correct initial values in calling state" do
       request = build_invite_request("z9hG4bKtest123")
 
       assert {:ok, %Transaction{
         type: :invite_client,
-        state: :init,
+        state: :calling,
         method: :invite,
         branch: "z9hG4bKtest123",
         role: :uac
@@ -38,12 +38,12 @@ defmodule ParrotSip.TransactionTest do
   end
 
   describe "create_non_invite_client/1" do
-    test "creates transaction struct with correct method" do
+    test "creates transaction struct with correct method in trying state" do
       request = build_register_request("z9hG4bKreg123")
 
       assert {:ok, %Transaction{
         type: :non_invite_client,
-        state: :init,
+        state: :trying,
         method: :register,
         branch: "z9hG4bKreg123",
         role: :uac
@@ -442,7 +442,7 @@ defmodule ParrotSip.TransactionTest do
       transaction = %Transaction{type: :invite_client, state: :proceeding}
       event = {:receive_response, 200}
 
-      assert {:ok, :terminated, actions} = Transaction.next_state(transaction, event)
+      assert {:ok, :terminated, _actions} = Transaction.next_state(transaction, event)
     end
 
     test "completed + timer D -> terminated" do
@@ -589,11 +589,11 @@ defmodule ParrotSip.TransactionTest do
     end
 
     test "returns false for other states" do
-      assert refute Transaction.is_terminated?(%Transaction{state: :trying})
-      assert refute Transaction.is_terminated?(%Transaction{state: :proceeding})
-      assert refute Transaction.is_terminated?(%Transaction{state: :completed})
-      assert refute Transaction.is_terminated?(%Transaction{state: :confirmed})
-      assert refute Transaction.is_terminated?(%Transaction{state: :calling})
+      refute Transaction.is_terminated?(%Transaction{state: :trying})
+      refute Transaction.is_terminated?(%Transaction{state: :proceeding})
+      refute Transaction.is_terminated?(%Transaction{state: :completed})
+      refute Transaction.is_terminated?(%Transaction{state: :confirmed})
+      refute Transaction.is_terminated?(%Transaction{state: :calling})
     end
   end
 

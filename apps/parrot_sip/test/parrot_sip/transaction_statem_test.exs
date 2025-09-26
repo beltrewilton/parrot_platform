@@ -9,15 +9,24 @@ defmodule ParrotSip.TransactionStatemTest do
 
   require Logger
 
+  # Tests use the global ParrotSip.Registry but with unique transaction IDs per test.
+  # This provides isolation while using the real application infrastructure.
+  # Tests run sequentially (async: false) to avoid overwhelming the supervisor.
+  
   setup do
-    start_supervised!({Registry, keys: :unique, name: ParrotSip.Registry})
-    start_supervised!(ParrotSip.Transaction.Supervisor)
-    :ok
+    # Generate unique test ID for this test's transactions
+    test_id = :erlang.unique_integer([:positive])
+    {:ok, test_id: test_id}
+  end
+  
+  # Helper to create unique branch parameters per test
+  defp unique_branch(base, test_id) do
+    "#{base}_#{test_id}"
   end
 
   describe "INVITE server transaction lifecycle" do
-    test "trying -> proceeding -> completed -> confirmed -> terminated" do
-      request = build_invite("z9hG4bKlifecycle1")
+    test "trying -> proceeding -> completed -> confirmed -> terminated", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKlifecycle1", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -50,8 +59,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_process_terminates(pid)
     end
 
-    test "trying -> completed (skip proceeding with immediate final)" do
-      request = build_invite("z9hG4bKskip1")
+    test "trying -> completed (skip proceeding with immediate final)", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKskip1", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -66,8 +75,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert timer_active?(pid, :h)
     end
 
-    test "trying -> terminated (2xx response)" do
-      request = build_invite("z9hG4bK2xx")
+    test "trying -> terminated (2xx response)", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bK2xx", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -82,8 +91,8 @@ defmodule ParrotSip.TransactionStatemTest do
       refute timer_active?(pid, :h)
     end
 
-    test "proceeding -> terminated (2xx response)" do
-      request = build_invite("z9hG4bKproc2xx")
+    test "proceeding -> terminated (2xx response)", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKproc2xx", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -99,8 +108,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :terminated)
     end
 
-    test "retransmission in proceeding keeps same state and response" do
-      request = build_invite("z9hG4bKretrans1")
+    test "retransmission in proceeding keeps same state and response", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKretrans1", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -123,8 +132,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert state_before.last_response == state_after.last_response
     end
 
-    test "retransmission in completed retransmits final response" do
-      request = build_invite("z9hG4bKretransComp")
+    test "retransmission in completed retransmits final response", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKretransComp", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -143,8 +152,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "non-INVITE server transaction lifecycle" do
-    test "trying -> completed -> terminated" do
-      request = build_register("z9hG4bKreg1")
+    test "trying -> completed -> terminated", %{test_id: test_id} do
+      request = build_register(unique_branch("z9hG4bKreg1", test_id))
       {:ok, transaction} = Transaction.create_non_invite_server(request)
       handler = TestHandler.new()
 
@@ -162,8 +171,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_process_terminates(pid)
     end
 
-    test "trying -> proceeding -> completed (with provisional)" do
-      request = build_register("z9hG4bKreg2")
+    test "trying -> proceeding -> completed (with provisional)", %{test_id: test_id} do
+      request = build_register(unique_branch("z9hG4bKreg2", test_id))
       {:ok, transaction} = Transaction.create_non_invite_server(request)
       handler = TestHandler.new()
 
@@ -183,8 +192,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert timer_active?(pid, :j)
     end
 
-    test "retransmission in trying retransmits last response if exists" do
-      request = build_register("z9hG4bKretransTrying")
+    test "retransmission in trying retransmits last response if exists", %{test_id: test_id} do
+      request = build_register(unique_branch("z9hG4bKretransTrying", test_id))
       {:ok, transaction} = Transaction.create_non_invite_server(request)
       handler = TestHandler.new()
 
@@ -202,8 +211,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "INVITE client transaction lifecycle" do
-    test "calling -> proceeding -> completed -> terminated" do
-      invite = build_invite("z9hG4bKclient1")
+    test "calling -> proceeding -> completed -> terminated", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKclient1", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn result -> send(self(), {:callback, result}) end
@@ -224,8 +233,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :completed)
     end
 
-    test "calling -> terminated (2xx response)" do
-      invite = build_invite("z9hG4bKclient2xx")
+    test "calling -> terminated (2xx response)", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKclient2xx", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn result -> send(self(), {:callback, result}) end
@@ -238,8 +247,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :completed)
     end
 
-    test "client callback receives all responses in order" do
-      invite = build_invite("z9hG4bKcallback1")
+    test "client callback receives all responses in order", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKcallback1", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn result -> send(self(), {:callback, result}) end
@@ -260,8 +269,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "non-INVITE client transaction lifecycle" do
-    test "trying -> completed -> terminated" do
-      register = build_register("z9hG4bKclientReg")
+    test "trying -> completed -> terminated", %{test_id: test_id} do
+      register = build_register(unique_branch("z9hG4bKclientReg", test_id))
       {:ok, transaction} = Transaction.create_non_invite_client(register)
 
       callback = fn result -> send(self(), {:callback, result}) end
@@ -278,8 +287,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "timer G behavior" do
-    test "timer G fires and reschedules itself in completed state" do
-      request = build_invite("z9hG4bKtimerG")
+    test "timer G fires and reschedules itself in completed state", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKtimerG", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -301,8 +310,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert timer_ref_after != timer_ref_before
     end
 
-    test "timer G cancelled when ACK received" do
-      request = build_invite("z9hG4bKtimerGcancel")
+    test "timer G cancelled when ACK received", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKtimerGcancel", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -324,8 +333,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "timer H behavior" do
-    test "timer H terminates transaction when fired" do
-      request = build_invite("z9hG4bKtimerH")
+    test "timer H terminates transaction when fired", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKtimerH", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -340,8 +349,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
     end
 
-    test "timer H cancelled when ACK received" do
-      request = build_invite("z9hG4bKtimerHcancel")
+    test "timer H cancelled when ACK received", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKtimerHcancel", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -363,8 +372,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "timer I behavior" do
-    test "timer I terminates transaction when fired" do
-      request = build_invite("z9hG4bKtimerI")
+    test "timer I terminates transaction when fired", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKtimerI", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -383,8 +392,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
     end
 
-    test "timer I is started when ACK received in completed" do
-      request = build_invite("z9hG4bKtimerIstart")
+    test "timer I is started when ACK received in completed", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKtimerIstart", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -403,8 +412,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "timer J behavior" do
-    test "timer J terminates non-INVITE server transaction" do
-      request = build_register("z9hG4bKtimerJ")
+    test "timer J terminates non-INVITE server transaction", %{test_id: test_id} do
+      request = build_register(unique_branch("z9hG4bKtimerJ", test_id))
       {:ok, transaction} = Transaction.create_non_invite_server(request)
       handler = TestHandler.new()
 
@@ -423,8 +432,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "CANCEL handling for server transactions" do
-    test "sets cancelled flag in client transaction" do
-      invite = build_invite("z9hG4bKcancelFlag")
+    test "sets cancelled flag in client transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKcancelFlag", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn _ -> :ok end
@@ -438,8 +447,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert get_cancelled_flag(pid)
     end
 
-    test "cancel timeout terminates client transaction" do
-      invite = build_invite("z9hG4bKcancelTimeout")
+    test "cancel timeout terminates client transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKcancelTimeout", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn result -> send(self(), {:callback, result}) end
@@ -454,8 +463,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
     end
 
-    test "server transaction processes CANCEL" do
-      invite = build_invite("z9hG4bKcancelServer")
+    test "server transaction processes CANCEL", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKcancelServer", test_id))
       {:ok, transaction} = Transaction.create_invite_server(invite)
       handler = TestHandler.new()
 
@@ -467,8 +476,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert Process.alive?(pid)
     end
 
-    test "already cancelled client ignores second cancel" do
-      invite = build_invite("z9hG4bKdoubleCancel")
+    test "already cancelled client ignores second cancel", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKdoubleCancel", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn _ -> :ok end
@@ -487,8 +496,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "owner process monitoring" do
-    test "monitors owner process when set" do
-      request = build_invite("z9hG4bKmonitor")
+    test "monitors owner process when set", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKmonitor", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -506,8 +515,8 @@ defmodule ParrotSip.TransactionStatemTest do
       Process.exit(owner, :kill)
     end
 
-    test "stores auto_resp code when owner set" do
-      request = build_invite("z9hG4bKautoResp")
+    test "stores auto_resp code when owner set", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKautoResp", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -521,8 +530,8 @@ defmodule ParrotSip.TransactionStatemTest do
       Process.exit(owner, :kill)
     end
 
-    test "updates monitor when owner changed" do
-      request = build_invite("z9hG4bKchangeOwner")
+    test "updates monitor when owner changed", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKchangeOwner", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -545,8 +554,8 @@ defmodule ParrotSip.TransactionStatemTest do
       Process.exit(owner2, :kill)
     end
 
-    test "owner death sends auto response when no final sent" do
-      request = build_invite("z9hG4bKownerDies")
+    test "owner death sends auto response when no final sent", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKownerDies", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -562,8 +571,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_last_response(pid, 503)
     end
 
-    test "owner death does not send auto response when final already sent" do
-      request = build_invite("z9hG4bKownerAfterFinal")
+    test "owner death does not send auto response when final already sent", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKownerAfterFinal", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -587,8 +596,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert last_response_after.status_code == 200
     end
 
-    test "owner death for INVITE client cancels transaction" do
-      invite = build_invite("z9hG4bKownerClientDies")
+    test "owner death for INVITE client cancels transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKownerClientDies", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn _ -> :ok end
@@ -612,8 +621,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "server_process/2 - transaction routing" do
-    test "routes ACK to existing transaction" do
-      invite = build_invite("z9hG4bKackRoute")
+    test "routes ACK to existing transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKackRoute", test_id))
       {:ok, transaction} = Transaction.create_invite_server(invite)
       handler = TestHandler.new()
 
@@ -629,8 +638,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :confirmed)
     end
 
-    test "creates new transaction for new INVITE" do
-      invite = build_invite("z9hG4bKnewInvite")
+    test "creates new transaction for new INVITE", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKnewInvite", test_id))
       handler = TestHandler.new()
 
       initial_count = TransactionStatem.count()
@@ -641,8 +650,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert TransactionStatem.count() == initial_count + 1
     end
 
-    test "routes retransmitted request to existing transaction" do
-      register = build_register("z9hG4bKretransRoute")
+    test "routes retransmitted request to existing transaction", %{test_id: test_id} do
+      register = build_register(unique_branch("z9hG4bKretransRoute", test_id))
       {:ok, transaction} = Transaction.create_non_invite_server(register)
       handler = TestHandler.new()
 
@@ -660,8 +669,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert state_before.last_response == state_after.last_response
     end
 
-    test "handles in-dialog requests by creating new transaction" do
-      bye = build_bye_in_dialog("z9hG4bKinDialog")
+    test "handles in-dialog requests by creating new transaction", %{test_id: test_id} do
+      bye = build_bye_in_dialog(unique_branch("z9hG4bKinDialog", test_id))
       handler = TestHandler.new()
 
       initial_count = TransactionStatem.count()
@@ -674,8 +683,8 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "client_response/2 - response routing" do
-    test "routes response to correct client transaction" do
-      invite = build_invite("z9hG4bKclientResp")
+    test "routes response to correct client transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKclientResp", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
       callback = fn result -> send(self(), {:callback, result}) end
@@ -690,8 +699,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_receive {:callback, {:response, %{status_code: 180}}}, 1000
     end
 
-    test "handles response with no matching transaction" do
-      invite = build_invite("z9hG4bKnoMatch")
+    test "handles response with no matching transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKnoMatch", test_id))
       response = Message.reply(invite, 200, "OK")
       response_binary = ParrotSip.Encoder.encode(response)
 
@@ -702,16 +711,16 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "server_cancel/1" do
-    test "returns 481 for non-existent transaction" do
-      cancel = build_cancel("z9hG4bKnonexistent")
+    test "returns 481 for non-existent transaction", %{test_id: test_id} do
+      cancel = build_cancel(unique_branch("z9hG4bKnonexistent", test_id))
 
       assert {:reply, response} = TransactionStatem.server_cancel(cancel)
       assert response.status_code == 481
       assert response.reason_phrase == "Call/Transaction Does Not Exist"
     end
 
-    test "returns 200 OK for existing transaction" do
-      invite = build_invite("z9hG4bKcancelOk")
+    test "returns 200 OK for existing transaction", %{test_id: test_id} do
+      invite = build_invite(unique_branch("z9hG4bKcancelOk", test_id))
       {:ok, transaction} = Transaction.create_invite_server(invite)
       handler = TestHandler.new()
 
@@ -726,15 +735,15 @@ defmodule ParrotSip.TransactionStatemTest do
   end
 
   describe "transaction count" do
-    test "count returns number of active transactions" do
+    test "count returns number of active transactions", %{test_id: test_id} do
       count_before = TransactionStatem.count()
 
-      invite1 = build_invite("z9hG4bKcount1")
+      invite1 = build_invite(unique_branch("z9hG4bKcount1", test_id))
       {:ok, trans1} = Transaction.create_invite_server(invite1)
       handler = TestHandler.new()
       {:ok, _pid1} = start_transaction(trans1, handler)
 
-      invite2 = build_invite("z9hG4bKcount2")
+      invite2 = build_invite(unique_branch("z9hG4bKcount2", test_id))
       {:ok, trans2} = Transaction.create_invite_server(invite2)
       {:ok, _pid2} = start_transaction(trans2, handler)
 
@@ -747,7 +756,9 @@ defmodule ParrotSip.TransactionStatemTest do
   # ============================================================================
 
   defp start_transaction(transaction, handler) do
-    ParrotSip.Transaction.Supervisor.start_child([transaction, handler])
+    # Start transaction under the test's supervision tree for proper isolation
+    # This ensures the process is cleaned up before the next test starts
+    start_supervised({ParrotSip.TransactionStatem, [transaction, handler]})
   end
 
   defp get_transaction_state(pid) do

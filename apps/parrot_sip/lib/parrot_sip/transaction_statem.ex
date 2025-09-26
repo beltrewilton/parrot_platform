@@ -280,8 +280,11 @@ defmodule ParrotSip.TransactionStatem do
     branch = transaction.branch
     call_id = sip_msg.call_id
 
+    # Extract optional registry name from args, default to ParrotSip.Registry
+    registry = Keyword.get(rest, :registry, ParrotSip.Registry)
+
     # Register with the full transaction ID, not just the branch
-    Registry.register(ParrotSip.Registry, transaction_id, nil)
+    Registry.register(registry, transaction_id, nil)
 
     # Determine if this is a client or server transaction based on the transaction type
     transaction_type = transaction.type
@@ -327,8 +330,9 @@ defmodule ParrotSip.TransactionStatem do
       # Send the initial request via transport handler
       send_via_transport_handler(:send_request, sip_msg, nil)
 
-      # Start in calling state for client transactions
-      {:ok, :calling, state}
+      # Start in the transaction's initial state (calling for INVITE, trying for non-INVITE)
+      initial_state = transaction.state
+      {:ok, initial_state, state}
     else
       # Server transaction initialization - extract handler from rest like original code
       handler =
@@ -345,6 +349,7 @@ defmodule ParrotSip.TransactionStatem do
           transaction: transaction,
           auto_resp: 500
         },
+        owner_mon: nil,
         timers: %{},
         # TODO: Make configurable
         log: false,
@@ -363,10 +368,63 @@ defmodule ParrotSip.TransactionStatem do
   @impl :gen_statem
   def callback_mode, do: :state_functions
 
+  # Helper to classify response status code to event format
+  defp classify_to_event(code) when code >= 100 and code < 200, do: {:send_provisional, code}
+  defp classify_to_event(code), do: {:send_final, code}
+
+  # Helper function to apply state transitions from Transaction.next_state/2
+  # This centralizes the common pattern of:
+  # 1. Update transaction state
+  # 2. Optionally update last_response
+  # 3. Check if gen_statem state should transition
+  # 4. Process actions
+  defp apply_state_transition(transaction, event, state, opts \\ []) do
+    update_response = Keyword.get(opts, :update_response, nil)
+    send_response = Keyword.get(opts, :send_response, false)
+    
+    case Transaction.next_state(transaction, event) do
+      {:ok, new_state_atom, actions} ->
+        # Update transaction struct
+        new_transaction = 
+          if update_response do
+            transaction
+            |> Transaction.update_state(new_state_atom)
+            |> Transaction.update_last_response(update_response)
+          else
+            Transaction.update_state(transaction, new_state_atom)
+          end
+        
+        new_data = %{state.data | transaction: new_transaction}
+        new_state = %{state | data: new_data}
+
+        # Optionally send response via transport
+        if send_response && update_response do
+          source = extract_source(state, update_response)
+          if source do
+            send_via_transport_handler(:send_response, update_response, source)
+          end
+        end
+
+        # Check if gen_statem state should transition
+        if transaction.state != new_state_atom do
+          case process_actions(actions, new_state) do
+            :stop -> {:stop, :normal, new_state}
+            {:keep_state, result_state} -> {:next_state, new_state_atom, result_state}
+            other -> other
+          end
+        else
+          process_actions(actions, new_state)
+        end
+      
+      {:error, _reason} ->
+        {:keep_state, state}
+    end
+  end
+
   # Real implementation of process_actions/2 to handle SIP actions and timers.
-  defp process_actions([], _data) do
+  defp process_actions([], data) do
     Logger.debug("[process_actions] No more actions to process.")
-    {:keep_state_and_data, []}
+    {:keep_state, data}
   end
 
   defp process_actions([action | rest], data) do
@@ -468,14 +526,61 @@ defmodule ParrotSip.TransactionStatem do
 
       :ignore ->
         Logger.debug("[process_actions] Action is :ignore. Skipping.")
-
         process_actions(rest, data)
+
+      :terminate ->
+        Logger.debug("[process_actions] Action is :terminate. Stopping.")
+        :stop
+
+      # Timer start actions from Transaction.next_state/2
+      :start_timer_a -> process_timer_action(:start_timer, :a, 500, rest, data)
+      :start_timer_b -> process_timer_action(:start_timer, :b, 32000, rest, data)
+      :start_timer_c -> process_timer_action(:start_timer, :c, 180000, rest, data)
+      :start_timer_d -> process_timer_action(:start_timer, :d, 32000, rest, data)
+      :start_timer_e -> process_timer_action(:start_timer, :e, 500, rest, data)
+      :start_timer_f -> process_timer_action(:start_timer, :f, 32000, rest, data)
+      :start_timer_g -> process_timer_action(:start_timer, :g, 500, rest, data)
+      :start_timer_h -> process_timer_action(:start_timer, :h, 32000, rest, data)
+      :start_timer_i -> process_timer_action(:start_timer, :i, 5000, rest, data)
+      :start_timer_j -> process_timer_action(:start_timer, :j, 32000, rest, data)
+      :start_timer_k -> process_timer_action(:start_timer, :k, 5000, rest, data)
+
+      # Timer cancel actions from Transaction.next_state/2
+      :cancel_timer_a -> process_timer_action(:cancel_timer, :a, nil, rest, data)
+      :cancel_timer_b -> process_timer_action(:cancel_timer, :b, nil, rest, data)
+      :cancel_timer_c -> process_timer_action(:cancel_timer, :c, nil, rest, data)
+      :cancel_timer_d -> process_timer_action(:cancel_timer, :d, nil, rest, data)
+      :cancel_timer_e -> process_timer_action(:cancel_timer, :e, nil, rest, data)
+      :cancel_timer_f -> process_timer_action(:cancel_timer, :f, nil, rest, data)
+      :cancel_timer_g -> process_timer_action(:cancel_timer, :g, nil, rest, data)
+      :cancel_timer_h -> process_timer_action(:cancel_timer, :h, nil, rest, data)
+      :cancel_timer_i -> process_timer_action(:cancel_timer, :i, nil, rest, data)
+      :cancel_timer_j -> process_timer_action(:cancel_timer, :j, nil, rest, data)
+      :cancel_timer_k -> process_timer_action(:cancel_timer, :k, nil, rest, data)
 
       _ ->
         Logger.debug("[process_actions] Unknown action: #{inspect(action)}. Skipping.")
-
         process_actions(rest, data)
     end
+  end
+
+  defp process_timer_action(:start_timer, timer_name, timeout, rest, data) do
+    Logger.debug("[process_actions] Starting timer #{timer_name} with timeout #{timeout}ms")
+    data = cancel_named_timer(timer_name, data)
+    ref = Process.send_after(self(), {:event, timer_name}, timeout)
+    updated_data = %{data | timers: Map.put(data.timers || %{}, timer_name, ref)}
+    
+    case process_actions(rest, updated_data) do
+      {:keep_state_and_data, _} -> {:keep_state, updated_data}
+      {:keep_state, result_data} -> {:keep_state, result_data}
+      :stop -> {:stop, :normal, updated_data}
+    end
+  end
+
+  defp process_timer_action(:cancel_timer, timer_name, _timeout, rest, data) do
+    Logger.debug("[process_actions] Cancelling timer #{timer_name}")
+    data = cancel_named_timer(timer_name, data)
+    process_actions(rest, data)
   end
 
   defp cancel_named_timer(timer_name, data) do
@@ -601,19 +706,16 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  def trying(:cast, {:send, response}, %{data: %{transaction: transaction} = data} = state) do
+  def trying(:cast, {:send, response}, %{data: %{transaction: transaction}} = state) do
     Logger.debug(
       "trying(:cast, {:send, response}, %{data: %{transaction: transaction} = data} = state)"
     )
 
-    # Handle sending a response in the trying state using actions
-    {new_transaction, actions} =
-      ParrotSip.Transaction.handle_event({:send, response}, transaction)
-
-    new_data = %{data | transaction: new_transaction}
-    new_state = %{state | data: new_data}
-
-    process_actions(actions, new_state)
+    event = classify_to_event(response.status_code)
+    apply_state_transition(transaction, event, state, 
+      update_response: response, 
+      send_response: true
+    )
   end
 
   def trying(:cast, :cancel, %{data: %{handler: handler, transaction: transaction}} = state) do
@@ -686,11 +788,10 @@ defmodule ParrotSip.TransactionStatem do
   def calling(
         :cast,
         {:received, %{type: :response, status_code: status_code} = response},
-        %{type: :client, data: data} = state
-      )
-      when status_code >= 100 and status_code < 200 do
+        %{type: :client, data: %{transaction: transaction} = data} = state
+      ) do
     Logger.debug(
-      "Client transaction received provisional response: #{response.status_code} #{response.reason_phrase}"
+      "Client transaction received response: #{response.status_code} #{response.reason_phrase}"
     )
 
     # Call the user callback with the response
@@ -698,27 +799,9 @@ defmodule ParrotSip.TransactionStatem do
       data.handler.({:response, response})
     end
 
-    # Provisional response - stay in calling state
-    {:keep_state, state}
-  end
-
-  def calling(
-        :cast,
-        {:received, %{type: :response, status_code: status_code} = response},
-        %{type: :client, data: data} = state
-      )
-      when status_code >= 200 do
-    Logger.debug(
-      "Client transaction received final response: #{response.status_code} #{response.reason_phrase}"
+    apply_state_transition(transaction, {:receive_response, status_code}, state,
+      update_response: response
     )
-
-    # Call the user callback with the response
-    if is_function(data.handler) do
-      data.handler.({:response, response})
-    end
-
-    # Final response - move to completed state
-    {:next_state, :completed, state}
   end
 
   def calling(:cast, event, state), do: handle_common_event(event, state)
@@ -738,7 +821,10 @@ defmodule ParrotSip.TransactionStatem do
     # In completed state, we can only retransmit the last response
     if transaction.last_response do
       Logger.debug("Retransmitting last response in completed state")
-      send_via_transport_handler(:send_response, transaction.last_response, transaction.source)
+      source = extract_source(state, transaction.last_response)
+      if source do
+        send_via_transport_handler(:send_response, transaction.last_response, source)
+      end
     end
 
     {:keep_state, state}
@@ -759,6 +845,8 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   def completed(:cast, event, state), do: handle_common_event(event, state)
+  
+  def completed(:info, event, state), do: handle_event(:info, event, :completed, state)
 
   def completed(event_type, _event, state) do
     Logger.debug(
@@ -770,6 +858,8 @@ defmodule ParrotSip.TransactionStatem do
 
   # CONFIRMED STATE
   def confirmed(:cast, event, state), do: handle_common_event(event, state)
+  
+  def confirmed(:info, event, state), do: handle_event(:info, event, :confirmed, state)
 
   def confirmed(event_type, _event, state) do
     Logger.debug(
@@ -797,38 +887,32 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # Handle common events across states
-  defp handle_common_event({:received, %{type: :response} = sip_msg} = ev, %{data: data} = state) do
-    log_response_info(sip_msg, data)
-    handle_common_event_impl(ev, state)
+  defp handle_common_event({:send, response}, %{data: %{transaction: transaction}} = state) do
+    event = classify_to_event(response.status_code)
+    apply_state_transition(transaction, event, state, 
+      update_response: response, 
+      send_response: true
+    )
   end
 
-  defp handle_common_event({:received, _sip_msg} = ev, state) do
-    handle_common_event_impl(ev, state)
+  defp handle_common_event({:received, %{type: :response, status_code: status_code} = sip_msg}, %{data: %{transaction: transaction} = data} = state) do
+    log_response_info(sip_msg, data)
+    
+    apply_state_transition(transaction, {:receive_response, status_code}, state,
+      update_response: sip_msg
+    )
+  end
+
+  defp handle_common_event({:received, %{type: :request, method: :ack}}, %{data: %{transaction: transaction}} = state) do
+    apply_state_transition(transaction, {:receive_ack}, state)
+  end
+
+  defp handle_common_event({:received, _sip_msg}, state) do
+    {:keep_state, state}
   end
 
   defp handle_common_event(_event, state) do
     {:keep_state, state}
-  end
-
-  defp handle_common_event_impl(ev, %{data: %{transaction: transaction} = data} = state) do
-    {new_trans, actions} = ParrotSip.Transaction.handle_event(ev, transaction)
-    new_data = %{data | transaction: new_trans}
-    new_state = %{state | data: new_data}
-
-    # Check if the transaction state has changed and we need to transition gen_statem state
-    if transaction.state != new_trans.state do
-      case process_actions(actions, new_state) do
-        {:keep_state_and_data, _} -> {:next_state, new_trans.state, new_state}
-        {:keep_state, _} -> {:next_state, new_trans.state, new_state}
-        :stop -> {:stop, :normal, new_state}
-      end
-    else
-      case process_actions(actions, new_state) do
-        {:keep_state_and_data, _} -> {:keep_state, new_state}
-        {:keep_state, _} -> {:keep_state, new_state}
-        :stop -> {:stop, :normal, new_state}
-      end
-    end
   end
 
   # Add terminate callback
@@ -867,14 +951,20 @@ defmodule ParrotSip.TransactionStatem do
       "trans: timer fired #{inspect(timer_event)}. state: #{inspect(state, @inspect_opts)}"
     )
 
-    {new_trans, actions} = ParrotSip.Transaction.handle_event({:timer, timer_event}, transaction)
-    new_data = %{data | transaction: new_trans}
-    new_state = %{state | data: new_data}
+    case Transaction.next_state(transaction, {:timer, timer_event}) do
+      {:ok, new_state_atom, actions} ->
+        new_trans = Transaction.update_state(transaction, new_state_atom)
+        new_data = %{data | transaction: new_trans}
+        new_state = %{state | data: new_data}
 
-    case process_actions(actions, new_state) do
-      {:keep_state_and_data, _} -> {:keep_state, new_state}
-      {:keep_state, _} -> {:keep_state, new_state}
-      :stop -> {:stop, :normal, new_state}
+        case process_actions(actions, new_state) do
+          {:keep_state_and_data, _} -> {:keep_state, new_state}
+          {:keep_state, _} -> {:keep_state, new_state}
+          :stop -> {:stop, :normal, new_state}
+        end
+      
+      {:error, _reason} ->
+        {:keep_state, state}
     end
   end
 
@@ -957,23 +1047,19 @@ defmodule ParrotSip.TransactionStatem do
 
   defp handle_owner_down(
          pid,
-         %{data: %{auto_resp: code, origmsg: origmsg, transaction: transaction} = inner_data} =
-           state
+         %{data: %{auto_resp: code, origmsg: origmsg, transaction: transaction}} = state
        ) do
     Logger.debug(
       "trans: owner is dead: #{inspect(pid)}: auto reply with #{inspect(code)}. state: #{inspect(state)}"
     )
 
     resp = Message.reply(origmsg, code)
-    {new_trans, actions} = ParrotSip.Transaction.handle_event({:send, resp}, transaction)
-    new_data = %{inner_data | transaction: new_trans}
-    new_state = %{state | data: new_data}
-
-    case process_actions(actions, new_state) do
-      {:keep_state_and_data, _} -> {:keep_state, new_state}
-      {:keep_state, _} -> {:keep_state, new_state}
-      :stop -> {:stop, :normal, new_state}
-    end
+    event = classify_to_event(code)
+    
+    apply_state_transition(transaction, event, state,
+      update_response: resp,
+      send_response: true
+    )
   end
 
   # Private functions
