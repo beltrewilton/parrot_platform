@@ -344,11 +344,18 @@ defmodule ParrotSip.Transaction do
     # Transaction ID is determined by branch parameter, method, and direction
     # For client transactions, use "branch:method:client"
     # For server transactions, use "branch:method:cseq"
+    # Special case: ACK for non-2xx responses is part of the INVITE transaction (RFC 3261 17.1.1.3)
     case type do
       :invite_client -> "#{branch}:invite:client"
       :non_invite_client -> "#{branch}:#{request.method}:client"
-      :invite_server -> "#{branch}:#{request.method}:#{request.cseq.number}"
-      :non_invite_server -> "#{branch}:#{request.method}:#{request.cseq.number}"
+      :invite_server -> 
+        # ACK requests should match the INVITE transaction ID
+        method = if request.method == :ack, do: :invite, else: request.method
+        "#{branch}:#{method}:#{request.cseq.number}"
+      :non_invite_server -> 
+        # ACK requests should match the INVITE transaction ID
+        method = if request.method == :ack, do: :invite, else: request.method
+        "#{branch}:#{method}:#{request.cseq.number}"
     end
   end
 
@@ -475,7 +482,7 @@ defmodule ParrotSip.Transaction do
   """
   @spec next_state(t(), term()) :: {:ok, transaction_state(), [atom()]} | {:error, atom()}
   def next_state(%{type: :invite_server, state: :trying}, {:send_provisional, _status}) do
-    {:ok, :proceeding, [:start_timer_g]}
+    {:ok, :proceeding, []}
   end
 
   def next_state(%{type: :invite_server, state: :trying}, {:send_final, status})

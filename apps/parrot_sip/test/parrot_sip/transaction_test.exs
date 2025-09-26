@@ -328,7 +328,8 @@ defmodule ParrotSip.TransactionTest do
       event = {:send_provisional, 180}
 
       assert {:ok, :proceeding, actions} = Transaction.next_state(transaction, event)
-      assert :start_timer_g in actions
+      # Per RFC 3261, timer G is only started for final responses (3xx-6xx), not provisional
+      assert actions == []
     end
 
     test "trying + send final response -> completed with timer actions" do
