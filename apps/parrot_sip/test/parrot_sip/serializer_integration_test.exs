@@ -414,34 +414,4 @@ defmodule ParrotSip.SerializerIntegrationTest do
         }
     }
   end
-
-  defp create_dialog_headers(invite_request, ok_response) do
-    %{
-      "from" => invite_request.from,
-      # To header should have a tag from the response
-      "to" => ok_response.to,
-      "call-id" => invite_request.call_id,
-      "cseq" => %CSeq{number: 314_159, method: :ack}
-    }
-  end
-
-  defp extract_contact_uri(ok_response) do
-    contact = ok_response.contact
-    if contact, do: contact.uri, else: "sip:bob@192.0.2.4"
-  end
-
-  defp create_bye_headers(invite_request, ok_response) do
-    %{
-      "from" => invite_request.from,
-      # To header should have a tag from the response
-      "to" => ok_response.to,
-      "call-id" => invite_request.call_id,
-      "cseq" => %CSeq{number: 314_160, method: :bye}
-    }
-  end
-
-  defp extract_remote_target(ok_response) do
-    contact = ok_response.contact
-    if contact, do: contact.uri, else: "sip:bob@192.0.2.4"
-  end
 end

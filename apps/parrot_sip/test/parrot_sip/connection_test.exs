@@ -2,7 +2,6 @@ defmodule ParrotSip.ConnectionTest do
   use ExUnit.Case, async: true
 
   alias ParrotSip.Connection
-  alias ParrotSip.Message
 
   describe "new/6" do
     test "creates a new connection with specified parameters" do
