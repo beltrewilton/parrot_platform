@@ -1,27 +1,87 @@
 defmodule ParrotSip.TransactionStatem do
   @moduledoc """
-  SIP Transaction State Machine
+  SIP Transaction State Machine implementation per RFC 3261 Section 17.
 
-  States:
-  - :trying      - Initial state for non-INVITE transactions
-  - :calling     - Initial state for INVITE client transactions
-  - :proceeding  - Processing state for INVITE server transactions
-  - :completed   - Final response sent/received
-  - :confirmed   - Final state for successful transactions
-  - :terminated  - Terminal state
+  This module implements the SIP transaction layer using OTP's `gen_statem` behavior.
+  It handles both client and server transactions for INVITE and non-INVITE methods,
+  managing reliability, retransmissions, and proper state transitions according to RFC 3261.
 
-  State Transitions:
-  - trying -> proceeding -> completed -> terminated
-  - calling -> proceeding -> completed -> terminated
-  - proceeding -> completed -> confirmed -> terminated
+  ## Transaction Types (RFC 3261 Section 17)
 
-  Events:
-  - {:process_se, se}     - Process transaction events
-  - {:send, response}     - Send response
-  - :cancel              - Cancel transaction
-  - {:set_owner, code, pid} - Set transaction owner
-  - {:DOWN, ref, :process, pid, _} - Owner process down
-  - {:event, timer_event} - Timer events
+  1. **INVITE Client Transaction** - Handles outgoing INVITE requests
+  2. **INVITE Server Transaction** - Handles incoming INVITE requests  
+  3. **Non-INVITE Client Transaction** - Handles outgoing non-INVITE requests
+  4. **Non-INVITE Server Transaction** - Handles incoming non-INVITE requests
+
+  ## State Machine States
+
+  - `:trying` - Initial state for non-INVITE server transactions (RFC 3261 17.2.2)
+  - `:calling` - Initial state for INVITE client transactions (RFC 3261 17.1.1)
+  - `:proceeding` - Processing state after provisional response (RFC 3261 17.1.1, 17.2.1)
+  - `:completed` - Final response sent/received, awaiting ACK (RFC 3261 17.1.1, 17.2.1)
+  - `:confirmed` - ACK received, final state for INVITE server (RFC 3261 17.2.1)
+  - `:terminated` - Terminal state, transaction cleanup
+
+  ## Timer Management (RFC 3261 Section 17.1.2.2)
+
+  The module implements all RFC 3261 transaction timers:
+  - **Timer A** - Retransmit INVITE requests (500ms, exponential backoff)
+  - **Timer B** - INVITE transaction timeout (32s)
+  - **Timer C** - Proxy INVITE transaction timeout (3min)
+  - **Timer D** - Completed state timeout for INVITE client (32s)
+  - **Timer E** - Retransmit non-INVITE requests (500ms, exponential backoff)
+  - **Timer F** - Non-INVITE transaction timeout (32s)
+  - **Timer G** - Retransmit final responses for INVITE server (500ms, exponential backoff)
+  - **Timer H** - INVITE server transaction timeout (32s)
+  - **Timer I** - Confirmed state timeout for INVITE server (5s TCP, 0s UDP)
+  - **Timer J** - Non-INVITE server transaction timeout (32s)
+  - **Timer K** - Completed state timeout for non-INVITE client (5s TCP, 0s UDP)
+
+  ## State Transitions
+
+  ### INVITE Client Transaction (RFC 3261 17.1.1)
+  ```
+  calling -> proceeding -> completed -> terminated
+      |                       |
+      +--------> completed ---+
+  ```
+
+  ### INVITE Server Transaction (RFC 3261 17.2.1)
+  ```
+  proceeding -> completed -> confirmed -> terminated
+                    |
+                    +----> terminated
+  ```
+
+  ### Non-INVITE Transactions (RFC 3261 17.1.2, 17.2.2)
+  ```
+  trying -> completed -> terminated
+     |
+     +----> terminated
+  ```
+
+  ## Usage
+
+  Create a new client transaction:
+  ```elixir
+  transaction = %ParrotSip.Transaction{...}
+  callback = fn result -> handle_response(result) end
+  {:trans, pid} = ParrotSip.TransactionStatem.client_new(transaction, %{}, callback)
+  ```
+
+  Create a new server transaction (typically done automatically):
+  ```elixir
+  transaction = %ParrotSip.Transaction{...}
+  {:ok, pid} = ParrotSip.TransactionStatem.server_new(transaction, handler)
+  ```
+
+  ## Events
+  - `{:send, response}` - Send response (server transactions)
+  - `{:received, message}` - Process incoming SIP message
+  - `:cancel` - Cancel transaction
+  - `{:set_owner, code, pid}` - Set transaction owner process
+  - `{:DOWN, ref, :process, pid, _}` - Owner process monitoring
+  - `{:event, timer_event}` - Timer expiration events
   """
   @behaviour :gen_statem
 
@@ -49,6 +109,28 @@ defmodule ParrotSip.TransactionStatem do
           logbranch: String.t()
         }
 
+  @doc """
+  Returns a child specification for starting the transaction state machine under a supervisor.
+  
+  This function is called by OTP supervisors when starting transaction processes.
+  The transaction state machine is configured as a temporary worker that will
+  terminate when the transaction completes.
+  
+  ## Parameters
+  - `args` - Arguments passed to `start_link/1`, should contain a `%ParrotSip.Transaction{}`
+  
+  ## Returns
+  A child specification map compatible with OTP supervisors.
+  
+  ## Example
+  ```elixir
+  transaction = %ParrotSip.Transaction{...}
+  child_spec = ParrotSip.TransactionStatem.child_spec([transaction, handler])
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17: Transaction Layer
+  """
   def child_spec(args) do
     %{
       id: __MODULE__,
@@ -60,6 +142,29 @@ defmodule ParrotSip.TransactionStatem do
     }
   end
 
+  @doc """
+  Starts a new transaction state machine process.
+  
+  This function starts a new gen_statem process for handling a SIP transaction.
+  It expects the first argument to be a `%ParrotSip.Transaction{}` struct and
+  registers the process using the transaction's ID or branch parameter.
+  
+  ## Parameters
+  - `args` - List or map containing a `%ParrotSip.Transaction{}` and optional additional arguments
+  
+  ## Returns
+  - `{:ok, pid}` - Successfully started transaction process
+  - `{:error, reason}` - Failed to start process
+  
+  ## Example
+  ```elixir
+  transaction = %ParrotSip.Transaction{...}
+  {:ok, pid} = ParrotSip.TransactionStatem.start_link([transaction, handler])
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17: Transaction Layer
+  """
   @spec start_link(term()) :: :gen_statem.start_ret()
   def start_link(args) do
     # Expect args to include a %ParrotSip.Transaction{} as the first or a named argument.
@@ -78,6 +183,34 @@ defmodule ParrotSip.TransactionStatem do
     )
   end
 
+  @doc """
+  Processes incoming SIP messages for server transactions.
+  
+  This function is the main entry point for handling incoming SIP requests.
+  It determines if a transaction already exists for the message, and either
+  forwards the message to an existing transaction or creates a new one.
+  
+  ## Parameters
+  - `sip_msg` - Incoming SIP message (`%ParrotSip.Message{}`)
+  - `handler` - Handler module/function for processing the message
+  
+  ## Returns
+  `:ok` - Message has been processed
+  
+  ## Behavior
+  - **ACK messages**: Special handling for transaction completion (RFC 3261 17.2.1)
+  - **In-dialog requests**: Messages with From and To tags
+  - **New requests**: Creates new server transaction
+  
+  ## Transaction Creation
+  For new requests, determines transaction type:
+  - `:invite_server` - For INVITE method
+  - `:non_invite_server` - For all other methods
+  
+  ## RFC References
+  - RFC 3261 Section 17.2: Server Transaction
+  - RFC 3261 Section 17.2.3: Matching Requests to Server Transactions
+  """
   def server_process(%ParrotSip.Message{method: :ack} = sip_msg, handler) do
     Logger.debug("server_process ack")
 
@@ -149,12 +282,77 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Sends a response from a server transaction.
+  
+  This function is used by server applications to send SIP responses back to clients.
+  The response will be handled according to the current transaction state and RFC 3261
+  reliability requirements (retransmissions, state transitions, etc.).
+  
+  ## Parameters
+  - `resp` - SIP response message (typically a `%ParrotSip.Message{}` with type `:response`)
+  - `transaction` - The `%ParrotSip.Transaction{}` struct for the server transaction
+  
+  ## Returns
+  `:ok` - Response has been queued for sending
+  
+  ## Response Handling
+  - **1xx responses**: Keep transaction in `:proceeding` state, may send multiple
+  - **2xx-6xx responses**: Transition to `:completed` state, start retransmission timers
+  - Responses are automatically retransmitted per RFC 3261 reliability rules
+  
+  ## Example
+  ```elixir
+  # Send 100 Trying
+  trying_resp = ParrotSip.Message.reply(request, 100, "Trying")
+  :ok = ParrotSip.TransactionStatem.server_response(trying_resp, transaction)
+  
+  # Send final response
+  ok_resp = ParrotSip.Message.reply(request, 200, "OK")
+  :ok = ParrotSip.TransactionStatem.server_response(ok_resp, transaction)
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17.2: Server Transaction
+  - RFC 3261 Section 17.2.1: INVITE Server Transaction
+  - RFC 3261 Section 17.2.2: Non-INVITE Server Transaction
+  """
   @spec server_response(term(), ParrotSip.Transaction.t()) :: :ok
   def server_response(resp, %ParrotSip.Transaction{} = transaction) do
     Logger.debug("Sending response: #{inspect(resp)}")
     :gen_statem.cast(via_tuple(transaction), {:send, resp})
   end
 
+  @doc """
+  Creates and sends a server response for a given request.
+  
+  This function looks up the transaction for a request and sends a response.
+  It's typically used for stateless response generation or when the transaction
+  context is not directly available.
+  
+  ## Parameters
+  - `resp_sip_msg` - SIP response message to send
+  - `req_sip_msg` - Original SIP request message (used for transaction lookup)
+  
+  ## Returns
+  - `:ok` - Response sent successfully
+  - `{:error, reason}` - Failed to find transaction or send response
+  
+  ## Behavior
+  1. Generates transaction ID from the request message
+  2. Looks up the transaction in the Registry
+  3. Sends the response via the transaction state machine
+  
+  ## Example
+  ```elixir
+  request = %ParrotSip.Message{method: :invite, ...}
+  response = ParrotSip.Message.reply(request, 200, "OK")
+  :ok = ParrotSip.TransactionStatem.create_server_response(response, request)
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17.2: Server Transaction
+  """
   @spec create_server_response(term(), term()) :: :ok | {:error, String.t()}
   def create_server_response(resp_sip_msg, req_sip_msg) do
     trans_id = Transaction.generate_id(req_sip_msg)
@@ -171,6 +369,40 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Processes a CANCEL request for server transactions.
+  
+  This function handles incoming CANCEL requests by finding the corresponding
+  INVITE server transaction and cancelling it. Returns an appropriate response
+  to the CANCEL request itself.
+  
+  ## Parameters
+  - `cancel_sip_msg` - CANCEL request message (`%ParrotSip.Message{}`)
+  
+  ## Returns
+  `{:reply, response}` - SIP response to send back for the CANCEL request
+  
+  ## Response Codes
+  - **200 OK**: CANCEL was successful, target transaction found and cancelled
+  - **481 Call/Transaction Does Not Exist**: No matching transaction found
+  
+  ## Behavior
+  1. Generates transaction ID for the original INVITE being cancelled
+  2. Looks up the INVITE server transaction
+  3. Sends cancel event to the transaction
+  4. Returns 200 OK or 481 response as appropriate
+  
+  ## Example
+  ```elixir
+  cancel_msg = %ParrotSip.Message{method: :cancel, ...}
+  {:reply, response} = ParrotSip.TransactionStatem.server_cancel(cancel_msg)
+  # response.status_code will be 200 or 481
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 9.2: Server Processing of CANCEL
+  - RFC 3261 Section 17.2.1: INVITE Server Transaction cancellation
+  """
   @spec server_cancel(term()) :: {:reply, term()}
   def server_cancel(%Message{} = cancel_sip_msg) do
     # Generate transaction ID for the original INVITE this CANCEL is targeting
@@ -190,18 +422,114 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Sets the owner process for a server transaction with an auto-response code.
+  
+  The owner process will be monitored, and if it dies before sending a final
+  response, the transaction will automatically send the specified response code.
+  This prevents server transactions from hanging indefinitely.
+  
+  ## Parameters
+  - `code` - HTTP status code to send if owner dies before final response (e.g., 500)
+  - `owner_pid` - PID of the process that owns this transaction
+  - `transaction` - The `%ParrotSip.Transaction{}` struct
+  
+  ## Returns
+  `:ok` - Owner has been set and is being monitored
+  
+  ## Behavior
+  - Previous owner monitoring is stopped if an owner was already set
+  - New owner is monitored with `Process.monitor/1`
+  - If owner dies and no final response sent, auto-response with `code` is sent
+  - Common auto-response codes: 500 (Internal Server Error), 503 (Service Unavailable)
+  
+  ## Example
+  ```elixir
+  transaction = %ParrotSip.Transaction{...}
+  :ok = ParrotSip.TransactionStatem.server_set_owner(500, self(), transaction)
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17.2: Server Transaction (transaction lifecycle management)
+  """
   @spec server_set_owner(integer(), pid(), t()) :: :ok
   def server_set_owner(code, owner_pid, %ParrotSip.Transaction{} = transaction)
       when is_pid(owner_pid) and is_integer(code) do
     :gen_statem.cast(via_tuple(transaction), {:set_owner, code, owner_pid})
   end
 
+  @doc """
+  Sets the owner process for a client transaction.
+  
+  The owner process will be monitored, and if it dies, the transaction will be
+  cancelled automatically. This provides automatic cleanup for client transactions
+  when the controlling process terminates unexpectedly.
+  
+  ## Parameters
+  - `owner_pid` - PID of the process that owns this transaction
+  - `transaction` - The `%ParrotSip.Transaction{}` struct
+  
+  ## Returns
+  `:ok` - Owner has been set and is being monitored
+  
+  ## Behavior
+  - Previous owner monitoring is stopped if an owner was already set
+  - New owner is monitored with `Process.monitor/1`
+  - If owner dies, transaction is automatically cancelled
+  
+  ## Example
+  ```elixir
+  transaction = %ParrotSip.Transaction{...}
+  :ok = ParrotSip.TransactionStatem.client_set_owner(self(), transaction)
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17.1: Client Transaction (transaction lifecycle management)
+  """
   @spec client_set_owner(pid(), t()) :: :ok
   def client_set_owner(owner_pid, %ParrotSip.Transaction{} = transaction)
       when is_pid(owner_pid) do
     :gen_statem.cast(via_tuple(transaction), {:set_owner, nil, owner_pid})
   end
 
+  @doc """
+  Creates a new client transaction for outgoing SIP requests.
+  
+  This function starts a new client transaction state machine for sending SIP requests.
+  Client transactions handle reliability, retransmissions, and proper state transitions
+  for outgoing requests according to RFC 3261.
+  
+  ## Parameters
+  - `transaction` - A `%ParrotSip.Transaction{}` struct containing request details
+  - `options` - Map of transaction options (currently unused)
+  - `callback` - Function called with transaction results: `{:response, response}` or `{:stop, reason}`
+  
+  ## Returns
+  `{:trans, pid}` - Transaction handle containing the process PID
+  
+  ## Usage
+  ```elixir
+  # Create INVITE client transaction
+  invite_msg = %ParrotSip.Message{method: :invite, ...}
+  {:ok, transaction} = ParrotSip.Transaction.create_invite_client(invite_msg)
+  
+  callback = fn
+    {:response, response} -> handle_response(response)
+    {:stop, reason} -> handle_completion(reason)
+  end
+  
+  {:trans, pid} = ParrotSip.TransactionStatem.client_new(transaction, %{}, callback)
+  ```
+  
+  ## State Machine
+  - INVITE transactions start in `:calling` state (RFC 3261 17.1.1)
+  - Non-INVITE transactions start in `:trying` state (RFC 3261 17.1.2)
+  
+  ## RFC References
+  - RFC 3261 Section 17.1: Client Transaction
+  - RFC 3261 Section 17.1.1: INVITE Client Transaction
+  - RFC 3261 Section 17.1.2: Non-INVITE Client Transaction
+  """
   @spec client_new(term(), map(), client_callback()) :: t()
   def client_new(transaction, options, callback) do
     # Pass transaction as first element to match init/1 expectations
@@ -217,6 +545,44 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Processes a SIP response for client transactions.
+  
+  This function handles incoming SIP responses by parsing the message,
+  determining which client transaction it belongs to, and forwarding
+  it to the appropriate transaction state machine.
+  
+  ## Parameters
+  - `via` - Via header from the response (used for transaction matching)
+  - `msg` - Raw SIP response message as binary string
+  
+  ## Returns
+  `:ok` - Response has been processed
+  
+  ## Behavior
+  1. Parses the binary SIP message
+  2. Extracts branch parameter from Via header
+  3. Extracts method from CSeq header
+  4. Generates transaction ID for lookup
+  5. Forwards response to matching client transaction
+  
+  ## Transaction Matching
+  Client transactions are matched using:
+  - Branch parameter from Via header
+  - Method from CSeq header
+  - Transaction type (client)
+  
+  ## Example
+  ```elixir
+  via = %ParrotSip.Headers.Via{parameters: %{"branch" => "z9hG4bK123"}}
+  sip_response = "SIP/2.0 200 OK\r\nCSeq: 1 INVITE\r\n..."
+  :ok = ParrotSip.TransactionStatem.client_response(via, sip_response)
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17.1: Client Transaction
+  - RFC 3261 Section 17.1.3: Matching Responses to Client Transactions
+  """
   @spec client_response(term(), binary()) :: :ok
   def client_response(via, msg) when is_binary(msg) do
     case Parser.parse(msg) do
@@ -267,11 +633,60 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Cancels an ongoing client transaction.
+  
+  Sends a CANCEL request for INVITE client transactions or marks non-INVITE
+  transactions as cancelled. For INVITE transactions, this generates and sends
+  a CANCEL request with the same Call-ID, From, and To as the original INVITE.
+  
+  ## Parameters
+  - `transaction` - Transaction handle `{:trans, pid}` returned from `client_new/3`
+  
+  ## Returns
+  `:ok` - Cancel request has been initiated
+  
+  ## Behavior
+  - For INVITE transactions: Generates and sends CANCEL request (RFC 3261 9.1)
+  - For non-INVITE transactions: Marks transaction as cancelled
+  - Already cancelled transactions ignore additional cancel requests
+  
+  ## Example
+  ```elixir
+  {:trans, _pid} = transaction = ParrotSip.TransactionStatem.client_new(...)
+  :ok = ParrotSip.TransactionStatem.client_cancel(transaction)
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 9.1: CANCEL Processing
+  - RFC 3261 Section 17.1.1.5: Cancelling INVITE Client Transactions
+  """
   @spec client_cancel(t()) :: :ok
   def client_cancel({:trans, pid}) do
     :gen_statem.cast(pid, :cancel)
   end
 
+  @doc """
+  Returns the total number of active transactions.
+  
+  This function counts all transaction processes currently registered in the
+  ParrotSip.Registry, providing a way to monitor transaction load and detect
+  potential resource issues.
+  
+  ## Returns
+  Non-negative integer representing the number of active transactions
+  
+  ## Example
+  
+      active_count = ParrotSip.TransactionStatem.count()
+      IO.puts("Active transactions: \#{active_count}")
+  
+  ## Use Cases
+  - Monitoring system load
+  - Debugging transaction leaks
+  - Performance analysis
+  - Health checks
+  """
   @spec count() :: non_neg_integer()
   def count do
     # Count all transaction processes registered in the Registry
@@ -279,6 +694,37 @@ defmodule ParrotSip.TransactionStatem do
     Registry.count(ParrotSip.Registry)
   end
 
+  @doc """
+  Initializes the transaction state machine.
+  
+  This function is called by gen_statem when starting a new transaction process.
+  It sets up the initial state, registers the transaction, and determines whether
+  this is a client or server transaction based on the transaction type.
+  
+  ## Parameters
+  - `[transaction | rest]` - List starting with `%ParrotSip.Transaction{}` followed by additional args
+  
+  ## Returns
+  - `{:ok, initial_state, state_data}` - Successfully initialized
+  - `{:stop, reason}` - Initialization failed
+  
+  ## Initialization Process
+  1. Extract transaction details (method, branch, call-id)
+  2. Register transaction in ParrotSip.Registry for message routing
+  3. Set up logging metadata for debugging
+  4. Determine client vs server transaction type
+  5. Initialize state data structure
+  6. Start in appropriate initial state
+  
+  ## Initial States
+  - **INVITE Client**: `:calling` state (RFC 3261 17.1.1)
+  - **Non-INVITE Client**: `:trying` state (RFC 3261 17.1.2)
+  - **Server Transactions**: `:trying` state (RFC 3261 17.2.1, 17.2.2)
+  
+  ## RFC References
+  - RFC 3261 Section 17.1: Client Transaction initialization
+  - RFC 3261 Section 17.2: Server Transaction initialization
+  """
   @impl :gen_statem
   def init([%ParrotSip.Transaction{} = transaction | rest]) do
     sip_msg = transaction.request
@@ -374,6 +820,19 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Returns the gen_statem callback mode.
+  
+  This function specifies that the state machine uses state function callbacks,
+  where each state is implemented as a separate function (trying/3, calling/3, etc.).
+  This provides clear separation between different transaction states.
+  
+  ## Returns
+  `:state_functions` - Each state is implemented as a separate function
+  
+  ## RFC References
+  - RFC 3261 Section 17: Transaction Layer state machines
+  """
   @impl :gen_statem
   def callback_mode, do: :state_functions
 
@@ -672,6 +1131,33 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  @doc """
+  Handles the TRYING state for server transactions.
+  
+  The `:trying` state is the initial state for server transactions, where the transaction
+  has been created but no provisional response has been sent yet. For INVITE server
+  transactions, this state automatically sends a "100 Trying" response.
+  
+  ## State Transitions
+  - **On provisional response (1xx)**: Transition to `:proceeding` state
+  - **On final response (2xx-6xx)**: Transition to `:completed` state
+  - **On CANCEL**: Process cancellation request
+  
+  ## Parameters
+  - `event_type` - Type of event (`:cast`, `:info`, `:state_timeout`)
+  - `event` - The specific event data
+  - `state` - Current state data
+  
+  ## Events Handled
+  - `{:handle_transaction_setup, [...]}` - Complete transaction initialization
+  - `{:send, response}` - Send response and transition states
+  - `:cancel` - Handle CANCEL request
+  - `{:set_owner, code, pid}` - Set transaction owner
+  
+  ## RFC References
+  - RFC 3261 Section 17.2.1: INVITE Server Transaction (proceeding state)
+  - RFC 3261 Section 17.2.2: Non-INVITE Server Transaction (trying state)
+  """
   def trying(
         :cast,
         {:handle_transaction_setup, [:server, sip_msg, :ack, handler]},
@@ -788,7 +1274,34 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # PROCEEDING STATE
+  @doc """
+  Handles the PROCEEDING state for transactions.
+  
+  The `:proceeding` state occurs after a provisional response (1xx) has been sent
+  or received. Transactions remain in this state while processing continues and
+  additional provisional responses may be sent.
+  
+  ## State Transitions
+  - **On additional provisional response (1xx)**: Remain in `:proceeding`
+  - **On final response (2xx-6xx)**: Transition to `:completed` state
+  - **On CANCEL (server)**: Process cancellation
+  
+  ## Parameters
+  - `event_type` - Type of event (`:cast`, `:info`, `:state_timeout`)
+  - `event` - The specific event data
+  - `state` - Current state data
+  
+  ## Events Handled
+  All events are delegated to common event handlers that manage:
+  - Response sending and state transitions
+  - Message reception and processing
+  - Timer management
+  - Owner process monitoring
+  
+  ## RFC References
+  - RFC 3261 Section 17.1.1: INVITE Client Transaction (proceeding state)
+  - RFC 3261 Section 17.2.1: INVITE Server Transaction (proceeding state)
+  """
   def proceeding(:cast, event, state), do: handle_common_event(event, state)
 
   def proceeding(:info, event, state), do: handle_event(:info, event, :proceeding, state)
@@ -803,7 +1316,37 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # CALLING STATE
+  @doc """
+  Handles the CALLING state for INVITE client transactions.
+  
+  The `:calling` state is the initial state for INVITE client transactions after
+  the INVITE request has been sent. The transaction waits in this state for the
+  first response from the server.
+  
+  ## State Transitions
+  - **On provisional response (1xx)**: Transition to `:proceeding` state
+  - **On final response (2xx-6xx)**: Transition to `:completed` state
+  - **On Timer B expiry**: Transaction timeout, transition to `:terminated`
+  
+  ## Parameters
+  - `event_type` - Type of event (`:cast`, `:info`, `:state_timeout`)
+  - `event` - The specific event data  
+  - `state` - Current state data
+  
+  ## Events Handled
+  - `{:received, response}` - Process incoming SIP response
+  - Timer events for retransmissions and timeouts
+  - CANCEL requests
+  - Owner process monitoring
+  
+  ## Timer Behavior
+  - **Timer A**: Retransmits INVITE request (500ms, exponential backoff)
+  - **Timer B**: Transaction timeout (32 seconds)
+  
+  ## RFC References
+  - RFC 3261 Section 17.1.1.1: INVITE Client Transaction (calling state)
+  - RFC 3261 Section 17.1.2.2: Timer management
+  """
   def calling(
         :cast,
         {:received, %{type: :response, status_code: status_code} = response},
@@ -834,8 +1377,42 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # COMPLETED STATE
-  # Handle sending responses in completed state for retransmissions
+  @doc """
+  Handles the COMPLETED state for transactions.
+  
+  The `:completed` state occurs after a final response (2xx-6xx) has been sent or received.
+  For server transactions, this state handles retransmissions of the final response.
+  For client transactions, this state waits for ACK (INVITE) or timer expiry (non-INVITE).
+  
+  ## State Transitions
+  - **INVITE Server**: On ACK received → `:confirmed` state
+  - **INVITE Client**: On Timer D expiry → `:terminated` state  
+  - **Non-INVITE**: On timer expiry → `:terminated` state
+  
+  ## Parameters
+  - `event_type` - Type of event (`:cast`, `:info`, `:state_timeout`)
+  - `event` - The specific event data
+  - `state` - Current state data
+  
+  ## Events Handled
+  - `{:send, response}` - Retransmit last response (server transactions)
+  - `{:received, ack}` - Process ACK message (INVITE server)
+  - `{:received, request}` - Retransmit response for duplicate requests
+  - Timer events for retransmissions and timeouts
+  
+  ## Timer Behavior
+  - **Timer G**: Retransmits final response (INVITE server, 500ms exponential backoff)
+  - **Timer H**: Transaction timeout (INVITE server, 32s)
+  - **Timer D**: Wait time (INVITE client, 32s)
+  - **Timer J**: Wait time (non-INVITE server, 32s)
+  - **Timer K**: Wait time (non-INVITE client, 5s TCP, 0s UDP)
+  
+  ## RFC References
+  - RFC 3261 Section 17.1.1.3: INVITE Client Transaction (completed state)
+  - RFC 3261 Section 17.1.2.3: Non-INVITE Client Transaction (completed state)
+  - RFC 3261 Section 17.2.1: INVITE Server Transaction (completed state)
+  - RFC 3261 Section 17.2.2: Non-INVITE Server Transaction (completed state)
+  """
   def completed(:cast, {:send, _response}, %{data: %{transaction: transaction}} = state) do
     Logger.debug(
       "completed state: processing {:send, response} for transaction type: #{transaction.type}"
@@ -881,7 +1458,31 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # CONFIRMED STATE
+  @doc """
+  Handles the CONFIRMED state for INVITE server transactions.
+  
+  The `:confirmed` state is only used by INVITE server transactions after receiving
+  an ACK for the final response. This state provides time for any remaining messages
+  to be processed before transaction termination.
+  
+  ## State Transitions
+  - **On Timer I expiry**: Transition to `:terminated` state
+  
+  ## Parameters
+  - `event_type` - Type of event (`:cast`, `:info`, `:state_timeout`)
+  - `event` - The specific event data
+  - `state` - Current state data
+  
+  ## Events Handled
+  All events are delegated to common handlers. Most events are ignored in this state
+  as the transaction is winding down.
+  
+  ## Timer Behavior
+  - **Timer I**: Confirmed state timeout (5s for TCP, 0s for UDP)
+  
+  ## RFC References
+  - RFC 3261 Section 17.2.1: INVITE Server Transaction (confirmed state)
+  """
   def confirmed(:cast, event, state), do: handle_common_event(event, state)
   
   def confirmed(:info, event, state), do: handle_event(:info, event, :confirmed, state)
@@ -896,7 +1497,27 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # TERMINATED STATE
+  @doc """
+  Handles the TERMINATED state for all transactions.
+  
+  The `:terminated` state is the final state for all transaction types. Once a
+  transaction reaches this state, it ignores all events and will be garbage collected.
+  This state represents the end of the transaction lifecycle.
+  
+  ## State Transitions
+  None - this is the terminal state
+  
+  ## Parameters
+  - `event_type` - Type of event (`:cast`, `:info`, `:state_timeout`)
+  - `event` - The specific event data (ignored)
+  - `state` - Current state data
+  
+  ## Events Handled
+  All events are ignored with a warning logged. The transaction is no longer active.
+  
+  ## RFC References
+  - RFC 3261 Section 17: Transaction Layer (transaction termination)
+  """
   def terminated(:cast, _event, state) do
     Logger.warning(
       "TransactionStatem.terminated/3: Transaction already terminated, ignoring event"
@@ -1003,7 +1624,28 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # Add terminate callback
+  @doc """
+  Handles transaction termination and cleanup.
+  
+  This function is called when the transaction state machine is terminating,
+  either normally or due to an error. It provides logging and cleanup opportunities.
+  
+  ## Parameters
+  - `reason` - Termination reason (`:normal`, `:shutdown`, error tuple, etc.)
+  - `_state` - Final state name (unused)
+  - `data` - Final state data
+  
+  ## Returns
+  `:ok` - Termination handled
+  
+  ## Behavior
+  - Normal termination (`:normal`): Logs debug message
+  - Error termination: Logs error message with reason
+  - State data is logged for debugging purposes
+  
+  ## RFC References
+  - RFC 3261 Section 17: Transaction Layer (cleanup and termination)
+  """
   @impl :gen_statem
   def terminate(reason, _state, data) do
     case reason do
@@ -1014,7 +1656,38 @@ defmodule ParrotSip.TransactionStatem do
     :ok
   end
 
-  # Handle info messages
+  @doc """
+  Handles events that occur outside the normal state function flow.
+  
+  This function handles system events that can occur in any state, such as
+  process monitoring (DOWN messages), timer events, and unexpected messages.
+  It implements the gen_statem handle_event callback for managing cross-state concerns.
+  
+  ## Parameters
+  - `event_type` - Type of event (`:info`, `:cast`, `{:call, from}`, `:state_timeout`)
+  - `event` - The specific event data
+  - `state_name` - Current state name (`:trying`, `:calling`, etc.)
+  - `state` - Current state data
+  
+  ## Events Handled
+  - `{:DOWN, ref, :process, pid, reason}` - Owner process died
+  - `{:event, timer_name}` - Timer expiration (A, B, C, D, E, F, G, H, I, J, K)
+  - `:cancel_timeout` - CANCEL request timeout
+  - `:terminate` - Transaction termination timeout
+  
+  ## Owner Process Monitoring
+  When the owner process dies:
+  - **Client transactions**: Automatically cancelled to prevent resource leaks
+  - **Server transactions**: Auto-response sent if no final response was sent
+  
+  ## Timer Events
+  Handles all RFC 3261 transaction timers with appropriate retransmissions,
+  state transitions, and termination logic.
+  
+  ## RFC References
+  - RFC 3261 Section 17.1.2.2: Timer Values and Behavior
+  - RFC 3261 Section 17.2.4: Handling Transport Errors
+  """
   @impl :gen_statem
   def handle_event(
         :info,
@@ -1210,17 +1883,41 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
-  # Returns a Registry tuple using the branch parameter from the topmost Via header.
-  #
-  # This is used for RFC 3261 transaction matching, where the branch parameter uniquely
-  # identifies a transaction. See RFC 3261 Section 17.2.3.
-  # Accepts a %ParrotSip.Transaction{} and extracts the branch or id for Registry.
-  defp via_tuple(%ParrotSip.Transaction{id: id}) when is_binary(id) do
+  @doc """
+  Returns a Registry via tuple for transaction process registration.
+  
+  This function creates the Registry via tuple used for process registration and lookup.
+  The tuple uses the transaction ID or branch parameter for unique identification
+  according to RFC 3261 transaction matching rules.
+  
+  ## Parameters
+  - `transaction` - A `%ParrotSip.Transaction{}` struct
+  
+  ## Returns
+  `{:via, Registry, {ParrotSip.Registry, transaction_id}}` - Registry via tuple
+  
+  ## Transaction Matching (RFC 3261 17.2.3)
+  Transactions are matched using:
+  1. Primary: Transaction ID (if available)
+  2. Fallback: Branch parameter from Via header
+  
+  ## Example
+  ```elixir
+  transaction = %ParrotSip.Transaction{id: "branch123:invite:server"}
+  via_tuple = ParrotSip.TransactionStatem.via_tuple(transaction)
+  # Returns: {:via, Registry, {ParrotSip.Registry, "branch123:invite:server"}}
+  ```
+  
+  ## RFC References
+  - RFC 3261 Section 17.2.3: Matching Requests to Server Transactions
+  - RFC 3261 Section 8.1.1.7: Via Header Field
+  """
+  def via_tuple(%ParrotSip.Transaction{id: id}) when is_binary(id) do
     Logger.debug("via_tuple: Using transaction ID: #{id}")
     {:via, Registry, {ParrotSip.Registry, id}}
   end
 
-  defp via_tuple(%ParrotSip.Transaction{branch: branch}) when is_binary(branch) do
+  def via_tuple(%ParrotSip.Transaction{branch: branch}) when is_binary(branch) do
     Logger.debug("via_tuple: Fallback to branch (no ID): #{branch}")
     {:via, Registry, {ParrotSip.Registry, branch}}
   end
