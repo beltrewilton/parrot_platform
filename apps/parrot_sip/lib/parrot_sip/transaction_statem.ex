@@ -1245,9 +1245,10 @@ defmodule ParrotSip.TransactionStatem do
 
     {:ok, cancel_transaction} = Transaction.create_non_invite_client(cancel_req)
     _ = client_new(cancel_transaction, %{}, fn _ -> :ok end)
-    # Schedule cancel timeout
+    # Schedule cancel timeout (configurable for testing, default 32s per RFC 3261)
+    cancel_timeout = Application.get_env(:parrot_sip, :cancel_timeout, 32_000)
     {:keep_state, %{state | data: %{data | cancelled: true}},
-     [{:state_timeout, 32_000, :cancel_timeout}]}
+     [{:state_timeout, cancel_timeout, :cancel_timeout}]}
   end
 
   # Handle set_owner events
@@ -1556,7 +1557,7 @@ defmodule ParrotSip.TransactionStatem do
     )
   end
 
-  defp handle_common_event({:received, %{type: :response, status_code: status_code} = sip_msg}, %{data: %{transaction: transaction} = data} = state) do
+  defp handle_common_event({:received, %{type: :response, status_code: status_code} = sip_msg}, %{data: %{transaction: transaction}} = state) do
     log_response_info(sip_msg, state)
     
     apply_state_transition(transaction, {:receive_response, status_code}, state,
@@ -1610,9 +1611,10 @@ defmodule ParrotSip.TransactionStatem do
 
     {:ok, cancel_transaction} = Transaction.create_non_invite_client(cancel_req)
     _ = client_new(cancel_transaction, %{}, fn _ -> :ok end)
-    # Schedule cancel timeout
+    # Schedule cancel timeout (configurable for testing, default 32s per RFC 3261)
+    cancel_timeout = Application.get_env(:parrot_sip, :cancel_timeout, 32_000)
     {:keep_state, %{state | data: %{data | cancelled: true}},
-     [{:state_timeout, 32_000, :cancel_timeout}]}
+     [{:state_timeout, cancel_timeout, :cancel_timeout}]}
   end
 
   # Handle cancel for server transactions - just ignore
@@ -1721,9 +1723,9 @@ defmodule ParrotSip.TransactionStatem do
 
   def handle_event(
         :info,
-        {:event, :g = timer_event},
+        {:event, :g},
         :completed,
-        %{data: %{transaction: transaction} = data, timers: timers} = state
+        %{data: %{transaction: transaction}, timers: timers} = state
       ) do
     Logger.debug("trans: timer G fired, retransmitting response and rescheduling")
 
@@ -1801,31 +1803,6 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # Handle DOWN messages for client transactions
-  def handle_event(
-        :info,
-        {:DOWN, ref, :process, pid, _},
-        _state,
-        %{owner_mon: ref, data: %{transaction: transaction, outreq: out_req}} = state
-      ) do
-    request_msg =
-      case out_req do
-        %{request: msg} -> msg
-        %Message{} = msg -> msg
-        _ -> nil
-      end
-
-    if (request_msg && request_msg.method == :invite) and
-         not (transaction.last_response && transaction.last_response.status_code >= 200) do
-      Logger.debug(
-        "trans: owner is dead: #{inspect(pid)}: cancel transaction. state: #{inspect(state)}"
-      )
-
-      {:keep_state, state, [{:next_event, :cast, :cancel}]}
-    else
-      {:keep_state, state}
-    end
-  end
-
   # Handle unexpected messages
   def handle_event(:info, msg, _state, state) do
     Logger.error("trans: unexpected info: #{inspect(msg, @inspect_opts)}")

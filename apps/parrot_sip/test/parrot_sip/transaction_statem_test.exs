@@ -454,10 +454,10 @@ defmodule ParrotSip.TransactionStatemTest do
       assert get_cancelled_flag(pid)
     end
 
-    @tag :skip
     test "cancel timeout terminates client transaction", %{test_id: test_id} do
-      # TODO: This test needs to be rewritten to either wait for the actual 32s timeout
-      # or we need to make the timeout configurable for testing purposes
+      # Set a short cancel timeout for testing (100ms instead of 32s)
+      Application.put_env(:parrot_sip, :cancel_timeout, 100)
+
       invite = build_invite(unique_branch("z9hG4bKcancelTimeout", test_id))
       {:ok, transaction} = Transaction.create_invite_client(invite)
 
@@ -468,11 +468,12 @@ defmodule ParrotSip.TransactionStatemTest do
 
       :ok = TransactionStatem.client_cancel({:trans, pid})
 
-      # The state_timeout is set to 32_000ms which is too long for a test
-      # We need a way to trigger it artificially or make it configurable
-      
-      assert_receive {:callback, {:stop, :timeout}}, 33_000
-      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
+      # Should timeout after 100ms
+      assert_receive {:callback, {:stop, :timeout}}, 200
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 100
+
+      # Restore default timeout
+      Application.delete_env(:parrot_sip, :cancel_timeout)
     end
 
     test "server transaction processes CANCEL", %{test_id: test_id} do

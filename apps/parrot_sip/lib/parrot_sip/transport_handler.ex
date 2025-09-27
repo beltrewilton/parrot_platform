@@ -270,25 +270,41 @@ defmodule ParrotSip.TransportHandler do
     end
   end
 
-  defp route_message(message, state) do
-    case ParrotSip.Transaction.process_message(message) do
+  # Route SIP requests to transaction layer (RFC 3261 Section 17.2.3)
+  defp route_message(%{type: :request, method: method} = message, state) do
+    case ParrotSip.TransactionStatem.server_process(message, %{}) do
+      {:ok, _transaction} ->
+        Logger.debug("Request routed to transaction layer: #{method}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to route request to transaction layer: #{inspect(reason)}")
+        route_to_handlers(message, state)
+    end
+  end
+
+  # Route SIP responses to client transactions (RFC 3261 Section 17.1.3)
+  defp route_message(%{type: :response, status_code: status} = message, state) do
+    case ParrotSip.TransactionStatem.client_response(message, nil) do
       :ok ->
+        Logger.debug("Response routed to client transaction: #{status}")
         :ok
 
       {:error, :no_transaction} ->
-        Logger.debug("No transaction for message, routing to #{length(state.handlers)} handlers")
-
-        for handler <- state.handlers do
-          send(handler, {:sip_message, message})
-        end
+        Logger.debug("Response has no matching client transaction: #{status}")
+        route_to_handlers(message, state)
 
       {:error, reason} ->
-        Logger.warning("Transaction processing error: #{inspect(reason)}")
-
-        for handler <- state.handlers do
-          send(handler, {:sip_message, message})
-        end
+        Logger.warning("Failed to route response: #{inspect(reason)}")
+        route_to_handlers(message, state)
     end
+  end
+
+  # Route to registered message handlers (for application-layer processing)
+  defp route_to_handlers(message, state) do
+    Logger.debug("Routing message to #{length(state.handlers)} registered handlers")
+    Enum.each(state.handlers, &send(&1, {:sip_message, message}))
+    :ok
   end
 
   defp resolve_transport(ref) when is_pid(ref), do: {:ok, ref}
