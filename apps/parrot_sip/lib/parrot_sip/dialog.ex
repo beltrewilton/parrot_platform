@@ -85,74 +85,112 @@ defmodule ParrotSip.Dialog do
   @doc """
   Creates a dialog from an INVITE message.
 
-  This function creates a new dialog based on an INVITE request, following
-  RFC 3261 Section 12.1. The dialog is created in the early state and will
-  transition to confirmed when a 2xx response is received.
+  Implements RFC 3261 Section 12.1.1 (UAS behavior) and Section 12.1.2 (UAC behavior).
+  The dialog is created in the early state and will transition to confirmed when a
+  2xx response is received.
+
+  ## RFC 3261 Section 12.1 - Dialog Creation
+
+  A dialog is identified by:
+  - Call-ID value from the Call-ID header field
+  - local tag (From tag for UAC, To tag for UAS)
+  - remote tag (To tag for UAC, From tag for UAS)
+
+  The dialog ID is created as: Call-ID || local-tag || remote-tag
 
   ## Parameters
 
-  - `invite_message`: The INVITE request message
-  - `role`: Either `:uac` (client) or `:uas` (server)
+  - `invite_message`: The INVITE request message (RFC 3261 Section 13)
+  - `role`: Either `:uac` (User Agent Client) or `:uas` (User Agent Server)
 
   ## Returns
 
-  - `{:ok, dialog_id}` if dialog was created successfully
-  - `{:error, reason}` if dialog creation failed
+  - `{:ok, dialog}` with a Dialog struct if created successfully
+  - `{:error, :no_call_id}` if Call-ID header is missing
+  - `{:error, :no_from_tag}` if From tag is missing
+  - `{:error, reason}` for other failures
+
+  ## Examples
+
+      iex> invite = %ParrotSip.Message{
+      ...>   method: :invite,
+      ...>   call_id: "abc123@atlanta.com",
+      ...>   from: %ParrotSip.Headers.From{
+      ...>     uri: "sip:alice@atlanta.com",
+      ...>     parameters: %{"tag" => "1928301774"}
+      ...>   },
+      ...>   to: %ParrotSip.Headers.To{
+      ...>     uri: "sip:bob@biloxi.com",
+      ...>     parameters: %{}
+      ...>   },
+      ...>   cseq: %ParrotSip.Headers.CSeq{number: 314159, method: :invite}
+      ...> }
+      iex> {:ok, dialog} = ParrotSip.Dialog.create_from_invite(invite, :uac)
+      iex> dialog.call_id
+      "abc123@atlanta.com"
+      iex> dialog.state
+      :early
   """
   @spec create_from_invite(Message.t(), :uac | :uas) :: {:ok, String.t()} | {:error, term()}
-  def create_from_invite(%Message{method: :invite} = invite_message, role)
-      when role in [:uac, :uas] do
-    # Extract dialog components using Message helper functions
+  def create_from_invite(%Message{method: :invite} = invite_message, :uac) do
     call_id = invite_message.call_id
     from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
     to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil
 
-    # Validate required fields
     with {:call_id, call_id} when not is_nil(call_id) <- {:call_id, call_id},
          {:from_tag, from_tag} when not is_nil(from_tag) <- {:from_tag, from_tag} do
-      # Determine local and remote tags based on role
-      {local_tag, remote_tag} =
-        case role do
-          :uac -> {from_tag, to_tag}
-          :uas -> {to_tag || generate_tag(), from_tag}
-        end
+      dialog_id = generate_id(:uac, call_id, from_tag, to_tag)
 
-      # Create dialog ID
-      dialog_id = generate_id(role, call_id, local_tag, remote_tag)
+      dialog = %__MODULE__{
+        id: dialog_id,
+        state: :early,
+        call_id: call_id,
+        local_tag: from_tag,
+        remote_tag: to_tag,
+        local_uri: extract_local_uri(invite_message, :uac),
+        remote_uri: extract_remote_uri(invite_message, :uac),
+        remote_target: extract_contact_uri(invite_message),
+        local_seq: if(invite_message.cseq, do: invite_message.cseq.number, else: 0),
+        remote_seq: 0,
+        route_set: extract_route_set_from_message(invite_message),
+        secure: is_secure_dialog?(invite_message)
+      }
 
-      # Create dialog struct
+      dialog_with_role = Map.put(dialog, :role, :uac)
+      start_dialog_process(dialog_with_role, dialog_id)
+    else
+      {:call_id, nil} -> {:error, :no_call_id}
+      {:from_tag, nil} -> {:error, :no_from_tag}
+    end
+  end
+
+  def create_from_invite(%Message{method: :invite} = invite_message, :uas) do
+    call_id = invite_message.call_id
+    from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
+    to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil
+
+    with {:call_id, call_id} when not is_nil(call_id) <- {:call_id, call_id},
+         {:from_tag, from_tag} when not is_nil(from_tag) <- {:from_tag, from_tag} do
+      local_tag = to_tag || generate_tag()
+      dialog_id = generate_id(:uas, call_id, local_tag, from_tag)
+
       dialog = %__MODULE__{
         id: dialog_id,
         state: :early,
         call_id: call_id,
         local_tag: local_tag,
-        remote_tag: remote_tag,
-        local_uri: extract_local_uri(invite_message, role),
-        remote_uri: extract_remote_uri(invite_message, role),
+        remote_tag: from_tag,
+        local_uri: extract_local_uri(invite_message, :uas),
+        remote_uri: extract_remote_uri(invite_message, :uas),
         remote_target: extract_contact_uri(invite_message),
-        local_seq:
-          if(role == :uac, do: invite_message.cseq && invite_message.cseq.number, else: 0),
-        remote_seq:
-          if(role == :uas, do: invite_message.cseq && invite_message.cseq.number, else: 0),
+        local_seq: 0,
+        remote_seq: if(invite_message.cseq, do: invite_message.cseq.number, else: 0),
         route_set: extract_route_set_from_message(invite_message),
         secure: is_secure_dialog?(invite_message)
       }
 
-      # Add role field to dialog (using Map.put since it's not in the struct)
-      dialog_with_role = Map.put(dialog, :role, role)
-
-      # Start dialog process
-      case ParrotSip.Dialog.Supervisor.start_child(dialog_with_role) do
-        {:ok, _pid} ->
-          # Register dialog in registry
-          Registry.register(ParrotSip.Registry, {:dialog, dialog_id}, dialog_with_role)
-          {:ok, dialog_with_role}
-
-        {:error, _reason} ->
-          # If start fails, just return the dialog structure for now
-          # This allows tests to pass without the full dialog statem infrastructure
-          {:ok, dialog_with_role}
-      end
+      dialog_with_role = Map.put(dialog, :role, :uas)
+      start_dialog_process(dialog_with_role, dialog_id)
     else
       {:call_id, nil} -> {:error, :no_call_id}
       {:from_tag, nil} -> {:error, :no_from_tag}
@@ -172,12 +210,23 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Facade function that creates a request within an existing dialog.
+  Finds a dialog and creates an in-dialog request.
 
-  This function currently delegates to the DialogStatem implementation,
-  which uses ERSIP. It will gradually be replaced with our pure Elixir implementation.
+  Implements RFC 3261 Section 12.2.1 - Requests within a Dialog.
 
-  RFC 3261 Section 12.2.1
+  ## RFC 3261 Section 12.2.1 - Requests within a Dialog
+
+  Requests within a dialog use the dialog's route set to determine
+  the Request-URI and Route header fields. The method for creating
+  in-dialog requests:
+
+  1. The URI in the Request-URI is the remote target's contact URI
+  2. Route header is set from the dialog's route set
+  3. From and To headers use dialog's local/remote URIs and tags
+  4. Call-ID is from the dialog
+  5. CSeq is incremented from the last local sequence number
+
+  This function currently delegates to DialogStatem for state management.
   @doc \"""
   Associates a request with its dialog and passes it to the dialog process.
 
@@ -201,21 +250,28 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Facade function that processes a transaction result in the UAC context.
+  Processes a transaction result for the UAC.
 
-  This function currently delegates to the DialogStatem implementation,
-  which uses ERSIP. It will gradually be replaced with our pure Elixir implementation.
+  Implements RFC 3261 Section 12.2.1.2 - Processing Responses.
 
-  RFC 3261 Section 12.2.1.2
+  ## RFC 3261 Section 12.2.1.2 - Processing the Responses
+
+  When a UAC receives a response to a request sent within a dialog:
+
+  1. If response is 1xx (provisional): Dialog enters or remains in early state
+  2. If response is 2xx to INVITE: Dialog transitions to confirmed state
+  3. If response is 2xx to BYE: Dialog is terminated
+  4. Target refresh requests (INVITE, UPDATE) may update the remote target URI
+  5. CSeq processing validates the response matches the request
 
   ## Parameters
 
-  - `request`: The original request
-  - `transaction_result`: Result from the transaction
+  - `request`: The original request sent within the dialog
+  - `transaction_result`: Result from the transaction (response or error)
 
   ## Returns
 
-  - `:ok`: Successfully processed
+  - `:ok`: Successfully processed (always succeeds in current implementation)
   """
   @spec uac_result(Message.t(), any()) :: :ok
   def uac_result(%Message{} = _request, _transaction_result) do
@@ -225,14 +281,19 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Facade function that returns the count of active dialogs.
+  Returns the count of active dialogs.
 
-  This function delegates to the DialogStatem implementation and will
-  gradually be replaced with our pure Elixir implementation.
+  This delegates to DialogStatem which tracks all active dialog processes
+  through the Dialog.Supervisor.
 
   ## Returns
 
-  - The number of active dialogs
+  The number of active dialog processes currently running.
+
+  ## Examples
+
+      iex> ParrotSip.Dialog.count()
+      0
   """
   @spec count() :: non_neg_integer()
   def count() do
@@ -242,12 +303,29 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Creates a dialog ID with explicit components.
+  Creates a dialog ID map with explicit components.
+
+  Per RFC 3261 Section 12, a dialog is identified by the Call-ID, local tag,
+  and remote tag. This function creates a dialog ID structure with these components.
+
+  ## Parameters
+
+  - `call_id`: The Call-ID value from the Call-ID header
+  - `local_tag`: The tag parameter from the local endpoint's From/To header
+  - `remote_tag`: The tag parameter from the remote endpoint's From/To header (may be nil for early dialogs)
+  - `direction`: Either `:uac` (User Agent Client) or `:uas` (User Agent Server)
+
+  ## Returns
+
+  A map with keys: `:call_id`, `:local_tag`, `:remote_tag`, `:direction`
 
   ## Examples
 
       iex> ParrotSip.Dialog.new("abc@example.com", "123", "456", :uac)
       %{call_id: "abc@example.com", local_tag: "123", remote_tag: "456", direction: :uac}
+
+      iex> ParrotSip.Dialog.new("xyz@example.com", "789")
+      %{call_id: "xyz@example.com", local_tag: "789", remote_tag: nil, direction: :uac}
   """
   @spec new(String.t(), String.t(), String.t() | nil, :uac | :uas) :: map()
   def new(call_id, local_tag, remote_tag \\ nil, direction \\ :uac) do
@@ -270,26 +348,57 @@ defmodule ParrotSip.Dialog do
       %{call_id: "abc", local_tag: "456", remote_tag: "123", direction: :uas}
   """
   @spec peer_dialog_id(map()) :: map()
-  def peer_dialog_id(%{direction: direction} = dialog_id) do
-    peer_direction = if direction == :uac, do: :uas, else: :uac
-
+  def peer_dialog_id(%{direction: :uac} = dialog_id) do
     %{
       call_id: dialog_id.call_id,
       local_tag: dialog_id.remote_tag,
       remote_tag: dialog_id.local_tag,
-      direction: peer_direction
+      direction: :uas
+    }
+  end
+
+  def peer_dialog_id(%{direction: :uas} = dialog_id) do
+    %{
+      call_id: dialog_id.call_id,
+      local_tag: dialog_id.remote_tag,
+      remote_tag: dialog_id.local_tag,
+      direction: :uac
     }
   end
 
   @doc """
   Compares two dialog IDs to determine if they match.
-  Two dialog IDs match if they have the same call-id and tags.
+
+  Per RFC 3261 Section 12, two dialog IDs match if they have the same Call-ID
+  and the same tag pairs (allowing for swapped local/remote to handle peer perspective).
+
+  ## RFC 3261 Section 12.1 - Dialog Identification
+
+  A dialog is identified by Call-ID, local tag, and remote tag. Two dialog IDs
+  represent the same dialog if:
+  - They have the same Call-ID
+  - Their tags match in either direction (local=local AND remote=remote)
+    OR (local=remote AND remote=local for peer perspective)
+
+  ## Parameters
+
+  - `dialog_id1`: First dialog ID map
+  - `dialog_id2`: Second dialog ID map
+
+  ## Returns
+
+  `true` if the dialog IDs match, `false` otherwise
 
   ## Examples
 
       iex> dialog_id1 = %{call_id: "abc", local_tag: "123", remote_tag: "456"}
       iex> dialog_id2 = %{call_id: "abc", local_tag: "123", remote_tag: "456"}
       iex> ParrotSip.Dialog.match?(dialog_id1, dialog_id2)
+      true
+
+      iex> uac_id = %{call_id: "xyz", local_tag: "111", remote_tag: "222"}
+      iex> uas_id = %{call_id: "xyz", local_tag: "222", remote_tag: "111"}
+      iex> ParrotSip.Dialog.match?(uac_id, uas_id)
       true
   """
   @spec match?(map(), map()) :: boolean()
@@ -341,50 +450,56 @@ defmodule ParrotSip.Dialog do
       %{call_id: "abc@example.com", local_tag: "123", remote_tag: nil, direction: :uas}
   """
   @spec from_message(Message.t()) :: map()
-  def from_message(%Message{type: type, direction: flow_direction} = message) do
-    call_id = message.call_id
-    from_header = message.from
-    to_header = message.to
+  # Outgoing request - UAC perspective
+  def from_message(%Message{type: :request, direction: :outgoing} = message) do
+    from_tag = if message.from, do: From.tag(message.from), else: nil
+    to_tag = if message.to, do: To.tag(message.to), else: nil
 
-    from_tag = if from_header, do: From.tag(from_header), else: nil
-    to_tag = if to_header, do: To.tag(to_header), else: nil
+    %{
+      call_id: message.call_id,
+      local_tag: from_tag,
+      remote_tag: to_tag,
+      direction: :uac
+    }
+  end
 
-    # Determine dialog direction based on message type and flow direction
-    dialog_direction =
-      case {type, flow_direction} do
-        {:request, :outgoing} -> :uac
-        {:request, :incoming} -> :uas
-        {:response, :outgoing} -> :uac
-        {:response, :incoming} -> :uas
-        _ -> :uac
-      end
+  # Incoming request - UAS perspective
+  def from_message(%Message{type: :request, direction: :incoming} = message) do
+    from_tag = if message.from, do: From.tag(message.from), else: nil
+    to_tag = if message.to, do: To.tag(message.to), else: nil
 
-    case type do
-      :request ->
-        %{
-          call_id: call_id,
-          local_tag: from_tag,
-          remote_tag: to_tag,
-          direction: dialog_direction
-        }
+    %{
+      call_id: message.call_id,
+      local_tag: from_tag,
+      remote_tag: to_tag,
+      direction: :uas
+    }
+  end
 
-      :response ->
-        %{
-          call_id: call_id,
-          local_tag: to_tag,
-          remote_tag: from_tag,
-          direction: dialog_direction
-        }
+  # Response message (outgoing or incoming) - tags are swapped
+  def from_message(%Message{type: :response} = message) do
+    from_tag = if message.from, do: From.tag(message.from), else: nil
+    to_tag = if message.to, do: To.tag(message.to), else: nil
 
-      _ ->
-        # Default to request behavior for messages with nil or unknown type
-        %{
-          call_id: call_id,
-          local_tag: from_tag,
-          remote_tag: to_tag,
-          direction: dialog_direction
-        }
-    end
+    %{
+      call_id: message.call_id,
+      local_tag: to_tag,
+      remote_tag: from_tag,
+      direction: :uas
+    }
+  end
+
+  # Default for messages with nil or unknown type
+  def from_message(%Message{} = message) do
+    from_tag = if message.from, do: From.tag(message.from), else: nil
+    to_tag = if message.to, do: To.tag(message.to), else: nil
+
+    %{
+      call_id: message.call_id,
+      local_tag: from_tag,
+      remote_tag: to_tag,
+      direction: :uac
+    }
   end
 
   @doc """
@@ -441,19 +556,38 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Creates a dialog from the UAS perspective.
+  Creates a dialog from the UAS (User Agent Server) perspective.
 
-  Takes a SIP request and response and creates a dialog from the
-  server perspective.
+  Implements RFC 3261 Section 12.1.1 - UAS Behavior for dialog creation.
+
+  ## RFC 3261 Section 12.1.1 - UAS Behavior
+
+  When a UAS responds to a request with a response that establishes a dialog:
+  
+  1. Dialog ID is constructed from Call-ID, local tag (To tag), and remote tag (From tag)
+  2. Local URI is from the To header
+  3. Remote URI is from the From header
+  4. Remote target is from the Contact header of the request
+  5. Route set is constructed from Record-Route headers (in reverse order)
+  6. Local sequence number starts at 0
+  7. Remote sequence number is from the CSeq of the request
 
   ## Parameters
 
-  - `request`: The SIP request that started the dialog (typically INVITE)
-  - `response`: The SIP response that established the dialog
+  - `request`: The SIP request that started the dialog (typically INVITE per RFC 3261 Section 13)
+  - `response`: The SIP response that established the dialog (must have To tag)
 
   ## Returns
 
-  - `{:ok, dialog}`: A new dialog struct
+  - `{:ok, dialog}`: A new Dialog struct in :early or :confirmed state
+
+  ## Examples
+
+      iex> request = %ParrotSip.Message{method: :invite, call_id: "call123", ...}
+      iex> response = %ParrotSip.Message{status_code: 200, ...}
+      iex> {:ok, dialog} = ParrotSip.Dialog.uas_create(request, response)
+      iex> dialog.state
+      :confirmed
   """
   @spec uas_create(Message.t(), Message.t()) :: {:ok, t()}
   def uas_create(request, response) do
@@ -512,19 +646,39 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Creates a dialog from the UAC perspective.
+  Creates a dialog from the UAC (User Agent Client) perspective.
 
-  Takes a SIP request and response and creates a dialog from the
-  client perspective.
+  Implements RFC 3261 Section 12.1.2 - UAC Behavior for dialog creation.
+
+  ## RFC 3261 Section 12.1.2 - UAC Behavior
+
+  When a UAC receives a response that establishes a dialog:
+  
+  1. Dialog ID is constructed from Call-ID, local tag (From tag), and remote tag (To tag)
+  2. Local URI is from the From header
+  3. Remote URI is from the To header
+  4. Remote target is from the Contact header of the response
+  5. Route set is from Record-Route headers in the response
+  6. Local sequence number is from the CSeq of the request
+  7. Remote sequence number starts at 0
+  8. Secure flag is set if Request-URI used SIPS
 
   ## Parameters
 
-  - `request`: The SIP request that started the dialog (typically INVITE)
-  - `response`: The SIP response that established the dialog
+  - `request`: The SIP request that started the dialog (typically INVITE per RFC 3261 Section 13)
+  - `response`: The SIP response (1xx or 2xx) that established the dialog
 
   ## Returns
 
-  - `{:ok, dialog}`: A new dialog struct
+  - `{:ok, dialog}`: A new Dialog struct in :early (1xx) or :confirmed (2xx) state
+
+  ## Examples
+
+      iex> request = %ParrotSip.Message{method: :invite, call_id: "call123", ...}
+      iex> response = %ParrotSip.Message{status_code: 200, ...}
+      iex> {:ok, dialog} = ParrotSip.Dialog.uac_create(request, response)
+      iex> dialog.state
+      :confirmed
   """
   @spec uac_create(Message.t(), Message.t()) :: {:ok, t()}
   def uac_create(request, response) do
@@ -612,16 +766,33 @@ defmodule ParrotSip.Dialog do
   @doc """
   Processes an in-dialog request from the UAS perspective.
 
-  Updates the dialog state based on the received request.
+  Implements RFC 3261 Section 12.2.2 - Processing In-Dialog Requests as UAS.
+
+  ## RFC 3261 Section 12.2.2 - UAS Processing of In-Dialog Requests
+
+  When a UAS receives an in-dialog request:
+  
+  1. Update the remote sequence number from the CSeq header
+  2. Check for target refresh requests (INVITE, UPDATE) that may update remote target
+  3. Process the request method (BYE terminates the dialog)
+  4. Return the updated dialog state
 
   ## Parameters
 
-  - `request`: The SIP request received in the dialog
-  - `dialog`: The current dialog state
+  - `request`: The SIP request received within the dialog
+  - `dialog`: The current Dialog struct
 
   ## Returns
 
-  - `{:ok, updated_dialog}`: The updated dialog
+  - `{:ok, updated_dialog}`: The updated Dialog struct
+
+  ## Examples
+
+      iex> dialog = %ParrotSip.Dialog{state: :confirmed, remote_seq: 100, ...}
+      iex> bye = %ParrotSip.Message{method: :bye, cseq: %CSeq{number: 101, method: :bye}}
+      iex> {:ok, updated} = ParrotSip.Dialog.uas_process(bye, dialog)
+      iex> updated.state
+      :terminated
   """
   @spec uas_process(Message.t(), t()) :: {:ok, t()}
   def uas_process(request, dialog) do
@@ -640,16 +811,37 @@ defmodule ParrotSip.Dialog do
   @doc """
   Creates an in-dialog request from the UAC perspective.
 
-  Creates a new request within an existing dialog.
+  Implements RFC 3261 Section 12.2.1.1 - Generating In-Dialog Requests.
+
+  ## RFC 3261 Section 12.2.1.1 - Generating the Request
+
+  To construct an in-dialog request:
+  
+  1. Request-URI is set to the remote target URI (from Contact)
+  2. Route header is set from the dialog's route set
+  3. From header URI and tag are from the dialog's local URI and local tag
+  4. To header URI and tag are from the dialog's remote URI and remote tag
+  5. Call-ID is the dialog's Call-ID
+  6. CSeq number is incremented from the dialog's local sequence number
+  7. CSeq method is the request method
 
   ## Parameters
 
-  - `method`: The SIP method for the request
-  - `dialog`: The current dialog state
+  - `method`: The SIP method atom (e.g., :bye, :info, :update)
+  - `dialog`: The current Dialog struct
 
   ## Returns
 
-  - `{:ok, request, updated_dialog}`: The new request and updated dialog
+  - `{:ok, request, updated_dialog}`: New Message struct and updated Dialog with incremented local_seq
+
+  ## Examples
+
+      iex> dialog = %ParrotSip.Dialog{local_seq: 1, call_id: "abc", ...}
+      iex> {:ok, bye_msg, updated_dialog} = ParrotSip.Dialog.uac_request(:bye, dialog)
+      iex> bye_msg.method
+      :bye
+      iex> updated_dialog.local_seq
+      2
   """
   @spec uac_request(atom(), t()) :: {:ok, Message.t(), t()}
   def uac_request(method, dialog) do
@@ -748,13 +940,26 @@ defmodule ParrotSip.Dialog do
   @doc """
   Checks if a dialog is in the early state.
 
+  Per RFC 3261 Section 12, an early dialog is created by a provisional (1xx) response
+  to an INVITE request. Early dialogs transition to confirmed upon receiving a 2xx response.
+
   ## Parameters
 
-  - `dialog`: The dialog to check
+  - `dialog`: The Dialog struct to check
 
   ## Returns
 
-  - `true` if the dialog is in the early state, `false` otherwise
+  - `true` if the dialog is in the :early state, `false` otherwise
+
+  ## Examples
+
+      iex> dialog = %ParrotSip.Dialog{state: :early}
+      iex> ParrotSip.Dialog.is_early?(dialog)
+      true
+
+      iex> dialog = %ParrotSip.Dialog{state: :confirmed}
+      iex> ParrotSip.Dialog.is_early?(dialog)
+      false
   """
   @spec is_early?(t()) :: boolean()
   def is_early?(dialog) do
@@ -778,6 +983,20 @@ defmodule ParrotSip.Dialog do
   end
 
   # Private helper functions
+
+  # Start dialog process and register in registry
+  defp start_dialog_process(dialog, dialog_id) do
+    case ParrotSip.Dialog.Supervisor.start_child(dialog) do
+      {:ok, _pid} ->
+        Registry.register(ParrotSip.Registry, {:dialog, dialog_id}, dialog)
+        {:ok, dialog}
+
+      {:error, _reason} ->
+        # If start fails, just return the dialog structure
+        # This allows tests to pass without full dialog statem infrastructure
+        {:ok, dialog}
+    end
+  end
 
   # Extract route set from a response
   defp extract_route_set(_response) do

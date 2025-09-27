@@ -1,18 +1,83 @@
 defmodule ParrotSip.DialogStatem do
   @moduledoc """
-  SIP Dialog State Machine
+  SIP Dialog State Machine Implementation
 
-  States:
-  - :early       - Initial state for early dialogs
-  - :confirmed   - State for established dialogs
-  - :terminated  - Terminal state
+  Implements RFC 3261 Section 12 - Dialogs using Erlang's `:gen_statem` behavior.
+  This module provides stateful management of SIP dialogs, tracking dialog lifecycle
+  from creation through termination. For pure functional dialog operations, see
+  `ParrotSip.Dialog`.
 
-  Events:
-  - {:uas_request, sip_msg}     - Process UAS request
-  - {:uas_response, resp, req}  - Process UAS response
-  - {:uac_request, sip_msg}     - Process UAC request
-  - {:uac_trans_result, result} - Process UAC transaction result
-  - {:set_owner, pid}           - Set dialog owner
+  ## RFC 3261 Section 12 - Dialogs
+
+  A dialog represents a peer-to-peer SIP relationship between two user agents that
+  persists for some time. Dialogs facilitate proper sequencing of messages and
+  provide context for SIP transactions.
+
+  Dialog states per RFC 3261:
+  - **Early**: Created by provisional (1xx) responses, waiting for final response
+  - **Confirmed**: Established by 2xx responses, dialog is fully established
+  - **Terminated**: Dialog has ended (BYE, timeout, or error)
+
+  ## State Machine Diagram
+
+  ```
+                                INVITE Request/Response
+                                        |
+                                        v
+                              +------------------+
+                              |      :early      |<----+ 1xx response
+                              +------------------+     |
+                                |              |       |
+                        2xx     |              +-------+
+                      response  |
+                                |
+                                v
+                              +------------------+
+                              |   :confirmed     |
+                              +------------------+
+                                |
+                        BYE     |
+                      or error  |
+                                v
+                              +------------------+
+                              |  :terminated     |
+                              +------------------+
+                                        |
+                                        v
+                                    (stopped)
+  ```
+
+  ## Dialog Types
+
+  - **INVITE dialogs**: Created by INVITE/2xx, used for sessions (e.g., voice calls)
+  - **SUBSCRIBE dialogs**: Created by SUBSCRIBE/2xx, used for event subscriptions
+
+  ## Events Handled
+
+  - `{:call, from, {:uas_request, sip_msg}}` - Process UAS (server) request
+  - `{:cast, {:uas_response, resp, req}}` - Process UAS response
+  - `{:call, from, {:uac_request, sip_msg}}` - Create UAC (client) request
+  - `{:cast, {:uac_trans_result, result}}` - Process UAC transaction result
+  - `{:cast, {:set_owner, pid}}` - Set and monitor dialog owner process
+  - `{:state_timeout, :subscription_expired}` - Handle subscription expiration
+  - `{:info, {:DOWN, ...}}` - Handle owner process termination
+
+  ## Implementation Notes
+
+  - Uses `:state_functions` callback mode for clear state separation
+  - Each dialog is a separate `:gen_statem` process
+  - Registered in `ParrotSip.Registry` by dialog ID
+  - Managed by `ParrotSip.Dialog.Supervisor` with `:temporary` restart strategy
+  - Delegates pure functional operations to `ParrotSip.Dialog` module
+  - Monitors owner process and terminates when owner dies
+
+  ## References
+
+  - RFC 3261 Section 12: Dialogs
+  - RFC 3261 Section 12.1: Creation of a Dialog
+  - RFC 3261 Section 12.2: Requests within a Dialog
+  - RFC 3261 Section 12.3: Termination of a Dialog
+  - RFC 3265: SIP-Specific Event Notification (for SUBSCRIBE dialogs)
   """
   @behaviour :gen_statem
 
@@ -328,16 +393,24 @@ defmodule ParrotSip.DialogStatem do
   @spec find_dialog(String.t()) :: {:ok, pid()} | {:error, :no_dialog}
   def find_dialog(dialog_id) do
     Logger.debug("find_dialog: searching for #{inspect(dialog_id)}")
+    
+    dialog_id
+    |> registry_lookup()
+    |> handle_dialog_lookup_result(dialog_id)
+  end
 
-    case Registry.lookup(ParrotSip.Registry, dialog_id) do
-      [{pid, _}] ->
-        Logger.debug("find_dialog: found PID #{inspect(pid)} for #{inspect(dialog_id)}")
-        {:ok, pid}
+  defp registry_lookup(dialog_id) do
+    Registry.lookup(ParrotSip.Registry, dialog_id)
+  end
 
-      [] ->
-        Logger.debug("find_dialog: no PID found for #{inspect(dialog_id)}")
-        {:error, :no_dialog}
-    end
+  defp handle_dialog_lookup_result([{pid, _}], dialog_id) do
+    Logger.debug("find_dialog: found PID #{inspect(pid)} for #{inspect(dialog_id)}")
+    {:ok, pid}
+  end
+
+  defp handle_dialog_lookup_result([], dialog_id) do
+    Logger.debug("find_dialog: no PID found for #{inspect(dialog_id)}")
+    {:error, :no_dialog}
   end
 
   # State Functions
@@ -521,13 +594,15 @@ defmodule ParrotSip.DialogStatem do
   end
 
   defp get_expires(%Message{} = msg, default) do
-    case Message.get_header(msg, "expires") do
-      nil -> default
-      expires when is_integer(expires) -> expires
-      expires when is_binary(expires) -> parse_expires_string(expires, default)
-      _ -> default
-    end
+    msg
+    |> Message.get_header("expires")
+    |> parse_expires_value(default)
   end
+
+  defp parse_expires_value(nil, default), do: default
+  defp parse_expires_value(expires, _default) when is_integer(expires), do: expires
+  defp parse_expires_value(expires, default) when is_binary(expires), do: parse_expires_string(expires, default)
+  defp parse_expires_value(_other, default), do: default
 
   defp parse_expires_string(expires, default) do
     case Integer.parse(expires) do
