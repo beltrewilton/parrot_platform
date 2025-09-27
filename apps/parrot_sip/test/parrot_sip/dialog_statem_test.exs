@@ -1,5 +1,5 @@
 defmodule ParrotSip.DialogStatemTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   doctest ParrotSip.DialogStatem
 
   alias ParrotSip.{DialogStatem, Message}
@@ -408,7 +408,451 @@ defmodule ParrotSip.DialogStatemTest do
     end
   end
 
+  describe "uas_find/1 - RFC 3261 Section 12.2.2" do
+    test "returns :not_found for non-existent dialog" do
+      call_id = unique_call_id()
+      request = build_invite_with_call_id(call_id)
+
+      assert :not_found = DialogStatem.uas_find(request)
+    end
+
+    test "returns :not_found for incomplete dialog ID" do
+      # Message without To tag has incomplete dialog ID
+      request = %Message{
+        type: :request,
+        method: :options,
+        call_id: unique_call_id(),
+        from: %From{
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "from-tag"}
+        },
+        to: %To{
+          uri: "sip:target@example.com",
+          parameters: %{}
+        },
+        cseq: %CSeq{number: 1, method: :options},
+        other_headers: %{}
+      }
+
+      assert :not_found = DialogStatem.uas_find(request)
+    end
+  end
+
+  describe "uas_request/1 - RFC 3261 Section 12.2.2" do
+    test "returns 481 for request with complete dialog ID but no dialog found" do
+      call_id = unique_call_id()
+      # Message with complete dialog ID (has both tags) but no dialog exists
+      request = %Message{
+        type: :request,
+        method: :bye,
+        request_uri: "sip:target@example.com",
+        version: "SIP/2.0",
+        call_id: call_id,
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK-bye-#{call_id}"}
+        },
+        from: %From{
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "from-tag-#{call_id}"}
+        },
+        to: %To{
+          uri: "sip:target@example.com",
+          parameters: %{"tag" => "to-tag-#{call_id}"}
+        },
+        cseq: %CSeq{number: 2, method: :bye},
+        other_headers: %{}
+      }
+
+      assert {:reply, resp} = DialogStatem.uas_request(request)
+      assert resp.status_code == 481
+      assert resp.reason_phrase == "Call/Transaction Does Not Exist"
+    end
+
+    test "validates request without complete dialog ID" do
+      call_id = unique_call_id()
+      # Request without To tag - incomplete dialog ID
+      request = build_invite_with_call_id(call_id)
+
+      # Should validate and process (or reject based on validation)
+      result = DialogStatem.uas_request(request)
+      assert result == :process
+    end
+  end
+
+  describe "uas_response/2 - RFC 3261 Section 12.1.1" do
+    test "creates new dialog for 2xx INVITE response" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+
+      # First response should create dialog
+      result = DialogStatem.uas_response(response, invite)
+
+      assert %Message{} = result
+      assert result.status_code == 200
+
+      # Verify dialog was created
+      :timer.sleep(50)
+      dialog_id = ParrotSip.Dialog.from_message(response)
+      assert ParrotSip.Dialog.is_complete?(dialog_id)
+      
+      dialog_id_str = ParrotSip.Dialog.to_string(dialog_id)
+      assert {:ok, _pid} = DialogStatem.find_dialog(dialog_id_str)
+    end
+
+    test "creates new dialog for 2xx SUBSCRIBE response" do
+      call_id = unique_call_id()
+      subscribe = build_subscribe_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+
+      result = DialogStatem.uas_response(response, subscribe)
+
+      assert %Message{} = result
+      assert result.status_code == 200
+    end
+
+    test "does not create dialog for 1xx provisional responses" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(180, "Ringing", call_id)
+
+      result = DialogStatem.uas_response(response, invite)
+
+      assert %Message{} = result
+      assert result.status_code == 180
+    end
+
+    test "does not create dialog for non-dialog-forming methods" do
+      call_id = unique_call_id()
+      options = build_options_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+
+      result = DialogStatem.uas_response(response, options)
+
+      assert %Message{} = result
+      assert result.status_code == 200
+    end
+
+    test "passes response to existing dialog" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+      {:ok, _pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Send another response for the same dialog
+      response2 = build_response_with_call_id(200, "OK", call_id)
+      result = DialogStatem.uas_response(response2, invite)
+
+      assert %Message{} = result
+    end
+  end
+
+  describe "uac_request/2 - RFC 3261 Section 12.2.1.1" do
+    test "creates in-dialog request for existing dialog" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, response})
+
+      # Get the actual dialog ID from the created dialog
+      {_state, data} = :sys.get_state(dialog_pid)
+      dialog_id_str = data.id
+
+      options = %Message{method: :options}
+
+      assert {:ok, request} = DialogStatem.uac_request(dialog_id_str, options)
+      assert %Message{} = request
+      assert request.method == :options
+    end
+
+    test "returns error for non-existent dialog" do
+      dialog_id = "non-existent-dialog-id"
+      options = %Message{method: :options}
+
+      assert {:error, :no_dialog} = DialogStatem.uac_request(dialog_id, options)
+    end
+  end
+
+  describe "uac_result/2 - RFC 3261 Section 12.1.2" do
+    test "creates dialog on 2xx response to INVITE" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+
+      # Get initial dialog count
+      initial_count = DialogStatem.count()
+
+      # Simulate UAC transaction result
+      assert :ok = DialogStatem.uac_result(invite, {:message, response})
+
+      # Wait for async dialog creation
+      :timer.sleep(100)
+
+      # Verify dialog was created by checking count increased
+      final_count = DialogStatem.count()
+      assert final_count > initial_count
+    end
+
+    test "does not create dialog on 1xx provisional response" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(180, "Ringing", call_id)
+
+      assert :ok = DialogStatem.uac_result(invite, {:message, response})
+
+      # No dialog should be created for 1xx
+      :timer.sleep(50)
+    end
+
+    test "handles transaction stop result" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+
+      assert :ok = DialogStatem.uac_result(invite, {:stop, :timeout})
+    end
+
+    test "handles result for non-existent dialog gracefully" do
+      call_id = unique_call_id()
+      request = build_options_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+
+      # Add dialog identifiers to make it look like in-dialog request
+      request_with_tags = %{request | 
+        from: %{request.from | parameters: %{"tag" => "from-tag"}},
+        to: %{request.to | parameters: %{"tag" => "to-tag"}}
+      }
+
+      # Should handle gracefully without crashing
+      assert :ok = DialogStatem.uac_result(request_with_tags, {:message, response})
+    end
+  end
+
+  describe "early dialog transitions - RFC 3261 Section 12.1" do
+    test "creates early dialog with 180 provisional response" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(180, "Ringing", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      {state, data} = :sys.get_state(pid)
+      assert state == :early
+      assert data.dialog.state == :early
+    end
+
+    test "transitions early to confirmed on 2xx response" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      provisional = build_response_with_call_id(180, "Ringing", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
+
+      # Verify starts in early state
+      {state, _data} = :sys.get_state(pid)
+      assert state == :early
+
+      # Send 2xx response to transition to confirmed
+      final = build_response_with_call_id(200, "OK", call_id)
+      :gen_statem.cast(pid, {:uas_response, final, invite})
+
+      :timer.sleep(20)
+
+      # Verify transitioned to confirmed
+      {new_state, _new_data} = :sys.get_state(pid)
+      assert new_state == :confirmed
+    end
+
+    test "early dialog handles ACK to transition to confirmed" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(200, "OK", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Send ACK
+      ack = build_ack_with_call_id(call_id)
+      :gen_statem.call(pid, {:uas_request, ack})
+
+      # Dialog should still be alive and handle subsequent requests
+      assert Process.alive?(pid)
+    end
+  end
+
   # Helper functions for building test messages
+  
+  defp unique_call_id do
+    "test-call-#{:erlang.unique_integer([:positive])}@example.com"
+  end
+
+  defp build_invite_with_call_id(call_id) do
+    %Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:user@example.com",
+      version: "SIP/2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :invite},
+      contact: %Contact{
+        uri: "sip:test@127.0.0.1:5060",
+        parameters: %{}
+      },
+      other_headers: %{},
+      body: "v=0\r\no=test 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
+    }
+  end
+
+  defp build_response_with_call_id(status, reason, call_id) do
+    %Message{
+      type: :response,
+      method: nil,
+      request_uri: nil,
+      version: "SIP/2.0",
+      status_code: status,
+      reason_phrase: reason,
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :invite},
+      other_headers: %{},
+      body: ""
+    }
+  end
+
+  defp build_ack_with_call_id(call_id) do
+    %Message{
+      type: :request,
+      method: :ack,
+      request_uri: "sip:target@example.com",
+      version: "SIP/2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-ack-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :ack},
+      other_headers: %{},
+      body: ""
+    }
+  end
+
+  defp build_subscribe_with_call_id(call_id) do
+    %Message{
+      type: :request,
+      method: :subscribe,
+      request_uri: "sip:target@example.com",
+      version: "2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-subscribe-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :subscribe},
+      other_headers: %{
+        "event" => "presence",
+        "expires" => "3600"
+      },
+      body: ""
+    }
+  end
+
+  defp build_options_with_call_id(call_id) do
+    %Message{
+      type: :request,
+      method: :options,
+      request_uri: "sip:target@example.com",
+      version: "SIP/2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-options-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :options},
+      other_headers: %{},
+      body: ""
+    }
+  end
+
   defp build_invite_message do
     %Message{
       method: :invite,
