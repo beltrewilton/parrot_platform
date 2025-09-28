@@ -1945,4 +1945,155 @@ defmodule ParrotSip.DialogProcessTest do
       end
     end
   end
+
+  describe "validation edge cases" do
+    test "uas_create with from header missing parameters map" do
+      # Test line 627: catch-all for invalid_headers
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %{uri: "sip:alice@atlanta.com"},  # Missing parameters field
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com"
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
+      }
+      
+      result = Dialog.uas_create(request, response)
+      assert {:error, _reason} = result
+    end
+
+    test "uac_create with response to header missing parameters map" do
+      # Test line 731 in uac validation: catch-all for invalid_headers
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com"
+      }
+      
+      response = %Message{
+        status_code: 200,
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
+        to: %{uri: "sip:bob@biloxi.com"},  # Missing parameters field  
+        contact: %Contact{uri: "sip:bob@192.168.1.1:5060", parameters: %{}}
+      }
+      
+      result = Dialog.uac_create(request, response)
+      assert {:error, _reason} = result
+    end
+
+    test "extract_uri handles Uri struct" do
+      # Test line 1084: extract_uri with ParrotSip.Uri struct
+      uri_struct = %ParrotSip.Uri{
+        scheme: "sip",
+        user: "alice",
+        host: "atlanta.com",
+        port: 5060,
+        parameters: %{},
+        headers: %{}
+      }
+      
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{
+          uri: uri_struct,
+          parameters: %{"tag" => "remote-tag"}
+        },
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com",
+        contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
+      }
+      
+      # Should handle Uri struct and convert to string
+      result = Dialog.uas_create(request, response)
+      assert {:ok, dialog} = result
+      assert is_binary(dialog.remote_uri) or dialog.remote_uri == ""
+    end
+
+    test "extract_uri handles nil and unknown types" do
+      # Test lines 1085-1086: extract_uri fallbacks
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: nil, parameters: %{"tag" => "remote-tag"}},  # nil URI
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com",
+        contact: nil
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
+      }
+      
+      # Should handle nil URI by converting to empty string
+      result = Dialog.uas_create(request, response)
+      assert {:ok, dialog} = result
+      assert dialog.remote_uri == ""
+    end
+
+    test "extract_contact_uri fallback when contact is nil" do
+      # Test line 1063: extract_contact_uri with nil
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "remote-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com",
+        contact: nil  # No contact header
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
+      }
+      
+      # Should use fallback when contact is nil
+      result = Dialog.uas_create(request, response)
+      assert {:ok, dialog} = result
+      # remote_target should fallback to remote_uri
+      assert dialog.remote_target != ""
+    end
+
+    test "extract_remote_target with non-Contact fallback" do
+      # Test lines 1092-1093: extract_remote_target fallbacks
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com"
+      }
+      
+      response = %Message{
+        status_code: 200,
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "remote-tag"}},
+        contact: :invalid_contact_type  # Invalid type, not Contact struct or nil
+      }
+      
+      # Should use fallback when contact is invalid type
+      result = Dialog.uac_create(request, response)
+      assert {:ok, dialog} = result
+      # Should have used fallback uri
+      assert dialog.remote_target != ""
+    end
+  end
 end
