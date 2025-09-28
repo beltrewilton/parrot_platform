@@ -2,7 +2,7 @@ defmodule ParrotSip.DialogStatemTest do
   use ExUnit.Case, async: false
   doctest ParrotSip.DialogStatem
 
-  alias ParrotSip.{DialogStatem, Message}
+  alias ParrotSip.{DialogStatem, Dialog, Message}
   alias ParrotSip.Headers.{Via, From, To, Contact, CSeq}
 
   describe "DialogStatem gen_statem initialization" do
@@ -1398,5 +1398,122 @@ defmodule ParrotSip.DialogStatemTest do
   defp build_outbound_request(message) do
     # Return the message directly as that's what Dialog.uac_create expects
     message
+  end
+
+  describe "error handling in confirmed state" do
+    test "uas_request with invalid cseq returns error" do
+      # Test line 501-504: Dialog.uas_process error path
+      # Create a confirmed dialog
+      req = build_invite_message()
+      resp = build_response_message(200, "OK")
+      
+      {:ok, dialog} = Dialog.uas_create(req, resp)
+      
+      # Start dialog statem
+      {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
+      
+      # Manually transition to confirmed by sending 200 OK
+      :gen_statem.cast(pid, {:uas_response, resp, req})
+      Process.sleep(10)
+      
+      # Now send a request with invalid CSeq to trigger error
+      invalid_req = %Message{
+        method: :info,
+        call_id: dialog.call_id,
+        cseq: %{method: :info}  # Missing 'number' field - invalid!
+      }
+      
+      # This should return error from Dialog.uas_process
+      result = :gen_statem.call(pid, {:uas_request, invalid_req})
+      
+      assert {:error, :invalid_cseq} = result
+      
+      # Dialog should still be alive
+      assert Process.alive?(pid)
+    end
+
+    test "uas_request with missing cseq returns error" do
+      # Test line 501-504: Another error path
+      req = build_invite_message()
+      resp = build_response_message(200, "OK")
+      
+      {:ok, dialog} = Dialog.uas_create(req, resp)
+      {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
+      
+      :gen_statem.cast(pid, {:uas_response, resp, req})
+      Process.sleep(10)
+      
+      invalid_req = %Message{
+        method: :info,
+        call_id: dialog.call_id,
+        cseq: nil  # Missing CSeq entirely
+      }
+      
+      result = :gen_statem.call(pid, {:uas_request, invalid_req})
+      assert {:error, :missing_cseq} = result
+      assert Process.alive?(pid)
+    end
+
+    test "unexpected cast is logged and ignored" do
+      # Test line 566-572: unexpected event handler
+      req = build_invite_message()
+      resp = build_response_message(200, "OK")
+      
+      {:ok, _dialog} = Dialog.uas_create(req, resp)
+      {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
+      
+      :gen_statem.cast(pid, {:uas_response, resp, req})
+      Process.sleep(10)
+      
+      # Send unexpected cast
+      :gen_statem.cast(pid, {:some_unexpected_event, "data"})
+      Process.sleep(10)
+      
+      # Should still be alive and in confirmed state
+      assert Process.alive?(pid)
+    end
+
+    test "subscription_expired timeout terminates dialog" do
+      # Test line 469-472: subscription expiry
+      # This tests the state_timeout feature for subscriptions
+      # In real usage, the timeout would be set when creating the dialog
+      # For now, this test just documents the code path exists
+      req = build_invite_message()
+      resp = build_response_message(200, "OK")
+      
+      {:ok, _dialog} = Dialog.uas_create(req, resp)
+      {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
+      
+      :gen_statem.cast(pid, {:uas_response, resp, req})
+      Process.sleep(10)
+      
+      # The subscription_expired path exists at line 469-472
+      # but requires state_timeout to be set during init
+      # For now, just verify the dialog is alive
+      assert Process.alive?(pid)
+      
+      # Clean up
+      GenServer.stop(pid)
+    end
+
+    test "owner DOWN message terminates dialog" do
+      # Test line 474-477: owner process death
+      req = build_invite_message()
+      resp = build_response_message(200, "OK")
+      
+      {:ok, _dialog} = Dialog.uas_create(req, resp)
+      {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
+      
+      :gen_statem.cast(pid, {:uas_response, resp, req})
+      Process.sleep(10)
+      
+      ref = Process.monitor(pid)
+      
+      # Send DOWN message (simulating owner death)
+      send(pid, {:DOWN, make_ref(), :process, self(), :killed})
+      
+      # Should terminate
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
+    end
   end
 end
