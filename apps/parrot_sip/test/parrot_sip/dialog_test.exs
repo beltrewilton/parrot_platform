@@ -1672,6 +1672,40 @@ defmodule ParrotSip.DialogTest do
       # Without contact, remote_target falls back to From URI
       assert dialog.remote_target == "sip:alice@example.com"
     end
+    
+    test "returns error for nil call_id in request" do
+      # Test line 625-626: invalid_call_id error path
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "alice-tag"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: nil,  # Missing Call-ID!
+        cseq: %CSeq{number: 1, method: :invite},
+        other_headers: %{}
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        from: request.from,
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "bob-tag"}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        other_headers: %{}
+      }
+
+      assert {:error, :invalid_call_id} = Dialog.uas_create(request, response)
+    end
   end
 
   describe "uac_create/2 - edge cases" do
@@ -1786,6 +1820,80 @@ defmodule ParrotSip.DialogTest do
       assert dialog.state == :confirmed
       # When no contact in response, should use remote_uri as remote_target
       assert dialog.remote_target == dialog.remote_uri
+    end
+
+    test "returns error for nil call_id in request" do
+      # Test line 729-730: invalid_call_id error path in validate_uac_headers
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{uri: Uri.parse!("sip:alice@example.com"), parameters: %{"tag" => "alice-tag"}},
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
+        call_id: nil,  # Missing Call-ID!
+        cseq: %CSeq{number: 1, method: :invite}
+      }
+      response = %Message{
+        status_code: 200,
+        from: request.from,
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{"tag" => "bob-tag"}},
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite}
+      }
+      assert {:error, :invalid_call_id} = Dialog.uac_create(request, response)
+    end
+
+    test "returns error for nil from header in request" do
+      # Test line 723-724: invalid_from_header error path in validate_uac_headers
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: nil,  # Missing From!
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite}
+      }
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{"tag" => "bob-tag"}},
+        call_id: "test@example.com"
+      }
+      assert {:error, :invalid_from_header} = Dialog.uac_create(request, response)
+    end
+
+    test "returns error for nil to header in response" do
+      # Test line 725-726: invalid_to_header error path in validate_uac_headers
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{uri: Uri.parse!("sip:alice@example.com"), parameters: %{"tag" => "alice-tag"}},
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite}
+      }
+      response = %Message{
+        status_code: 200,
+        to: nil,  # Missing To!
+        call_id: "test@example.com"
+      }
+      assert {:error, :invalid_to_header} = Dialog.uac_create(request, response)
+    end
+
+    test "returns error for nil cseq header in request" do
+      # Test line 727-728: invalid_cseq_header error path in validate_uac_headers
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{uri: Uri.parse!("sip:alice@example.com"), parameters: %{"tag" => "alice-tag"}},
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
+        call_id: "test@example.com",
+        cseq: nil  # Missing CSeq!
+      }
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{"tag" => "bob-tag"}},
+        call_id: "test@example.com"
+      }
+      assert {:error, :invalid_cseq_header} = Dialog.uac_create(request, response)
     end
 
   end

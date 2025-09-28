@@ -108,6 +108,37 @@ defmodule ParrotSip.TransactionTest do
 
       refute invite_id == register_id
     end
+    
+    test "BUG: crashes on message with nil Via header" do
+      # This test exposes a bug: generate_id doesn't handle nil Via gracefully
+      # It raises ArgumentError instead of returning error tuple
+      message = %Message{
+        method: :invite,
+        via: nil,  # Missing Via!
+        cseq: %{method: :invite, number: 1}
+      }
+      
+      # This currently raises ArgumentError from extract_top_via_strict
+      # Should return {:error, :no_via} instead
+      assert_raise ArgumentError, "Request must have a Via header", fn ->
+        Transaction.generate_id(message)
+      end
+    end
+    
+    test "BUG: crashes on message with invalid Via header (string instead of struct)" do
+      # Another bug case: Via is present but not a valid struct
+      message = %Message{
+        method: :invite,
+        via: "invalid-via-string",  # Invalid Via type!
+        cseq: %{method: :invite, number: 1}
+      }
+      
+      # This currently raises ArgumentError
+      # Should handle gracefully
+      assert_raise ArgumentError, "Request must have a Via header", fn ->
+        Transaction.generate_id(message)
+      end
+    end
   end
 
   describe "generate_transaction_id/3" do
@@ -636,6 +667,18 @@ defmodule ParrotSip.TransactionTest do
   end
 
   # ============================================================================
+  describe "next_state/2 - non_invite_server proceeding" do
+    test "stays in proceeding when sending another provisional response" do
+      # Test line 1119: non_invite_server in proceeding sends provisional
+      transaction = %Transaction{
+        type: :non_invite_server,
+        state: :proceeding
+      }
+      
+      assert {:ok, :proceeding, []} = Transaction.next_state(transaction, {:send_provisional, 183})
+    end
+  end
+
   # Helper Functions
   # ============================================================================
 
