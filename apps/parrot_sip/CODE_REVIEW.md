@@ -325,9 +325,41 @@ Tests use only well-formed SIP messages. No tests for:
 
 ---
 
+### 11. **Timer G Exponential Backoff Not Working** 🐛 RFC COMPLIANCE BUG
+
+**Location**: `transaction_statem.ex:1748`
+
+```elixir
+# Get the current interval (stored timer ref doesn't help, so start with 500ms and double it)
+# In a real implementation, we'd track the interval. For now, use 1000ms (doubled from initial 500ms)
+new_interval = min(1000, 4000)  # ⚠️ ALWAYS 1000!
+timer_ref = Process.send_after(self(), {:event, :g}, new_interval)
+```
+
+**Problem**: `min(1000, 4000)` is always 1000! Timer G is supposed to implement exponential backoff for INVITE server transaction retransmissions per RFC 3261, but it's hardcoded to always use 1000ms.
+
+**RFC 3261 Requirement**: 
+- First firing: 500ms
+- Second firing: 1000ms  
+- Third firing: 2000ms
+- Fourth+ firings: 4000ms (capped)
+
+**Actual Behavior**: Always fires at 1000ms intervals
+
+**Impact**: MEDIUM - RFC 3261 non-compliance, inefficient retransmission behavior
+
+**Fix**: Track the current interval in state and double it each time, capping at 4000ms:
+```elixir
+current_interval = Map.get(state, :timer_g_interval, 500)
+new_interval = min(current_interval * 2, 4000)
+new_state = Map.put(state, :timer_g_interval, new_interval)
+```
+
+---
+
 ## Summary Statistics
 
-- **Critical Bugs Found**: 4
+- **Critical Bugs Found**: 5
 - **Design Issues**: 6
 - **Code Quality Issues**: 3
 - **Coverage Achievement**: Dialog 96.84%, DialogStatem 82.72%

@@ -1634,6 +1634,51 @@ defmodule ParrotSip.TransactionStatemTest do
         assert Process.alive?(pid)
       end
     end
+
+    test "timer G exponential backoff is broken - always uses 1000ms", %{test_id: test_id} do
+      # BUG: Line 1748 has min(1000, 4000) which is always 1000
+      # This should implement exponential backoff but doesn't
+      # RFC 3261 requires: 500ms, 1000ms, 2000ms, 4000ms, 4000ms...
+      
+      request = build_invite(unique_branch("z9hG4bKtimerGbug", test_id))
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      
+      # Send error response to get to completed state with Timer G
+      error_resp = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(error_resp, transaction)
+      assert_state(pid, :completed)
+      
+      # Timer G should be running
+      assert timer_active?(pid, :g)
+      
+      # Get initial timer G
+      initial_ref = get_timer_ref(pid, :g)
+      _initial_time = Process.read_timer(initial_ref)
+      
+      # Wait for Timer G to fire
+      Process.sleep(600)
+      
+      # Should have rescheduled with doubled interval
+      # But BUG: it's always 1000ms instead of exponential
+      new_ref = get_timer_ref(pid, :g)
+      
+      # The timer should exist (proving it was rescheduled)
+      assert new_ref != nil
+      assert new_ref != initial_ref
+      
+      # BUG: This will be ~1000ms, not ~1000-2000ms as it should be
+      # The min(1000, 4000) at line 1748 is broken
+      new_time = Process.read_timer(new_ref)
+      
+      # Expected: ~2000ms for second firing (doubled from 1000ms)
+      # Actual: ~1000ms (always the same due to bug)
+      # This test documents the bug exists
+      assert new_time > 900 and new_time < 1100, 
+        "Timer G should use exponential backoff but is stuck at 1000ms (bug at line 1748)"
+    end
   end
 
 end
