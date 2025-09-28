@@ -895,4 +895,228 @@ defmodule ParrotSip.TransactionTest do
       other_headers: %{}
     }
   end
+
+  describe "matches_request? edge cases" do
+    test "matches_request? returns false when role is not uas" do
+      # Test line 861: fallback for non-UAS role
+      transaction = %Transaction{
+        role: :uac,  # Client role, not server
+        branch: "z9hG4bK123",
+        method: :invite
+      }
+      
+      request = %Message{
+        method: :ack,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK123"}
+        }
+      }
+      
+      assert Transaction.matches_request?(transaction, request) == false
+    end
+
+    test "matches_request? returns false when method doesn't match" do
+      # Test line 861: fallback when methods don't match
+      transaction = %Transaction{
+        role: :uas,
+        branch: "z9hG4bK456",
+        method: :register
+      }
+      
+      request = %Message{
+        method: :invite,  # Different method
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK456"}
+        }
+      }
+      
+      assert Transaction.matches_request?(transaction, request) == false
+    end
+
+    test "matches_request? returns false when branch doesn't match" do
+      # Test line 846/857: branch mismatch
+      transaction = %Transaction{
+        role: :uas,
+        branch: "z9hG4bK789",
+        method: :invite
+      }
+      
+      request = %Message{
+        method: :ack,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bKDIFFERENT"}  # Different branch
+        }
+      }
+      
+      assert Transaction.matches_request?(transaction, request) == false
+    end
+
+    test "matches_request? handles via without branch" do
+      # Test line 846: Via without branch parameter
+      transaction = %Transaction{
+        role: :uas,
+        branch: "z9hG4bK999",
+        method: :invite
+      }
+      
+      request = %Message{
+        method: :ack,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{}  # No branch parameter
+        }
+      }
+      
+      assert Transaction.matches_request?(transaction, request) == false
+    end
+  end
+
+  describe "matches_response? edge cases" do
+    test "matches_response? returns false when role is not uac" do
+      # Test line 767: fallback for non-UAC role
+      transaction = %Transaction{
+        role: :uas,  # Server role, not client
+        branch: "z9hG4bK123",
+        method: :invite
+      }
+      
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK123"}
+        },
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite}
+      }
+      
+      assert Transaction.matches_response?(transaction, response) == false
+    end
+
+    test "matches_response? returns false when cseq method doesn't match" do
+      # Test line 767: fallback when CSeq method doesn't match transaction method
+      transaction = %Transaction{
+        role: :uac,
+        branch: "z9hG4bK456",
+        method: :invite
+      }
+      
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK456"}
+        },
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :register}  # Different method in CSeq
+      }
+      
+      assert Transaction.matches_response?(transaction, response) == false
+    end
+
+    test "matches_response? returns false when branch doesn't match" do
+      # Test line 763: branch mismatch in Via
+      transaction = %Transaction{
+        role: :uac,
+        branch: "z9hG4bK789",
+        method: :invite
+      }
+      
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bKWRONG"}  # Wrong branch
+        },
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite}
+      }
+      
+      assert Transaction.matches_response?(transaction, response) == false
+    end
+
+    test "matches_response? handles via list without matching branch" do
+      # Test line 763: Via as list with no matching branch
+      transaction = %Transaction{
+        role: :uac,
+        branch: "z9hG4bK999",
+        method: :invite
+      }
+      
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        via: [
+          %ParrotSip.Headers.Via{host: "proxy.com", port: 5060, parameters: %{"branch" => "z9hG4bKOTHER"}},
+          %ParrotSip.Headers.Via{host: "test.com", port: 5060, parameters: %{"branch" => "z9hG4bK999"}}
+        ],
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite}
+      }
+      
+      # Only checks top Via (first in list)
+      assert Transaction.matches_response?(transaction, response) == false
+    end
+  end
+
+  describe "extract_branch/1 error paths" do
+    test "extract_branch returns error when via is nil" do
+      # Test line 935: no via header
+      message = %Message{
+        method: :invite,
+        via: nil
+      }
+      
+      assert {:error, :no_via} = Transaction.extract_branch(message)
+    end
+
+    test "extract_branch returns error when via has no branch parameter (single via)" do
+      # Test line 943: via without branch parameter
+      message = %Message{
+        method: :invite,
+        via: %ParrotSip.Headers.Via{
+          host: "test.com",
+          port: 5060,
+          parameters: %{}  # No branch parameter
+        }
+      }
+      
+      assert {:error, :no_branch} = Transaction.extract_branch(message)
+    end
+
+    test "extract_branch returns error when via has no branch parameter (via list)" do
+      # Test line 944: via list without branch parameter
+      message = %Message{
+        method: :invite,
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            parameters: %{}  # No branch parameter
+          }
+        ]
+      }
+      
+      assert {:error, :no_branch} = Transaction.extract_branch(message)
+    end
+
+    test "extract_branch returns error for invalid via type" do
+      # Test line 945: fallback for invalid via
+      message = %Message{
+        method: :invite,
+        via: "invalid-via-string"  # Invalid type
+      }
+      
+      assert {:error, :no_via} = Transaction.extract_branch(message)
+    end
+  end
 end
