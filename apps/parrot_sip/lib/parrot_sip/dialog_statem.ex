@@ -421,9 +421,22 @@ defmodule ParrotSip.DialogStatem do
             :ok
           end
         
-        {:stop, _reason} ->
-          # Transaction stopped, nothing to do
-          :ok
+        {:stop, reason} ->
+          # Transaction stopped (timeout, cancel, etc)
+          # Try to find any early dialogs by branch and terminate them
+          branch = get_branch_from_request(out_req)
+          branch_key = "branch:" <> branch
+          
+          case Registry.lookup(ParrotSip.Registry, branch_key) do
+            [{dialog_pid, _}] ->
+              # Found early dialog for this branch, send stop event
+              Logger.debug("dialog: transaction stopped (#{inspect(reason)}), terminating early dialog")
+              uac_trans_result(dialog_pid, trans_result)
+            
+            [] ->
+              # No early dialog exists, nothing to clean up
+              :ok
+          end
       end
     end
   end

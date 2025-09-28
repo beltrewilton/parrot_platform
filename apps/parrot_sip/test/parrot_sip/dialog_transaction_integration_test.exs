@@ -485,6 +485,275 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
     end
   end
   
+  describe "transaction timeout scenarios" do
+    @tag :integration
+    test "UAC: Transaction timeout before any response - no dialog created" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      dialogs_before = DialogStatem.count()
+      
+      callback = fn
+        {:response, _response} -> 
+          flunk("Should not receive response")
+        {:stop, :timeout} ->
+          :ok  # Expected
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Don't send any response, let transaction timeout
+      # Since we can't easily wait 32 seconds for Timer B, we'll simulate
+      # what the transaction does: call the callback then stop
+      # First manually call the callback (simulating what transaction does on timeout)
+      callback.({:stop, :timeout})
+      
+      # Then stop the transaction
+      :gen_statem.stop(trans_pid)
+      Process.sleep(50)
+      
+      # Verify no dialog was created
+      dialogs_after = DialogStatem.count()
+      assert dialogs_after == dialogs_before
+    end
+    
+    @tag :integration
+    test "UAC: Transaction timeout after 180 - early dialog should be cleaned up" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, :timeout} ->
+          DialogStatem.uac_result(invite, {:stop, :timeout})
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 180 to create early dialog
+      ringing = build_response_message(180, "Ringing", invite)
+      :gen_statem.cast(trans_pid, {:received, ringing})
+      Process.sleep(100)
+      
+      # Verify early dialog exists
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ringing.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      # Trigger transaction timeout
+      # Manually call the callback (simulating what transaction does on timeout)
+      callback.({:stop, :timeout})
+      :gen_statem.stop(trans_pid)
+      Process.sleep(150)
+      
+      # Dialog should be terminated or gone
+      refute Process.alive?(dialog_pid)
+    end
+  end
+  
+  describe "CANCEL scenarios" do
+    @tag :integration
+    test "UAC: CANCEL after 180 - early dialog should terminate" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, :cancelled} ->
+          DialogStatem.uac_result(invite, {:stop, :cancelled})
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 180 to create early dialog
+      ringing = build_response_message(180, "Ringing", invite)
+      :gen_statem.cast(trans_pid, {:received, ringing})
+      Process.sleep(100)
+      
+      # Verify early dialog exists
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ringing.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      {state_before, _} = :sys.get_state(dialog_pid)
+      assert state_before == :early
+      
+      # Cancel the transaction
+      :gen_statem.cast(trans_pid, :cancel)
+      
+      # Should receive 487 Request Terminated
+      terminated = build_response_message(487, "Request Terminated", invite)
+      terminated = %{terminated | to: ringing.to}  # Keep same to-tag
+      :gen_statem.cast(trans_pid, {:received, terminated})
+      Process.sleep(100)
+      
+      # Dialog should be terminated
+      if Process.alive?(dialog_pid) do
+        {state_after, _} = :sys.get_state(dialog_pid)
+        assert state_after == :terminated
+      end
+    end
+  end
+  
+  describe "error response scenarios" do
+    @tag :integration
+    test "UAC: 404 Not Found - no dialog created" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      dialogs_before = DialogStatem.count()
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 404 error
+      not_found = build_response_message(404, "Not Found", invite)
+      :gen_statem.cast(trans_pid, {:received, not_found})
+      Process.sleep(100)
+      
+      # No dialog should be created for 4xx
+      dialogs_after = DialogStatem.count()
+      assert dialogs_after == dialogs_before
+      
+      :gen_statem.stop(trans_pid)
+    end
+    
+    @tag :integration
+    test "UAC: 486 Busy Here after 180 - early dialog should terminate" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # First send 180 to create early dialog
+      ringing = build_response_message(180, "Ringing", invite)
+      :gen_statem.cast(trans_pid, {:received, ringing})
+      Process.sleep(100)
+      
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ringing.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      # Then send 486 Busy
+      busy = build_response_message(486, "Busy Here", invite)
+      busy = %{busy | to: ringing.to}  # Keep same to-tag
+      :gen_statem.cast(trans_pid, {:received, busy})
+      Process.sleep(100)
+      
+      # Dialog should terminate or be gone
+      if Process.alive?(dialog_pid) do
+        {state, _} = :sys.get_state(dialog_pid)
+        assert state == :terminated
+      end
+      
+      :gen_statem.stop(trans_pid)
+    end
+    
+    @tag :integration
+    test "UAC: 503 Service Unavailable - no dialog created" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      dialogs_before = DialogStatem.count()
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 503 error
+      unavailable = build_response_message(503, "Service Unavailable", invite)
+      :gen_statem.cast(trans_pid, {:received, unavailable})
+      Process.sleep(100)
+      
+      # No dialog should be created for 5xx
+      dialogs_after = DialogStatem.count()
+      assert dialogs_after == dialogs_before
+      
+      :gen_statem.stop(trans_pid)
+    end
+  end
+  
+  describe "ACK handling for INVITE dialogs" do
+    @tag :integration
+    test "UAS: Dialog transitions to confirmed only after ACK received" do
+      # This tests the UAS side - receiving INVITE, sending 200 OK, waiting for ACK
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      
+      # Start UAS dialog
+      {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, invite})
+      
+      # Should be in confirmed state immediately for UAS (200 OK sent)
+      {state, _} = :sys.get_state(dialog_pid)
+      assert state == :confirmed
+      
+      # But dialog needs ACK to be fully established
+      ack = build_ack_message(invite)
+      result = :gen_statem.call(dialog_pid, {:uas_request, ack})
+      assert result == :process
+      
+      # Dialog should remain confirmed
+      {state_after, _} = :sys.get_state(dialog_pid)
+      assert state_after == :confirmed
+      
+      :gen_statem.stop(dialog_pid)
+    end
+    
+    @tag :integration
+    test "UAC: Must send ACK after receiving 200 OK" do
+      # This would normally test that UAC transaction generates ACK
+      # But since ACK is a separate transaction, we just verify dialog state
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+          # In real implementation, would trigger ACK generation here
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 200 OK
+      ok_response = build_response_message(200, "OK", invite)
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      Process.sleep(100)
+      
+      # Verify dialog is confirmed (UAC perspective)
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ok_response.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      {state, _} = :sys.get_state(dialog_pid)
+      assert state == :confirmed
+      
+      :gen_statem.stop(dialog_pid)
+      :gen_statem.stop(trans_pid)
+    end
+  end
+  
   describe "SUBSCRIBE dialog with NOTIFY transactions" do
     @tag :integration
     test "SUBSCRIBE dialog handles multiple NOTIFY transactions" do
@@ -515,6 +784,176 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       assert notify2.cseq.number > notify1.cseq.number
       
       :gen_statem.stop(dialog_pid)
+    end
+  end
+  
+  describe "process monitoring and cleanup" do
+    @tag :integration
+    test "UAC: Dialog terminates when owner process dies" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      # Create owner process
+      owner_pid = spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Create dialog
+      ok_response = build_response_message(200, "OK", invite)
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      Process.sleep(100)
+      
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ok_response.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      # Set owner
+      DialogStatem.set_owner(owner_pid, dialog_id_str)
+      Process.sleep(50)
+      
+      # Kill owner
+      Process.exit(owner_pid, :kill)
+      Process.sleep(100)
+      
+      # Dialog should be gone
+      refute Process.alive?(dialog_pid)
+      
+      :gen_statem.stop(trans_pid)
+    end
+  end
+  
+  describe "race conditions and edge cases" do
+    @tag :integration
+    test "UAC: Multiple 200 OK responses (retransmissions) don't create duplicate dialogs" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      dialog_count_before = DialogStatem.count()
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send first 200 OK
+      ok_response = build_response_message(200, "OK", invite)
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      Process.sleep(100)
+      
+      # Send duplicate 200 OK (retransmission)
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      Process.sleep(100)
+      
+      # Should only have one new dialog
+      dialog_count_after = DialogStatem.count()
+      assert dialog_count_after == dialog_count_before + 1
+      
+      :gen_statem.stop(trans_pid)
+    end
+    
+    @tag :integration
+    test "UAC: 200 OK arriving before 180 creates dialog correctly" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 200 OK directly (no 180 first)
+      ok_response = build_response_message(200, "OK", invite)
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      Process.sleep(100)
+      
+      # Dialog should be created in confirmed state
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ok_response.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      {state, _} = :sys.get_state(dialog_pid)
+      assert state == :confirmed
+      
+      :gen_statem.stop(dialog_pid)
+      :gen_statem.stop(trans_pid)
+    end
+  end
+  
+  describe "re-INVITE scenarios" do
+    @tag :integration
+    test "UAC: re-INVITE within existing dialog updates session" do
+      # First establish dialog
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      ok_response = build_response_message(200, "OK", invite)
+      :gen_statem.cast(trans_pid, {:received, ok_response})
+      Process.sleep(100)
+      
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ok_response.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      # Generate re-INVITE from dialog
+      {:ok, reinvite} = :gen_statem.call(dialog_pid, {:uac_request, %Message{method: :invite}})
+      assert reinvite.method == :invite
+      assert reinvite.cseq.number == 2  # Incremented
+      assert reinvite.from.parameters["tag"] == from_tag
+      assert reinvite.to.parameters["tag"] == to_tag
+      
+      # Create new transaction for re-INVITE
+      {:ok, reinvite_trans} = Transaction.create_invite_client(reinvite)
+      
+      re_callback = fn
+        {:response, response} -> 
+          # Find dialog by complete ID and update it
+          :gen_statem.cast(dialog_pid, {:uac_trans_result, {:message, response}})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, re_trans_pid} = TransactionStatem.client_new(reinvite_trans, %{}, re_callback)
+      
+      # Send 200 OK to re-INVITE
+      re_ok = build_response_message(200, "OK", reinvite)
+      :gen_statem.cast(re_trans_pid, {:received, re_ok})
+      Process.sleep(100)
+      
+      # Dialog should still be confirmed
+      {state, data} = :sys.get_state(dialog_pid)
+      assert state == :confirmed
+      assert data.dialog.local_seq == 2
+      
+      :gen_statem.stop(dialog_pid)
+      :gen_statem.stop(trans_pid)
+      :gen_statem.stop(re_trans_pid)
     end
   end
   

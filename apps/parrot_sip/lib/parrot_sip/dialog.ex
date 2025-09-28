@@ -943,29 +943,40 @@ defmodule ParrotSip.Dialog do
   """
   @spec uac_response(Message.t(), t()) :: {:ok, t()}
   def uac_response(response, dialog) do
-    cseq = response.cseq
-
-    # Handle transitioning from early to confirmed for INVITE responses
-    state =
-      cond do
-        # Dialog becomes confirmed on 2xx to INVITE
-        dialog.state == :early && cseq.method == :invite &&
-          response.status_code >= 200 && response.status_code < 300 ->
-          :confirmed
-
-        # Dialog becomes terminated on BYE response
-        cseq.method == :bye && response.status_code >= 200 && response.status_code < 300 ->
-          :terminated
-
-        # Keep current state otherwise
-        true ->
-          dialog.state
-      end
-
-    # Update the dialog with the new state
-    updated_dialog = %{dialog | state: state}
-
+    new_state = determine_dialog_state(response, dialog)
+    updated_dialog = %{dialog | state: new_state}
     {:ok, updated_dialog}
+  end
+
+  # Dialog becomes confirmed on 2xx to INVITE
+  defp determine_dialog_state(%Message{status_code: code, cseq: %{method: :invite}} = _response, 
+                               %{state: :early} = _dialog) 
+       when code >= 200 and code < 300 do
+    :confirmed
+  end
+
+  # Dialog becomes terminated on error response to INVITE (4xx, 5xx, 6xx)
+  # RFC 3261 Section 12.1: Error responses terminate early dialogs
+  defp determine_dialog_state(%Message{status_code: code, cseq: %{method: :invite}} = _response,
+                               %{state: :early} = _dialog)
+       when code >= 300 do
+    :terminated
+  end
+
+  # Dialog becomes terminated on successful BYE response
+  defp determine_dialog_state(%Message{status_code: code, cseq: %{method: :bye}} = _response, _dialog)
+       when code >= 200 and code < 300 do
+    :terminated
+  end
+
+  # Dialog becomes terminated on 487 Request Terminated (CANCEL)
+  defp determine_dialog_state(%Message{status_code: 487} = _response, _dialog) do
+    :terminated
+  end
+
+  # Keep current state for all other cases
+  defp determine_dialog_state(_response, dialog) do
+    dialog.state
   end
 
   @doc """
