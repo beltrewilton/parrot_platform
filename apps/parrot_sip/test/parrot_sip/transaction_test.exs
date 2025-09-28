@@ -725,6 +725,154 @@ defmodule ParrotSip.TransactionTest do
     }
   end
 
+  describe "generate_branch/1" do
+    test "generates a branch value" do
+      request = build_invite_request("z9hG4bKtest123")
+      branch = Transaction.generate_branch(request)
+      
+      assert is_binary(branch)
+      assert String.starts_with?(branch, "z9hG4bK")
+    end
+  end
+
+  describe "has_header?/2 - private function coverage through validate_message" do
+    # Note: has_header? is private, so we test various header checks indirectly
+    # The function has branches for from, to, contact, max-forwards, content-length, content-type
+    # These branches are defensive code and may not be directly reachable through current public API
+  end
+
+  describe "extract_branch/1 - error cases" do
+    test "returns error when Via header has no branch parameter" do
+      via_without_branch = %Headers.Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{}
+      }
+      
+      message = %Message{
+        method: :invite,
+        via: [via_without_branch]
+      }
+      
+      assert {:error, :no_branch} = Transaction.extract_branch(message)
+    end
+
+    test "returns error when message has no Via header" do
+      message = %Message{method: :invite}
+      
+      assert {:error, :no_via} = Transaction.extract_branch(message)
+    end
+  end
+
+  describe "edge cases and error paths" do
+    test "matches_response? handles response with Via as list" do
+      request = build_invite_request("z9hG4bKmatches123")
+      {:ok, transaction} = Transaction.create_invite_client(request)
+      
+      response = build_response(request, 200, "OK")
+      response_with_list = %{response | via: [response.via]}
+      
+      assert Transaction.matches_response?(transaction, response_with_list)
+    end
+
+    test "matches_response? returns false for nil transaction" do
+      request = build_invite_request("z9hG4bKnil")
+      response = build_response(request, 200, "OK")
+      
+      refute Transaction.matches_response?(nil, response)
+    end
+
+    test "matches_request? handles request with nil Via" do
+      request = build_invite_request("z9hG4bKack")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      
+      ack = %Message{
+        method: :ack,
+        type: :request,
+        via: nil
+      }
+      
+      refute Transaction.matches_request?(transaction, ack)
+    end
+
+    test "determine_transaction_type handles message with type field" do
+      request = %Message{
+        method: :options,
+        type: :request
+      }
+      
+      result = Transaction.determine_transaction_type(request)
+      assert result == :non_invite_server
+    end
+
+    test "extract_branch handles Via as single struct" do
+      via = %Headers.Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKsingle"}
+      }
+      
+      message = %Message{via: via}
+      assert {:ok, "z9hG4bKsingle"} = Transaction.extract_branch(message)
+    end
+
+    test "classify_response handles boundary values" do
+      assert Transaction.classify_response(100) == :provisional
+      assert Transaction.classify_response(199) == :provisional
+      assert Transaction.classify_response(200) == :success
+      assert Transaction.classify_response(299) == :success
+      assert Transaction.classify_response(300) == :failure
+      assert Transaction.classify_response(699) == :failure
+    end
+
+    test "next_state returns error for invalid state transition" do
+      transaction = %Transaction{
+        type: :invite_server,
+        state: :terminated,
+        method: :invite
+      }
+      
+      result = Transaction.next_state(transaction, {:send_provisional, 180})
+      assert result == {:error, :invalid_transition}
+    end
+
+    test "retransmission_action with no last_response" do
+      transaction = %Transaction{last_response: nil}
+      assert Transaction.retransmission_action(transaction) == :ignore
+    end
+
+    test "update_last_response preserves other fields" do
+      request = build_invite_request("z9hG4bKupdate")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      
+      response = build_response(request, 180, "Ringing")
+      updated = Transaction.update_last_response(transaction, response)
+      
+      assert updated.last_response == response
+      assert updated.branch == transaction.branch
+      assert updated.method == transaction.method
+    end
+
+    test "update_state preserves other fields" do
+      request = build_invite_request("z9hG4bKstate")
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      
+      updated = Transaction.update_state(transaction, :proceeding)
+      
+      assert updated.state == :proceeding
+      assert updated.branch == transaction.branch
+      assert updated.method == transaction.method
+    end
+  end
+
+  # Helper functions
+
   defp build_response(request, status_code, reason) do
     to_with_tag = %{request.to | parameters: Map.put(request.to.parameters, "tag", "314159")}
 

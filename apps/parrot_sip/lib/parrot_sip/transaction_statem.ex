@@ -539,9 +539,9 @@ defmodule ParrotSip.TransactionStatem do
       {:ok, pid} ->
         {:trans, pid}
 
-      {:error, _} = error ->
+      {:error, reason} = error ->
         Logger.error("client failed to create transaction: #{inspect(error, @inspect_opts)}")
-        {:trans, spawn(fn -> :ok end)}
+        {:error, reason}
     end
   end
 

@@ -33,8 +33,10 @@ defmodule ParrotSip.UAC do
     {:ok, transaction} = create_client_transaction(sip_msg, branch)
 
     callback_fun = make_transaction_handler(transaction, uac_callback)
-    trans = TransactionStatem.client_new(transaction, %{}, callback_fun)
-    {:uac_id, trans}
+    case TransactionStatem.client_new(transaction, %{}, callback_fun) do
+      {:trans, _pid} = trans -> {:uac_id, trans}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @spec request(Message.t(), callback()) :: id()
@@ -49,8 +51,10 @@ defmodule ParrotSip.UAC do
     {:ok, transaction} = create_client_transaction(sip_msg, branch)
 
     callback_fun = make_transaction_handler(transaction, uac_callback)
-    trans = TransactionStatem.client_new(transaction, %{}, callback_fun)
-    {:uac_id, trans}
+    case TransactionStatem.client_new(transaction, %{}, callback_fun) do
+      {:trans, _pid} = trans -> {:uac_id, trans}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @spec request_with_opts(Message.t(), options(), callback()) :: id()
@@ -65,8 +69,10 @@ defmodule ParrotSip.UAC do
     {:ok, transaction} = create_client_transaction(sip_msg, branch)
 
     callback_fun = make_transaction_handler(transaction, uac_callback)
-    trans = TransactionStatem.client_new(transaction, uac_options, callback_fun)
-    {:uac_id, trans}
+    case TransactionStatem.client_new(transaction, uac_options, callback_fun) do
+      {:trans, _pid} = trans -> {:uac_id, trans}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @spec ack_request(Message.t()) :: :ok

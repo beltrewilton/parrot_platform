@@ -25,6 +25,20 @@ defmodule ParrotSip.DialogStatemTest do
       assert Process.alive?(pid)
     end
 
+    test "starts UAC dialog with provisional 1xx response and registers early branch" do
+      invite_msg = build_invite_message()
+      provisional_response = build_response_message(180, "Ringing")
+      out_req = build_outbound_request(invite_msg)
+
+      assert {:ok, pid} = DialogStatem.start_link({:uac, out_req, provisional_response})
+      assert is_pid(pid)
+      assert Process.alive?(pid)
+      
+      # Verify early branch was set
+      {_state, data} = :sys.get_state(pid)
+      assert data.early_branch != nil
+    end
+
     test "initializes with correct callback mode" do
       assert DialogStatem.callback_mode() == :state_functions
     end
@@ -47,6 +61,23 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
       %{dialog_pid: pid, invite: invite, response: response}
+    end
+
+    test "handles early state with UAC request", %{dialog_pid: pid} do
+      # Send a UAC request while in early state
+      options_msg = build_options_message()
+      result = :gen_statem.call(pid, {:uac_request, options_msg})
+      assert {:ok, %Message{}} = result
+    end
+
+    test "handles early state with set_owner cast", %{dialog_pid: pid} do
+      # Set owner while in early state
+      owner_pid = self()
+      :gen_statem.cast(pid, {:set_owner, owner_pid})
+      
+      # Give it time to process
+      Process.sleep(10)
+      assert Process.alive?(pid)
     end
 
     test "handles early state INVITE requests", %{dialog_pid: pid} do
@@ -125,6 +156,68 @@ defmodule ParrotSip.DialogStatemTest do
     end
   end
 
+  describe "early state comprehensive coverage" do
+    setup do
+      invite = build_invite_message()
+      # Start with 180 response to stay in early state
+      response = build_response_message(180, "Ringing")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      %{dialog_pid: pid, invite: invite}
+    end
+
+    test "handles early state with UAS request call", %{dialog_pid: pid} do
+      # This triggers process_uas_request in early state (line 420)
+      ack = build_ack_message()
+      result = :gen_statem.call(pid, {:uas_request, ack})
+      assert result == :process
+    end
+
+    test "handles early state with UAC trans result cast", %{dialog_pid: pid} do
+      # This triggers process_uac_trans_result in early state (line 428)
+      response = build_response_message(183, "Session Progress")
+      :gen_statem.cast(pid, {:uac_trans_result, {:message, response}})
+      Process.sleep(10)
+      assert Process.alive?(pid)
+    end
+
+    test "handles early state with UAC request call", %{dialog_pid: pid} do
+      # This triggers process_uac_request in early state (line 432)
+      options = build_options_message()
+      result = :gen_statem.call(pid, {:uac_request, options})
+      assert {:ok, %Message{}} = result
+    end
+
+    test "handles early state with set_owner cast", %{dialog_pid: pid} do
+      # This triggers process_set_owner in early state (line 436)
+      owner = self()
+      :gen_statem.cast(pid, {:set_owner, owner})
+      Process.sleep(10)
+      assert Process.alive?(pid)
+    end
+
+    test "handles early state owner DOWN message", %{dialog_pid: pid} do
+      # This triggers the :info, {:DOWN, ...} handler in early (line 440)
+      owner = spawn(fn -> Process.sleep(5000) end)
+      :gen_statem.cast(pid, {:set_owner, owner})
+      Process.sleep(10)
+      
+      Process.exit(owner, :kill)
+      Process.sleep(10)
+      
+      # Dialog should stop when owner dies
+      refute Process.alive?(pid)
+    end
+
+    test "handles early state with unknown event", %{dialog_pid: pid} do
+      # This triggers handle_event catch-all (line 445)
+      :gen_statem.cast(pid, {:unknown_event, :some_data})
+      Process.sleep(10)
+      # Should handle gracefully
+      assert Process.alive?(pid)
+    end
+  end
+
   describe "confirmed state operations" do
     setup do
       invite = build_invite_message()
@@ -136,6 +229,59 @@ defmodule ParrotSip.DialogStatemTest do
       :gen_statem.call(pid, {:uas_request, ack_msg})
 
       %{dialog_pid: pid, invite: invite}
+    end
+
+    test "handles confirmed state with UAS response", %{dialog_pid: pid} do
+      # Send a UAS response in confirmed state
+      response = build_response_message(200, "OK")
+      invite = build_invite_message()
+      :gen_statem.cast(pid, {:uas_response, response, invite})
+      
+      # Give it time to process
+      Process.sleep(10)
+      assert Process.alive?(pid)
+    end
+
+    test "handles confirmed state with set_owner cast", %{dialog_pid: pid} do
+      # Set owner while in confirmed state
+      owner_pid = self()
+      :gen_statem.cast(pid, {:set_owner, owner_pid})
+      
+      # Give it time to process
+      Process.sleep(10)
+      assert Process.alive?(pid)
+    end
+
+    test "handles confirmed state with owner DOWN message", %{dialog_pid: pid} do
+      # This tests the :info, {:DOWN, ...} handler in confirmed (line 475)
+      owner_pid = spawn(fn -> Process.sleep(1000) end)
+      :gen_statem.cast(pid, {:set_owner, owner_pid})
+      Process.sleep(10)
+      
+      # Kill the owner process
+      Process.exit(owner_pid, :kill)
+      Process.sleep(10)
+      
+      # Dialog should have stopped
+      refute Process.alive?(pid)
+    end
+
+    test "handles confirmed state with UAS response cast", %{dialog_pid: pid} do
+      # This triggers process_uas_response in confirmed (line 454)
+      response = build_response_message(200, "OK")
+      invite = build_invite_message()
+      :gen_statem.cast(pid, {:uas_response, response, invite})
+      Process.sleep(10)
+      assert Process.alive?(pid)
+    end
+
+    test "handles confirmed state with state_timeout", %{dialog_pid: pid} do
+      # This triggers subscription expiration in confirmed (line 470)
+      # Note: This only applies to NOTIFY dialogs, regular dialogs ignore this
+      send(pid, :state_timeout)
+      Process.sleep(10)
+      # Should handle gracefully
+      assert Process.alive?(pid)
     end
 
     test "handles confirmed state BYE requests", %{dialog_pid: pid} do
@@ -272,7 +418,39 @@ defmodule ParrotSip.DialogStatemTest do
     end
   end
 
+  describe "terminated state" do
+    test "handles terminated state gracefully" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Transition to confirmed first
+      ack = build_ack_message()
+      :gen_statem.call(pid, {:uas_request, ack})
+
+      # Send BYE to transition to terminated
+      bye_msg = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye_msg})
+
+      # Dialog should still be alive briefly in terminated state
+      # Try to send an event to terminated state (line 484)
+      :gen_statem.cast(pid, {:some_event, :data})
+      Process.sleep(10)
+    end
+  end
+
   describe "subscription handling" do
+    test "creates UAS SUBSCRIBE dialog with timeout" do
+      subscribe_msg = build_subscribe_message()
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
+
+      # Verify dialog was created with notify type
+      {_state, data} = :sys.get_state(pid)
+      assert data.dialog_type == :notify
+      assert Process.alive?(pid)
+    end
+
     test "handles subscription expiration" do
       subscribe_msg = build_subscribe_message()
       response_msg = build_response_message(200, "OK")
@@ -294,6 +472,30 @@ defmodule ParrotSip.DialogStatemTest do
       assert Process.alive?(pid)
     end
 
+    test "handles SUBSCRIBE with integer expires header" do
+      subscribe_msg = %{build_subscribe_message() | other_headers: %{"event" => "presence", "expires" => 1800}}
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
+
+      assert Process.alive?(pid)
+    end
+
+    test "handles SUBSCRIBE with string expires header" do
+      subscribe_msg = %{build_subscribe_message() | other_headers: %{"event" => "presence", "expires" => "7200"}}
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
+
+      assert Process.alive?(pid)
+    end
+
+    test "handles SUBSCRIBE with invalid expires header" do
+      subscribe_msg = %{build_subscribe_message() | other_headers: %{"event" => "presence", "expires" => "invalid"}}
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
+
+      assert Process.alive?(pid)
+    end
+
     test "handles terminated NOTIFY messages" do
       subscribe_msg = build_subscribe_message()
       response_msg = build_response_message(200, "OK")
@@ -301,6 +503,43 @@ defmodule ParrotSip.DialogStatemTest do
 
       # Should handle terminated notifications
       assert Process.alive?(pid)
+    end
+
+    test "creates dialog for NOTIFY request" do
+      notify_msg = %Message{
+        method: :notify,
+        request_uri: "sip:target@example.com",
+        version: "SIP/2.0",
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK-notify"}
+        },
+        from: %From{
+          display_name: "Test",
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "from-tag-notify"}
+        },
+        to: %To{
+          display_name: "Target",
+          uri: "sip:target@example.com",
+          parameters: %{}
+        },
+        call_id: "notify-call@example.com",
+        cseq: %CSeq{number: 1, method: :notify},
+        other_headers: %{"event" => "presence"},
+        body: ""
+      }
+
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, notify_msg})
+
+      # Verify dialog type is :notify
+      {_state, data} = :sys.get_state(pid)
+      assert data.dialog_type == :notify
     end
   end
 
@@ -344,6 +583,56 @@ defmodule ParrotSip.DialogStatemTest do
       :gen_statem.stop(pid)
 
       # Should not be alive after stop
+      refute Process.alive?(pid)
+    end
+
+    test "handles uac_trans_result with stop signal" do
+      invite_msg = build_invite_message()
+      response_msg = build_response_message(180, "Ringing")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, invite_msg})
+
+      # Send stop result - this should terminate the dialog
+      :gen_statem.cast(pid, {:uac_trans_result, {:stop, :transaction_timeout}})
+      Process.sleep(20)
+
+      # Dialog should terminate
+      refute Process.alive?(pid)
+    end
+
+    test "handles unexpected call messages" do
+      invite_msg = build_invite_message()
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, invite_msg})
+
+      # Send unexpected call - should return error
+      result = :gen_statem.call(pid, {:unexpected_call, "test data"})
+      assert result == {:error, :unexpected_call}
+      assert Process.alive?(pid)
+    end
+
+    test "handles set_owner with existing owner (demonitor path)" do
+      invite_msg = build_invite_message()
+      response_msg = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response_msg, invite_msg})
+
+      # Set owner first time
+      owner1 = spawn(fn -> Process.sleep(1000) end)
+      :gen_statem.cast(pid, {:set_owner, owner1})
+      Process.sleep(10)
+
+      # Set owner second time - should demonitor first owner
+      owner2 = spawn(fn -> Process.sleep(1000) end)
+      :gen_statem.cast(pid, {:set_owner, owner2})
+      Process.sleep(10)
+
+      # Kill first owner - should NOT affect dialog
+      Process.exit(owner1, :kill)
+      Process.sleep(10)
+      assert Process.alive?(pid)
+
+      # Kill second owner - should affect dialog
+      Process.exit(owner2, :kill)
+      Process.sleep(10)
       refute Process.alive?(pid)
     end
 
@@ -409,6 +698,38 @@ defmodule ParrotSip.DialogStatemTest do
   end
 
   describe "uas_find/1 - RFC 3261 Section 12.2.2" do
+    test "finds existing dialog by complete dialog ID" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      {_state, data} = :sys.get_state(pid)
+      
+      # Create a request with the same dialog ID
+      # For incoming request to UAS: From=remote (their tag), To=local (our tag)
+      in_dialog_request = %Message{
+        type: :request,
+        direction: :incoming,
+        method: :options,
+        call_id: data.dialog.call_id,
+        from: %From{
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => data.dialog.remote_tag}  # Their tag in From
+        },
+        to: %To{
+          uri: "sip:target@example.com",
+          parameters: %{"tag" => data.dialog.local_tag}  # Our tag in To
+        },
+        cseq: %CSeq{number: 2, method: :options},
+        other_headers: %{}
+      }
+      
+      result = DialogStatem.uas_find(in_dialog_request)
+      assert {:ok, found_pid} = result
+      assert found_pid == pid
+      
+      GenServer.stop(pid)
+    end
+
     test "returns :not_found for non-existent dialog" do
       call_id = unique_call_id()
       request = build_invite_with_call_id(call_id)

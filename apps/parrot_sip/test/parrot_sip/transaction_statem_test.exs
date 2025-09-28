@@ -999,4 +999,220 @@ defmodule ParrotSip.TransactionStatemTest do
       body: ""
     }
   end
+
+  describe "error handling" do
+    test "handles invalid start_link arguments" do
+      # This should raise ArgumentError
+      assert_raise ArgumentError, fn ->
+        TransactionStatem.start_link({:invalid, :args})
+      end
+    end
+
+    test "handles stray ACK with no matching transaction", %{test_id: test_id} do
+      ack = %Message{
+        method: :ack,
+        type: :request,
+        request_uri: "sip:bob@example.com",
+        via: [
+          %Via{
+            protocol: "SIP",
+            version: "2.0",
+            transport: :udp,
+            host: "127.0.0.1",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK-stray-ack-#{test_id}"}
+          }
+        ],
+        from: %From{
+          uri: "sip:alice@example.com",
+          parameters: %{"tag" => "from-tag"}
+        },
+        to: %To{
+          uri: "sip:bob@example.com",
+          parameters: %{"tag" => "to-tag"}
+        },
+        call_id: "stray-ack-#{test_id}@example.com",
+        cseq: %CSeq{number: 1, method: :ack},
+        other_headers: %{},
+        body: ""
+      }
+
+      # Process stray ACK - should be handled gracefully
+      handler = %{module: ParrotSip.TestHandler, args: %{}}
+      result = TransactionStatem.server_process(ack, handler)
+      assert result == :ok
+    end
+
+    test "handles stray ACK with handler that doesn't implement process_ack", %{test_id: test_id} do
+      # Define a minimal handler module without process_ack
+      defmodule MinimalHandler do
+        def handle_request(_msg, _args), do: :ok
+      end
+
+      ack = %Message{
+        method: :ack,
+        type: :request,
+        request_uri: "sip:bob@example.com",
+        via: [
+          %Via{
+            protocol: "SIP",
+            version: "2.0",
+            transport: :udp,
+            host: "127.0.0.1",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK-minimal-ack-#{test_id}"}
+          }
+        ],
+        from: %From{
+          uri: "sip:alice@example.com",
+          parameters: %{"tag" => "from-tag"}
+        },
+        to: %To{
+          uri: "sip:bob@example.com",
+          parameters: %{"tag" => "to-tag"}
+        },
+        call_id: "minimal-ack-#{test_id}@example.com",
+        cseq: %CSeq{number: 1, method: :ack},
+        other_headers: %{},
+        body: ""
+      }
+
+      # Process stray ACK with handler that doesn't have process_ack/2
+      # Should log warning and return :ok
+      handler = %{module: MinimalHandler, args: %{}}
+      result = TransactionStatem.server_process(ack, handler)
+      assert result == :ok
+    end
+
+    test "handles terminated state with cast events", %{test_id: test_id} do
+      # Create a transaction and send it to completed, capture termination
+      request = build_register(unique_branch("z9hG4bKterminated", test_id))
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      
+      # Send final response to move to completed
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+      assert_state(pid, :completed)
+      
+      # Timer J will eventually fire and terminate the transaction
+      # Once process is dead, we can verify the terminated state was reached
+      # by checking that the process is no longer alive
+      send(pid, {:event, :j})
+      Process.sleep(20)
+      
+      # Process should have terminated
+      refute Process.alive?(pid)
+    end
+
+    test "handles received request (non-ACK) in completed state", %{test_id: test_id} do
+      # Test the {:received, request} handler in completed state
+      request = build_invite(unique_branch("z9hG4bKreq_completed", test_id))
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      
+      # Move to completed
+      final = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(final, transaction)
+      assert_state(pid, :completed)
+      
+      # Send same request again (retransmission)
+      :gen_statem.cast(pid, {:received, request})
+      Process.sleep(10)
+      
+      # Should retransmit final response and stay in completed
+      assert_state(pid, :completed)
+    end
+
+    test "handles client transaction termination with error reason", %{test_id: test_id} do
+      request = build_register(unique_branch("z9hG4bKclient_term", test_id))
+      {:ok, transaction} = Transaction.create_non_invite_client(request)
+      
+      callback = fn _result -> :ok end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Force termination with error
+      Process.exit(pid, :test_error)
+      Process.sleep(10)
+      
+      # Should be terminated
+      refute Process.alive?(pid)
+    end
+
+    test "handles timer actions in apply_state_transition", %{test_id: test_id} do
+      # Create client transaction and verify it starts correctly
+      request = build_invite(unique_branch("z9hG4bKtimer_client", test_id))
+      {:ok, transaction} = Transaction.create_invite_client(request)
+      
+      callback = fn _result -> :ok end
+      {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Verify transaction started in calling state
+      assert_state(pid, :calling)
+      # Verify process is alive and managing state
+      assert Process.alive?(pid)
+      
+      # Clean up
+      Process.exit(pid, :normal)
+    end
+
+    test "handles in-dialog requests with both From and To tags", %{test_id: test_id} do
+      # Test the path in server_process that handles in-dialog messages
+      in_dialog_msg = %Message{
+        method: :options,
+        type: :request,
+        from: %From{
+          uri: "sip:alice@example.com",
+          parameters: %{"tag" => "from-tag-#{test_id}"}
+        },
+        to: %To{
+          uri: "sip:bob@example.com",
+          parameters: %{"tag" => "to-tag-#{test_id}"}
+        },
+        via: [
+          %Via{
+            protocol: "SIP",
+            version: "2.0",
+            transport: :udp,
+            host: "127.0.0.1",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK-indialog-#{test_id}"}
+          }
+        ],
+        call_id: "indialog-#{test_id}@example.com",
+        cseq: %CSeq{number: 2, method: :options},
+        request_uri: "sip:bob@example.com",
+        other_headers: %{},
+        body: ""
+      }
+
+      handler = TestHandler.new()
+      # This should create a new transaction for the in-dialog request
+      result = TransactionStatem.server_process(in_dialog_msg, handler)
+      assert result == :ok
+    end
+
+    test "handles send final response in trying state", %{test_id: test_id} do
+      # Test classification of response codes
+      request = build_register(unique_branch("z9hG4bKfinal_trying", test_id))
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      assert_state(pid, :trying)
+      
+      # Send 500 error (final response)
+      final = Message.reply(request, 500, "Internal Server Error")
+      :ok = TransactionStatem.server_response(final, transaction)
+      
+      # Should transition to completed
+      assert_state(pid, :completed)
+      assert_last_response(pid, 500)
+    end
+  end
+
 end

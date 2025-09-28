@@ -489,14 +489,20 @@ defmodule ParrotSip.DialogStatem do
 
   defp process_uas_request(state, req_sip_msg, data, from) do
     # Process the request in the dialog
-    # Dialog.uas_process always returns {:ok, updated_dialog}
-    {:ok, updated_dialog} = Dialog.uas_process(req_sip_msg, data.dialog)
-    updated_data = %{data | dialog: updated_dialog}
+    case Dialog.uas_process(req_sip_msg, data.dialog) do
+      {:ok, updated_dialog} ->
+        updated_data = %{data | dialog: updated_dialog}
 
-    # Check if dialog should transition states
-    new_state = if updated_dialog.state == :terminated, do: :terminated, else: state
+        # Check if dialog should transition states
+        new_state = if updated_dialog.state == :terminated, do: :terminated, else: state
 
-    {:next_state, new_state, updated_data, [{:reply, from, :process}]}
+        {:next_state, new_state, updated_data, [{:reply, from, :process}]}
+      
+      {:error, reason} ->
+        Logger.error("dialog #{inspect(data.id)}: failed to process UAS request: #{inspect(reason)}")
+        # Return error to caller, keep state
+        {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+    end
   end
 
   defp process_uas_response(:early, %Message{status_code: status_code}, _req_sip_msg, data)

@@ -244,8 +244,12 @@ defmodule ParrotSip.Dialog do
           {:ok, Message.t(), t()} | {:error, :no_dialog}
   def find_and_use_dialog(dialog_id, request) do
     case ParrotSip.DialogStatem.find_dialog(dialog_id) do
-      {:ok, dialog} -> uac_request(request.method, dialog)
-      {:error, reason} -> {:error, reason}
+      {:ok, pid} ->
+        {_state, %{dialog: dialog}} = :sys.get_state(pid)
+        uac_request(request.method, dialog)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -464,14 +468,15 @@ defmodule ParrotSip.Dialog do
   end
 
   # Incoming request - UAS perspective
+  # For UAS: local = To (us), remote = From (them)
   def from_message(%Message{type: :request, direction: :incoming} = message) do
     from_tag = if message.from, do: From.tag(message.from), else: nil
     to_tag = if message.to, do: To.tag(message.to), else: nil
 
     %{
       call_id: message.call_id,
-      local_tag: from_tag,
-      remote_tag: to_tag,
+      local_tag: to_tag,      # Our tag (To header)
+      remote_tag: from_tag,   # Their tag (From header)
       direction: :uas
     }
   end
@@ -589,60 +594,73 @@ defmodule ParrotSip.Dialog do
       iex> dialog.state
       :confirmed
   """
-  @spec uas_create(Message.t(), Message.t()) :: {:ok, t()}
+  @spec uas_create(Message.t(), Message.t()) :: {:ok, t()} | {:error, atom()}
   def uas_create(request, response) do
-    # Extract necessary headers
-    call_id = request.call_id
-    remote_tag = request.from.parameters["tag"]
-    local_tag = response.to.parameters["tag"]
+    with {:ok, headers} <- validate_uas_headers(request, response),
+         {:ok, uris} <- extract_uas_uris(request),
+         {:ok, dialog_params} <- build_uas_dialog_params(request, response, headers, uris) do
+      {:ok, struct(__MODULE__, dialog_params)}
+    end
+  end
 
-    # Extract URIs
-    to_uri = request.to.uri
-    local_uri = if is_binary(to_uri), do: to_uri, else: Uri.to_string(to_uri)
+  # Validate required headers for UAS dialog creation
+  defp validate_uas_headers(request, response) do
+    with %_{parameters: from_params} when is_map(from_params) <- request.from,
+         %_{parameters: to_params} when is_map(to_params) <- response.to,
+         %{number: _} <- request.cseq,
+         call_id when is_binary(call_id) <- request.call_id do
+      {:ok, %{
+        call_id: call_id,
+        remote_tag: from_params["tag"],
+        local_tag: to_params["tag"],
+        remote_seq: request.cseq.number
+      }}
+    else
+      nil when not is_map_key(request, :from) or request.from == nil -> 
+        {:error, :invalid_from_header}
+      nil when not is_map_key(response, :to) or response.to == nil -> 
+        {:error, :invalid_to_header}
+      nil when not is_map_key(request, :cseq) or request.cseq == nil -> 
+        {:error, :invalid_cseq_header}
+      nil when not is_map_key(request, :call_id) or request.call_id == nil -> 
+        {:error, :invalid_call_id}
+      _ -> {:error, :invalid_headers}
+    end
+  end
 
-    from_uri = request.from.uri
-    remote_uri = if is_binary(from_uri), do: from_uri, else: Uri.to_string(from_uri)
-
-    # Extract the remote target from the Contact header in the request
-    remote_target =
-      if request.contact do
-        contact_uri = request.contact.uri
-        if is_binary(contact_uri), do: contact_uri, else: Uri.to_string(contact_uri)
-      else
-        remote_uri
-      end
-
-    # Get sequence numbers from CSeq
-    remote_seq = request.cseq.number
-    local_seq = 0
-
-    # Determine if secure based on the request URI scheme
-    secure = String.starts_with?(request.request_uri, "sips:")
-
-    # Extract route set (if any)
-    route_set = extract_route_set(response)
-
-    # Determine dialog state based on the response status code
-    state =
-      if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
-
-    # Create the dialog
-    dialog = %__MODULE__{
-      id: generate_id(:uas, call_id, local_tag, remote_tag),
-      state: state,
-      call_id: call_id,
-      local_tag: local_tag,
-      remote_tag: remote_tag,
+  # Extract URIs for UAS dialog (local=To, remote=From)
+  defp extract_uas_uris(request) do
+    local_uri = extract_uri(request.to.uri)
+    remote_uri = extract_uri(request.from.uri)
+    remote_target = extract_remote_target(request.contact, remote_uri)
+    
+    {:ok, %{
       local_uri: local_uri,
       remote_uri: remote_uri,
-      remote_target: remote_target,
-      local_seq: local_seq,
-      remote_seq: remote_seq,
+      remote_target: remote_target
+    }}
+  end
+
+  # Build complete dialog parameters for UAS
+  defp build_uas_dialog_params(request, response, headers, uris) do
+    state = if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
+    secure = String.starts_with?(request.request_uri, "sips:")
+    route_set = extract_route_set(response)
+
+    {:ok, %{
+      id: generate_id(:uas, headers.call_id, headers.local_tag, headers.remote_tag),
+      state: state,
+      call_id: headers.call_id,
+      local_tag: headers.local_tag,
+      remote_tag: headers.remote_tag,
+      local_uri: uris.local_uri,
+      remote_uri: uris.remote_uri,
+      remote_target: uris.remote_target,
+      local_seq: 0,
+      remote_seq: headers.remote_seq,
       route_set: route_set,
       secure: secure
-    }
-
-    {:ok, dialog}
+    }}
   end
 
   @doc """
@@ -680,60 +698,73 @@ defmodule ParrotSip.Dialog do
       iex> dialog.state
       :confirmed
   """
-  @spec uac_create(Message.t(), Message.t()) :: {:ok, t()}
+  @spec uac_create(Message.t(), Message.t()) :: {:ok, t()} | {:error, atom()}
   def uac_create(request, response) do
-    # Extract necessary headers
-    call_id = request.call_id
-    local_tag = request.from.parameters["tag"]
-    remote_tag = response.to.parameters["tag"]
+    with {:ok, headers} <- validate_uac_headers(request, response),
+         {:ok, uris} <- extract_uac_uris(request, response),
+         {:ok, dialog_params} <- build_uac_dialog_params(request, response, headers, uris) do
+      {:ok, struct(__MODULE__, dialog_params)}
+    end
+  end
 
-    # Extract URIs
-    from_uri = request.from.uri
-    local_uri = if is_binary(from_uri), do: from_uri, else: Uri.to_string(from_uri)
+  # Validate required headers for UAC dialog creation
+  defp validate_uac_headers(request, response) do
+    with %_{parameters: from_params} when is_map(from_params) <- request.from,
+         %_{parameters: to_params} when is_map(to_params) <- response.to,
+         %{number: _} <- request.cseq,
+         call_id when is_binary(call_id) <- request.call_id do
+      {:ok, %{
+        call_id: call_id,
+        local_tag: from_params["tag"],
+        remote_tag: to_params["tag"],
+        local_seq: request.cseq.number
+      }}
+    else
+      nil when not is_map_key(request, :from) or request.from == nil -> 
+        {:error, :invalid_from_header}
+      nil when not is_map_key(response, :to) or response.to == nil -> 
+        {:error, :invalid_to_header}
+      nil when not is_map_key(request, :cseq) or request.cseq == nil -> 
+        {:error, :invalid_cseq_header}
+      nil when not is_map_key(request, :call_id) or request.call_id == nil -> 
+        {:error, :invalid_call_id}
+      _ -> {:error, :invalid_headers}
+    end
+  end
 
-    to_uri = request.to.uri
-    remote_uri = if is_binary(to_uri), do: to_uri, else: Uri.to_string(to_uri)
-
-    # Get the remote target from the Contact header in the response
-    remote_target =
-      if response.contact do
-        contact_uri = response.contact.uri
-        if is_binary(contact_uri), do: contact_uri, else: Uri.to_string(contact_uri)
-      else
-        remote_uri
-      end
-
-    # Get sequence numbers from CSeq
-    local_seq = request.cseq.number
-    remote_seq = 0
-
-    # Determine if secure based on the request URI scheme
-    secure = String.starts_with?(request.request_uri, "sips:")
-
-    # Extract route set (if any)
-    route_set = extract_route_set(response)
-
-    # Determine dialog state based on the response status code
-    state =
-      if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
-
-    # Create the dialog
-    dialog = %__MODULE__{
-      id: generate_id(:uac, call_id, local_tag, remote_tag),
-      state: state,
-      call_id: call_id,
-      local_tag: local_tag,
-      remote_tag: remote_tag,
+  # Extract URIs for UAC dialog (local=From, remote=To)
+  defp extract_uac_uris(request, response) do
+    local_uri = extract_uri(request.from.uri)
+    remote_uri = extract_uri(request.to.uri)
+    remote_target = extract_remote_target(response.contact, remote_uri)
+    
+    {:ok, %{
       local_uri: local_uri,
       remote_uri: remote_uri,
-      remote_target: remote_target,
-      local_seq: local_seq,
-      remote_seq: remote_seq,
+      remote_target: remote_target
+    }}
+  end
+
+  # Build complete dialog parameters for UAC
+  defp build_uac_dialog_params(request, response, headers, uris) do
+    state = if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
+    secure = String.starts_with?(request.request_uri, "sips:")
+    route_set = extract_route_set(response)
+
+    {:ok, %{
+      id: generate_id(:uac, headers.call_id, headers.local_tag, headers.remote_tag),
+      state: state,
+      call_id: headers.call_id,
+      local_tag: headers.local_tag,
+      remote_tag: headers.remote_tag,
+      local_uri: uris.local_uri,
+      remote_uri: uris.remote_uri,
+      remote_target: uris.remote_target,
+      local_seq: headers.local_seq,
+      remote_seq: 0,
       route_set: route_set,
       secure: secure
-    }
-
-    {:ok, dialog}
+    }}
   end
 
   @doc """
@@ -794,18 +825,25 @@ defmodule ParrotSip.Dialog do
       iex> updated.state
       :terminated
   """
-  @spec uas_process(Message.t(), t()) :: {:ok, t()}
+  @spec uas_process(Message.t(), t()) :: {:ok, t()} | {:error, atom()}
   def uas_process(request, dialog) do
-    # Update remote sequence number
-    remote_seq = request.cseq.number
+    # Validate CSeq header
+    case request.cseq do
+      %{number: remote_seq} when is_integer(remote_seq) ->
+        # Handle BYE request (terminates the dialog)
+        state = if request.method == :bye, do: :terminated, else: dialog.state
 
-    # Handle BYE request (terminates the dialog)
-    state = if request.method == :bye, do: :terminated, else: dialog.state
+        # Update the dialog
+        updated_dialog = %{dialog | remote_seq: remote_seq, state: state}
 
-    # Update the dialog
-    updated_dialog = %{dialog | remote_seq: remote_seq, state: state}
-
-    {:ok, updated_dialog}
+        {:ok, updated_dialog}
+      
+      nil ->
+        {:error, :missing_cseq}
+      
+      _ ->
+        {:error, :invalid_cseq}
+    end
   end
 
   @doc """
@@ -1038,4 +1076,19 @@ defmodule ParrotSip.Dialog do
     :crypto.strong_rand_bytes(8)
     |> Base.encode16(case: :lower)
   end
+
+  # Helper to normalize URI to string
+  # TODO: The codebase should standardize on ONE URI format (string OR struct)
+  # This function exists because URIs arrive in mixed formats from different sources
+  defp extract_uri(uri) when is_binary(uri), do: uri
+  defp extract_uri(%Uri{} = uri), do: Uri.to_string(uri)
+  defp extract_uri(nil), do: ""
+  defp extract_uri(_other), do: ""
+
+  # Helper to extract remote target from Contact or fallback to remote URI
+  defp extract_remote_target(%Contact{uri: contact_uri}, _fallback) do
+    extract_uri(contact_uri)
+  end
+  defp extract_remote_target(nil, fallback), do: fallback
+  defp extract_remote_target(_, fallback), do: fallback
 end

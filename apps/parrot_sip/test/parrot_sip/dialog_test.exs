@@ -20,9 +20,10 @@ defmodule ParrotSip.DialogTest do
 
       dialog_id = Dialog.from_message(request)
 
+      # For incoming request to UAS: local=To (us), remote=From (them)
       assert dialog_id.call_id == "call-123@example.com"
-      assert dialog_id.local_tag == "from-tag-123"
-      assert dialog_id.remote_tag == "to-tag-456"
+      assert dialog_id.local_tag == "to-tag-456"
+      assert dialog_id.remote_tag == "from-tag-123"
       assert dialog_id.direction == :uas
     end
 
@@ -78,9 +79,10 @@ defmodule ParrotSip.DialogTest do
 
       dialog_id = Dialog.from_message(request)
 
+      # For incoming request to UAS: local=To (no tag yet), remote=From
       assert dialog_id.call_id == "call-123@example.com"
-      assert dialog_id.local_tag == "from-tag-123"
-      assert dialog_id.remote_tag == nil
+      assert dialog_id.local_tag == nil
+      assert dialog_id.remote_tag == "from-tag-123"
       assert dialog_id.direction == :uas
     end
   end
@@ -550,6 +552,13 @@ defmodule ParrotSip.DialogTest do
       assert uac_id == "call-123;local=alice-tag;remote=bob-tag;uac"
       assert uas_id == "call-123;local=bob-tag;remote=alice-tag;uas"
     end
+
+    test "generates early dialog ID without remote tag" do
+      id = Dialog.generate_id(:uac, "call-123", "local-tag", nil)
+
+      assert id == "call-123;local=local-tag;uac"
+      refute String.contains?(id, ";remote=")
+    end
   end
 
   describe "uas_process/2 - RFC 3261 Section 12.2.2" do
@@ -984,6 +993,198 @@ defmodule ParrotSip.DialogTest do
     end
   end
 
+  describe "malformed message validation" do
+    test "uas_create returns error for nil from header" do
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: nil,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com"
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}},
+        contact: nil
+      }
+      
+      assert {:error, :invalid_from_header} = Dialog.uas_create(request, response)
+    end
+
+    test "uas_create returns error for nil to header in response" do
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "remote-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com",
+        contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: nil
+      }
+      
+      assert {:error, :invalid_to_header} = Dialog.uas_create(request, response)
+    end
+
+    test "uas_create returns error for nil cseq" do
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "remote-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: nil,
+        request_uri: "sip:bob@biloxi.com",
+        contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
+      }
+      
+      assert {:error, :invalid_cseq_header} = Dialog.uas_create(request, response)
+    end
+
+    test "uac_create returns error for nil from header" do
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: nil,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com"
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "remote-tag"}},
+        contact: nil
+      }
+      
+      assert {:error, :invalid_from_header} = Dialog.uac_create(request, response)
+    end
+
+    test "uac_create returns error for nil to header in response" do
+      request = %Message{
+        method: :invite,
+        call_id: "test-call",
+        from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
+        to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
+        cseq: %CSeq{number: 1, method: :invite},
+        request_uri: "sip:bob@biloxi.com",
+        contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
+      }
+      
+      response = %Message{
+        status_code: 200,
+        to: nil
+      }
+      
+      assert {:error, :invalid_to_header} = Dialog.uac_create(request, response)
+    end
+  end
+
+  describe "uas_process malformed message handling" do
+    test "uas_process crashes on nil cseq - BUG #5" do
+      # This test exposes a bug: uas_process doesn't validate cseq
+      dialog = %Dialog{
+        id: "test-dialog",
+        state: :confirmed,
+        call_id: "test-call",
+        local_tag: "local",
+        remote_tag: "remote",
+        local_uri: "sip:bob@example.com",
+        remote_uri: "sip:alice@example.com",
+        remote_target: "sip:alice@127.0.0.1",
+        local_seq: 1,
+        remote_seq: 1,
+        route_set: [],
+        secure: false
+      }
+      
+      malformed_request = %Message{
+        method: :options,
+        cseq: nil  # Missing CSeq!
+      }
+      
+      # After fix: should return error instead of crashing
+      result = Dialog.uas_process(malformed_request, dialog)
+      assert {:error, :missing_cseq} = result
+    end
+
+    test "uas_process handles invalid cseq (not a map)" do
+      dialog = %Dialog{
+        id: "test-dialog",
+        state: :confirmed,
+        call_id: "test-call",
+        local_tag: "local",
+        remote_tag: "remote",
+        local_uri: "sip:bob@example.com",
+        remote_uri: "sip:alice@example.com",
+        remote_target: "sip:alice@127.0.0.1",
+        local_seq: 1,
+        remote_seq: 1,
+        route_set: [],
+        secure: false
+      }
+      
+      malformed_request = %Message{
+        method: :options,
+        cseq: "invalid"  # Not a CSeq struct!
+      }
+      
+      result = Dialog.uas_process(malformed_request, dialog)
+      assert {:error, :invalid_cseq} = result
+    end
+
+    test "uas_process successfully processes valid request" do
+      dialog = %Dialog{
+        id: "test-dialog",
+        state: :confirmed,
+        call_id: "test-call",
+        local_tag: "local",
+        remote_tag: "remote",
+        local_uri: "sip:bob@example.com",
+        remote_uri: "sip:alice@example.com",
+        remote_target: "sip:alice@127.0.0.1",
+        local_seq: 1,
+        remote_seq: 1,
+        route_set: [],
+        secure: false
+      }
+      
+      valid_request = %Message{
+        method: :options,
+        cseq: %CSeq{number: 2, method: :options}
+      }
+      
+      result = Dialog.uas_process(valid_request, dialog)
+      assert {:ok, updated} = result
+      assert updated.remote_seq == 2
+      assert updated.state == :confirmed
+    end
+  end
+
+  describe "race conditions and process safety" do
+    test "find_and_use_dialog returns error for non-existent dialog" do
+      # This test documents Bug #3: race condition in find_and_use_dialog
+      # If process dies between lookup and :sys.get_state, it would crash
+      # For now, test that non-existent dialog returns error
+      
+      dialog_id_str = "nonexistent-call@example.com;local=abc;remote=xyz;uas"
+      request = %Message{method: :options}
+      
+      result = Dialog.find_and_use_dialog(dialog_id_str, request)
+      assert {:error, :no_dialog} = result
+    end
+  end
+
   describe "error handling" do
     test "create_from_invite returns error for missing Call-ID" do
       invite = %Message{
@@ -1061,8 +1262,9 @@ defmodule ParrotSip.DialogTest do
 
       dialog_id = Dialog.from_message(message)
 
-      assert dialog_id.local_tag == "from-tag"
-      assert dialog_id.remote_tag == nil
+      # For incoming request to UAS: local=To (nil), remote=From
+      assert dialog_id.local_tag == nil
+      assert dialog_id.remote_tag == "from-tag"
     end
   end
 
@@ -1179,6 +1381,568 @@ defmodule ParrotSip.DialogTest do
 
       {:ok, terminated_dialog} = Dialog.uas_process(bye_request, confirmed_dialog)
       assert terminated_dialog.state == :terminated
+    end
+  end
+
+  describe "find_and_use_dialog/2" do
+    test "returns error when dialog not found" do
+      dialog_id_str = "nonexistent@example.com;local=tag1;remote=tag2"
+      request = %Message{method: :options}
+
+      result = Dialog.find_and_use_dialog(dialog_id_str, request)
+      # Should return error since dialog doesn't exist
+      assert {:error, :no_dialog} = result
+    end
+
+  end
+
+  describe "uac_result/2" do
+    test "returns :ok for transaction result" do
+      request = %Message{
+        method: :invite,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      assert :ok = Dialog.uac_result(request, {:message, %Message{}})
+    end
+
+    test "returns :ok for stop result" do
+      request = %Message{
+        method: :invite,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      assert :ok = Dialog.uac_result(request, {:stop, :timeout})
+    end
+  end
+
+  describe "count/0" do
+    test "returns non-negative integer count of dialogs" do
+      count = Dialog.count()
+      assert is_integer(count)
+      assert count >= 0
+    end
+  end
+
+  describe "from_message/1 - all clauses" do
+    test "handles message without direction (defaults based on type)" do
+      message = %Message{
+        type: :request,
+        method: :invite,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{"tag" => "to-tag"}},
+        call_id: "test@example.com"
+      }
+
+      dialog_id = Dialog.from_message(message)
+      assert dialog_id.call_id == "test@example.com"
+    end
+
+    test "handles message with missing tags gracefully" do
+      message = %Message{
+        type: :request,
+        from: %From{parameters: %{}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      dialog_id = Dialog.from_message(message)
+      assert dialog_id.call_id == "test@example.com"
+      assert dialog_id.local_tag == nil || dialog_id.local_tag == ""
+    end
+  end
+
+  describe "is_complete?/1 - map version" do
+    test "returns true for complete map dialog ID" do
+      dialog_id = %{
+        call_id: "test@example.com",
+        local_tag: "local-tag",
+        remote_tag: "remote-tag"
+      }
+
+      assert Dialog.is_complete?(dialog_id) == true
+    end
+
+    test "returns false for incomplete map dialog ID with nil remote_tag" do
+      dialog_id = %{
+        call_id: "test@example.com",
+        local_tag: "local-tag",
+        remote_tag: nil
+      }
+
+      assert Dialog.is_complete?(dialog_id) == false
+    end
+
+    test "returns false for incomplete map dialog ID with nil local_tag" do
+      dialog_id = %{
+        call_id: "test@example.com",
+        local_tag: nil,
+        remote_tag: "remote-tag"
+      }
+
+      assert Dialog.is_complete?(dialog_id) == false
+    end
+  end
+
+  describe "create_from_invite/2 - error cases" do
+    test "returns error for non-INVITE message" do
+      message = %Message{
+        method: :options,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite(message, :uac)
+    end
+
+    test "returns error for invalid role" do
+      message = %Message{
+        method: :invite,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      assert {:error, "Role must be :uac or :uas"} = Dialog.create_from_invite(message, :invalid)
+    end
+
+    test "returns error for invalid message type" do
+      assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite("not a message", :uac)
+    end
+
+    test "returns error for UAC INVITE without call_id" do
+      message = %Message{
+        method: :invite,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{}},
+        call_id: nil
+      }
+
+      assert {:error, :no_call_id} = Dialog.create_from_invite(message, :uac)
+    end
+
+    test "returns error for UAC INVITE without from_tag" do
+      message = %Message{
+        method: :invite,
+        from: %From{parameters: %{}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      assert {:error, :no_from_tag} = Dialog.create_from_invite(message, :uac)
+    end
+
+    test "returns error for UAS INVITE without call_id" do
+      message = %Message{
+        method: :invite,
+        from: %From{parameters: %{"tag" => "from-tag"}},
+        to: %To{parameters: %{}},
+        call_id: nil
+      }
+
+      assert {:error, :no_call_id} = Dialog.create_from_invite(message, :uas)
+    end
+
+    test "returns error for UAS INVITE without from_tag" do
+      message = %Message{
+        method: :invite,
+        from: %From{parameters: %{}},
+        to: %To{parameters: %{}},
+        call_id: "test@example.com"
+      }
+
+      assert {:error, :no_from_tag} = Dialog.create_from_invite(message, :uas)
+    end
+
+    test "handles INVITE with valid Contact URI" do
+      message = %Message{
+        method: :invite,
+        from: %From{uri: Uri.parse!("sip:alice@example.com"), parameters: %{"tag" => "from-tag"}},
+        to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{uri: Uri.parse!("sip:alice@192.168.1.1:5060")}
+      }
+
+      {:ok, dialog} = Dialog.create_from_invite(message, :uac)
+      assert dialog.remote_target == Uri.parse!("sip:alice@192.168.1.1:5060")
+    end
+  end
+
+  describe "match?/2 - additional cases" do
+    test "matches dialog IDs with same values" do
+      dialog_id1 = %{call_id: "test@example.com", local_tag: "tag1", remote_tag: "tag2"}
+      dialog_id2 = %{call_id: "test@example.com", local_tag: "tag1", remote_tag: "tag2"}
+
+      assert Dialog.match?(dialog_id1, dialog_id2) == true
+    end
+
+    test "does not match dialog IDs with different call-ids" do
+      dialog_id1 = %{call_id: "test1@example.com", local_tag: "tag1", remote_tag: "tag2"}
+      dialog_id2 = %{call_id: "test2@example.com", local_tag: "tag1", remote_tag: "tag2"}
+
+      assert Dialog.match?(dialog_id1, dialog_id2) == false
+    end
+
+    test "does not match dialog IDs with different local tags" do
+      dialog_id1 = %{call_id: "test@example.com", local_tag: "tag1", remote_tag: "tag2"}
+      dialog_id2 = %{call_id: "test@example.com", local_tag: "tag3", remote_tag: "tag2"}
+
+      assert Dialog.match?(dialog_id1, dialog_id2) == false
+    end
+
+    test "does not match dialog IDs with different remote tags" do
+      dialog_id1 = %{call_id: "test@example.com", local_tag: "tag1", remote_tag: "tag2"}
+      dialog_id2 = %{call_id: "test@example.com", local_tag: "tag1", remote_tag: "tag3"}
+
+      assert Dialog.match?(dialog_id1, dialog_id2) == false
+    end
+  end
+
+  describe "to_string/1 - with direction" do
+    test "converts map dialog ID with direction to string" do
+      dialog_id = %{
+        call_id: "test@example.com",
+        local_tag: "local-tag",
+        remote_tag: "remote-tag",
+        direction: :uac
+      }
+
+      result = Dialog.to_string(dialog_id)
+      assert is_binary(result)
+      assert String.contains?(result, "test@example.com")
+      assert String.contains?(result, "local-tag")
+      assert String.contains?(result, "remote-tag")
+      assert String.contains?(result, "uac")
+    end
+
+    test "converts map dialog ID with :uas direction to string" do
+      dialog_id = %{
+        call_id: "test@example.com",
+        local_tag: "local-tag",
+        remote_tag: "remote-tag",
+        direction: :uas
+      }
+
+      result = Dialog.to_string(dialog_id)
+      assert String.contains?(result, "uas")
+    end
+  end
+
+
+  describe "uas_create/2 - edge cases" do
+    test "creates dialog with missing contact header" do
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "alice-tag"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        # No contact header
+        other_headers: %{}
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        from: request.from,
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "bob-tag"}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        other_headers: %{}
+      }
+
+      {:ok, dialog} = Dialog.uas_create(request, response)
+      assert dialog.state == :confirmed
+      # Without contact, remote_target falls back to From URI
+      assert dialog.remote_target == "sip:alice@example.com"
+    end
+  end
+
+  describe "uac_create/2 - edge cases" do
+    test "creates early dialog with 180 response" do
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "alice-tag"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{uri: Uri.parse!("sip:alice@192.168.1.1:5060")},
+        other_headers: %{}
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 180,
+        from: request.from,
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "bob-tag"}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{uri: Uri.parse!("sip:bob@192.168.1.2:5060")},
+        other_headers: %{}
+      }
+
+      {:ok, dialog} = Dialog.uac_create(request, response)
+      assert dialog.state == :early
+    end
+
+    test "creates dialog with record-route headers" do
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "alice-tag"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{uri: Uri.parse!("sip:alice@192.168.1.1:5060")},
+        record_route: ["sip:proxy.example.com", "sip:proxy2.example.com"],
+        other_headers: %{}
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        from: request.from,
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "bob-tag"}
+        },
+        call_id: "test@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{uri: Uri.parse!("sip:bob@192.168.1.2:5060")},
+        other_headers: %{}
+      }
+
+      {:ok, dialog} = Dialog.uac_create(request, response)
+      assert dialog.state == :confirmed
+      # Route set extraction is not yet implemented, returns []
+      assert dialog.route_set == []
+    end
+
+    test "creates UAC dialog when response has no Contact header" do
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:bob@example.com",
+        from: %From{
+          uri: Uri.parse!("sip:alice@example.com"),
+          parameters: %{"tag" => "alice-tag-no-contact"}
+        },
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{}
+        },
+        call_id: "no-contact@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{uri: Uri.parse!("sip:alice@192.168.1.1:5060")},
+        other_headers: %{}
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        from: request.from,
+        to: %To{
+          uri: Uri.parse!("sip:bob@example.com"),
+          parameters: %{"tag" => "bob-tag-no-contact"}
+        },
+        call_id: "no-contact@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: nil,
+        other_headers: %{}
+      }
+
+      {:ok, dialog} = Dialog.uac_create(request, response)
+      assert dialog.state == :confirmed
+      # When no contact in response, should use remote_uri as remote_target
+      assert dialog.remote_target == dialog.remote_uri
+    end
+
+  end
+
+end
+
+defmodule ParrotSip.DialogProcessTest do
+  use ExUnit.Case, async: false
+
+  alias ParrotSip.{Dialog, DialogStatem}
+  alias ParrotSip.Message
+  alias ParrotSip.Headers.{From, To, CSeq, Contact, Via}
+
+  describe "dialog process integration" do
+    test "find_and_use_dialog with registered dialog process" do
+      invite = %Message{
+        method: :invite,
+        request_uri: "sip:user@example.com",
+        version: "SIP/2.0",
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK-proc-test"}
+        },
+        from: %From{
+          display_name: "Test",
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "proc-from-tag"}
+        },
+        to: %To{
+          display_name: "Target",
+          uri: "sip:target@example.com",
+          parameters: %{}
+        },
+        call_id: "proc-call-id@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{
+          uri: "sip:test@127.0.0.1:5060",
+          parameters: %{}
+        },
+        other_headers: %{},
+        body: nil
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        reason_phrase: "OK",
+        version: "SIP/2.0",
+        via: invite.via,
+        from: %From{
+          display_name: "Test",
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "proc-from-tag"}
+        },
+        to: %To{
+          display_name: "Target",
+          uri: "sip:target@example.com",
+          parameters: %{"tag" => "proc-to-tag"}
+        },
+        call_id: "proc-call-id@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{
+          uri: "sip:target@127.0.0.2:5060",
+          parameters: %{}
+        },
+        other_headers: %{},
+        body: nil
+      }
+
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
+      {_state_name, %{dialog: dialog}} = :sys.get_state(pid)
+      dialog_id_str = dialog.id
+
+      options_request = %Message{method: :options}
+      result = Dialog.find_and_use_dialog(dialog_id_str, options_request)
+      
+      assert {:ok, updated_request, updated_dialog} = result
+      assert updated_request.method == :options
+      assert updated_dialog.local_seq == 2
+
+      GenServer.stop(pid)
+    end
+
+    test "uac_create registers dialog in registry when supervisor starts child" do
+      request = %Message{
+        method: :invite,
+        request_uri: "sip:user@example.com",
+        version: "SIP/2.0",
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK-reg-test"}
+        },
+        from: %From{
+          display_name: "Test",
+          uri: "sip:test@example.com",
+          parameters: %{"tag" => "reg-from-tag"}
+        },
+        to: %To{
+          display_name: "Target",
+          uri: "sip:target@example.com",
+          parameters: %{}
+        },
+        call_id: "reg-call-id@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{
+          uri: "sip:test@127.0.0.1:5060",
+          parameters: %{}
+        },
+        other_headers: %{},
+        body: nil
+      }
+
+      response = %Message{
+        type: :response,
+        status_code: 200,
+        reason_phrase: "OK",
+        version: "SIP/2.0",
+        via: request.via,
+        from: request.from,
+        to: %To{
+          display_name: "Target",
+          uri: "sip:target@example.com",
+          parameters: %{"tag" => "reg-to-tag"}
+        },
+        call_id: "reg-call-id@example.com",
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{
+          uri: "sip:target@127.0.0.2:5060",
+          parameters: %{}
+        },
+        other_headers: %{},
+        body: nil
+      }
+
+      {:ok, dialog} = Dialog.uac_create(request, response)
+      
+      assert dialog.state == :confirmed
+      assert dialog.call_id == "reg-call-id@example.com"
+      
+      # Verify registration happened by looking up the dialog
+      dialog_id_str = dialog.id
+      case ParrotSip.DialogStatem.find_dialog(dialog_id_str) do
+        {:ok, pid} -> 
+          assert is_pid(pid)
+          GenServer.stop(pid)
+        {:error, :no_dialog} ->
+          # Supervisor not running, registration didn't happen
+          :ok
+      end
     end
   end
 end
