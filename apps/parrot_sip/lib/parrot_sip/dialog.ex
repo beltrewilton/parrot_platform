@@ -210,25 +210,7 @@ defmodule ParrotSip.Dialog do
   end
 
   @doc """
-  Finds a dialog and creates an in-dialog request.
-
-  Implements RFC 3261 Section 12.2.1 - Requests within a Dialog.
-
-  ## RFC 3261 Section 12.2.1 - Requests within a Dialog
-
-  Requests within a dialog use the dialog's route set to determine
-  the Request-URI and Route header fields. The method for creating
-  in-dialog requests:
-
-  1. The URI in the Request-URI is the remote target's contact URI
-  2. Route header is set from the dialog's route set
-  3. From and To headers use dialog's local/remote URIs and tags
-  4. Call-ID is from the dialog
-  5. CSeq is incremented from the last local sequence number
-
-  This function currently delegates to DialogStatem for state management.
-  @doc """
-  Processes a transaction result for the UAC.
+  Processes a transaction result for the UAC (pure functional version).
 
   Implements RFC 3261 Section 12.2.1.2 - Processing Responses.
 
@@ -242,31 +224,51 @@ defmodule ParrotSip.Dialog do
   4. Target refresh requests (INVITE, UPDATE) may update the remote target URI
   5. CSeq processing validates the response matches the request
 
+  This is a pure functional operation. For stateful dialog management,
+  DialogStatem should call this function and manage the state.
+
   ## Parameters
 
-  - `request`: The original request sent within the dialog
-  - `transaction_result`: Result from the transaction (response or error)
+  - `response`: The response message received
+  - `dialog`: The current dialog state
 
   ## Returns
 
-  - `:ok`: Successfully processed (always succeeds in current implementation)
+  - `{:ok, updated_dialog}`: The updated dialog with new state
+  - `{:error, reason}`: If the response is invalid for this dialog
+
+  ## Examples
+
+      iex> dialog = %ParrotSip.Dialog{state: :early, ...}
+      iex> response = %ParrotSip.Message{status_code: 200, cseq: %CSeq{method: :invite, number: 1}}
+      iex> {:ok, updated} = ParrotSip.Dialog.uac_result(response, dialog)
+      iex> updated.state
+      :confirmed
   """
-  @spec uac_result(Message.t(), any()) :: :ok
-  def uac_result(%Message{} = _request, _transaction_result) do
-    # For now, do nothing
-    # In a real implementation, this would update dialog state based on transaction results
-    :ok
+  @spec uac_result(Message.t(), t()) :: {:ok, t()} | {:error, atom()}
+  def uac_result(%Message{type: :response} = response, %__MODULE__{} = dialog) do
+    # Use the existing uac_response function which handles state transitions
+    uac_response(response, dialog)
+  end
+
+  def uac_result(%Message{type: :response}, _dialog) do
+    {:error, :invalid_dialog}
+  end
+
+  def uac_result(_message, _dialog) do
+    {:error, :not_a_response}
   end
 
   @doc """
-  Returns the count of active dialogs.
+  Returns the count of active dialogs from the registry.
 
-  This delegates to DialogStatem which tracks all active dialog processes
-  through the Dialog.Supervisor.
+  This is a utility function that queries the Dialog Registry directly
+  to count dialog processes. This belongs in Dialog module as it's querying
+  dialog-related registry entries.
 
   ## Returns
 
-  The number of active dialog processes currently running.
+  The number of active dialog processes currently registered.
 
   ## Examples
 
@@ -275,9 +277,12 @@ defmodule ParrotSip.Dialog do
   """
   @spec count() :: non_neg_integer()
   def count() do
-    # For now, return 0 as we don't have active dialog tracking yet
-    # In a real implementation, this would count dialogs in the registry
-    0
+    # Count all registered dialogs in the registry
+    # Registry entries are tagged with {:dialog, dialog_id}
+    Registry.select(ParrotSip.Registry, [
+      {{{:dialog, :"$1"}, :"$2", :"$3"}, [], [true]}
+    ])
+    |> length()
   end
 
   @doc """
@@ -807,8 +812,13 @@ defmodule ParrotSip.Dialog do
         # Handle BYE request (terminates the dialog)
         state = if request.method == :bye, do: :terminated, else: dialog.state
 
-        # Update the dialog
-        updated_dialog = %{dialog | remote_seq: remote_seq, state: state}
+        # RFC 3261 Section 12.2.2: Handle target refresh requests
+        # Target refresh requests (INVITE, UPDATE, SUBSCRIBE) can update the remote target
+        updated_dialog = 
+          dialog
+          |> Map.put(:remote_seq, remote_seq)
+          |> Map.put(:state, state)
+          |> maybe_update_remote_target(request)
 
         {:ok, updated_dialog}
       
@@ -819,6 +829,15 @@ defmodule ParrotSip.Dialog do
         {:error, :invalid_cseq}
     end
   end
+  
+  # RFC 3261 Section 12.2.2: Target refresh requests update the remote target
+  # Target refresh requests: INVITE, UPDATE, SUBSCRIBE, REFER
+  defp maybe_update_remote_target(dialog, %Message{method: method, contact: %Contact{uri: uri}})
+       when method in [:invite, :update, :subscribe, :refer] and not is_nil(uri) do
+    %{dialog | remote_target: uri}
+  end
+  
+  defp maybe_update_remote_target(dialog, _request), do: dialog
 
   @doc """
   Creates an in-dialog request from the UAC perspective.
@@ -1011,11 +1030,13 @@ defmodule ParrotSip.Dialog do
   end
 
   # Extract route set from a response
-  defp extract_route_set(_response) do
-    # In a real implementation, this would extract Record-Route headers
-    # from the response and reverse them for the route set
-    []
+  # Per RFC 3261 Section 12.1.1:
+  # The route set MUST be set to the list of URIs in the Record-Route
+  # header field from the response, taken in reverse order
+  defp extract_route_set(%Message{record_route: record_route}) when is_list(record_route) do
+    Enum.reverse(record_route)
   end
+  defp extract_route_set(_response), do: []
 
   # For UAC, local URI is From
   defp extract_local_uri(%Message{from: %From{uri: uri}}, :uac), do: uri

@@ -439,6 +439,132 @@ defmodule ParrotSip.DialogStatemTest do
     end
   end
 
+  describe "dialog forking - RFC 3261 Section 12.1.2" do
+    test "creates multiple early dialogs for forked responses" do
+      # Alice sends INVITE to Bob
+      invite = build_invite_message()
+      
+      # Proxy forks to Bob's desk phone (180 response with to-tag-desk)
+      response_desk = %Message{
+        type: :response,
+        status_code: 180,
+        reason_phrase: "Ringing",
+        via: invite.via,
+        from: invite.from,
+        to: %To{
+          display_name: "Bob Desk",
+          uri: "sip:bob-desk@example.com",
+          parameters: %{"tag" => "to-tag-desk"}  # Different to-tag!
+        },
+        call_id: invite.call_id,
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{
+          uri: "sip:bob@192.168.1.10:5060",
+          parameters: %{}
+        },
+        other_headers: %{}
+      }
+      
+      # Proxy forks to Bob's mobile (180 response with to-tag-mobile)
+      response_mobile = %Message{
+        type: :response,
+        status_code: 180,
+        reason_phrase: "Ringing",
+        via: invite.via,
+        from: invite.from,
+        to: %To{
+          display_name: "Bob Mobile",
+          uri: "sip:bob-mobile@example.com",
+          parameters: %{"tag" => "to-tag-mobile"}  # Different to-tag!
+        },
+        call_id: invite.call_id,
+        cseq: %CSeq{number: 1, method: :invite},
+        contact: %Contact{
+          uri: "sip:bob@10.0.0.5:5060",
+          parameters: %{}
+        },
+        other_headers: %{}
+      }
+      
+      # Create first early dialog (desk phone)
+      {:ok, dialog_desk_pid} = DialogStatem.start_link({:uac, invite, response_desk})
+      assert Process.alive?(dialog_desk_pid)
+      
+      # Create second early dialog (mobile)
+      {:ok, dialog_mobile_pid} = DialogStatem.start_link({:uac, invite, response_mobile})
+      assert Process.alive?(dialog_mobile_pid)
+      
+      # Both should be separate processes
+      assert dialog_desk_pid != dialog_mobile_pid
+      
+      # Both should be in early state
+      {state_desk, _data_desk} = :sys.get_state(dialog_desk_pid)
+      {state_mobile, _data_mobile} = :sys.get_state(dialog_mobile_pid)
+      assert state_desk == :early
+      assert state_mobile == :early
+      
+      # Now desk phone answers with 200 OK
+      ok_response_desk = %{response_desk | status_code: 200, reason_phrase: "OK"}
+      :gen_statem.cast(dialog_desk_pid, {:uac_trans_result, {:message, ok_response_desk}})
+      
+      Process.sleep(50)
+      
+      # Desk dialog should transition to confirmed
+      {final_state_desk, _} = :sys.get_state(dialog_desk_pid)
+      assert final_state_desk == :confirmed
+      
+      # Mobile dialog should still be early (or terminated by application)
+      assert Process.alive?(dialog_mobile_pid)
+    end
+    
+    test "each forked dialog has unique dialog ID based on to-tag" do
+      invite = build_invite_message()
+      
+      response1 = build_response_message(180, "Ringing")
+      response1 = %{response1 | to: %{response1.to | parameters: %{"tag" => "fork-1"}}}
+      
+      response2 = build_response_message(180, "Ringing")
+      response2 = %{response2 | to: %{response2.to | parameters: %{"tag" => "fork-2"}}}
+      
+      {:ok, pid1} = DialogStatem.start_link({:uac, invite, response1})
+      {:ok, pid2} = DialogStatem.start_link({:uac, invite, response2})
+      
+      {_state1, data1} = :sys.get_state(pid1)
+      {_state2, data2} = :sys.get_state(pid2)
+      
+      # Dialog IDs should be different because to-tags differ
+      assert data1.dialog.id != data2.dialog.id
+      
+      # But call-id should be the same
+      assert data1.dialog.call_id == data2.dialog.call_id
+    end
+    
+    test "confirmed dialog wins over early dialogs with same call-id" do
+      invite = build_invite_message()
+      
+      # First fork sends 180
+      response_early = build_response_message(180, "Ringing")
+      response_early = %{response_early | to: %{response_early.to | parameters: %{"tag" => "early-tag"}}}
+      
+      {:ok, early_pid} = DialogStatem.start_link({:uac, invite, response_early})
+      {state, _} = :sys.get_state(early_pid)
+      assert state == :early
+      
+      # Second fork sends 200 OK
+      response_ok = build_response_message(200, "OK")
+      response_ok = %{response_ok | to: %{response_ok.to | parameters: %{"tag" => "winner-tag"}}}
+      
+      {:ok, confirmed_pid} = DialogStatem.start_link({:uac, invite, response_ok})
+      {state, _} = :sys.get_state(confirmed_pid)
+      assert state == :confirmed
+      
+      # Both dialogs exist independently
+      assert Process.alive?(early_pid)
+      assert Process.alive?(confirmed_pid)
+      assert early_pid != confirmed_pid
+    end
+  end
+
   describe "subscription handling" do
     test "creates UAS SUBSCRIBE dialog with timeout" do
       subscribe_msg = build_subscribe_message()
