@@ -1635,12 +1635,11 @@ defmodule ParrotSip.TransactionStatemTest do
       end
     end
 
-    test "timer G exponential backoff is broken - always uses 1000ms", %{test_id: test_id} do
-      # BUG: Line 1748 has min(1000, 4000) which is always 1000
-      # This should implement exponential backoff but doesn't
+    test "timer G exponential backoff works correctly", %{test_id: test_id} do
       # RFC 3261 requires: 500ms, 1000ms, 2000ms, 4000ms, 4000ms...
+      # This test verifies the fix for the Timer G exponential backoff bug
       
-      request = build_invite(unique_branch("z9hG4bKtimerGbug", test_id))
+      request = build_invite(unique_branch("z9hG4bKtimerG", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
@@ -1651,33 +1650,41 @@ defmodule ParrotSip.TransactionStatemTest do
       :ok = TransactionStatem.server_response(error_resp, transaction)
       assert_state(pid, :completed)
       
-      # Timer G should be running
+      # Timer G should be running at 500ms initially
       assert timer_active?(pid, :g)
       
       # Get initial timer G
       initial_ref = get_timer_ref(pid, :g)
-      _initial_time = Process.read_timer(initial_ref)
+      initial_time = Process.read_timer(initial_ref)
       
-      # Wait for Timer G to fire
+      # Should be approximately 500ms
+      assert initial_time > 400 and initial_time < 600, 
+        "Initial Timer G should be ~500ms, got #{initial_time}ms"
+      
+      # Wait for Timer G to fire and reschedule
       Process.sleep(600)
       
-      # Should have rescheduled with doubled interval
-      # But BUG: it's always 1000ms instead of exponential
+      # Should have rescheduled with doubled interval (1000ms)
       new_ref = get_timer_ref(pid, :g)
       
       # The timer should exist (proving it was rescheduled)
       assert new_ref != nil
       assert new_ref != initial_ref
       
-      # BUG: This will be ~1000ms, not ~1000-2000ms as it should be
-      # The min(1000, 4000) at line 1748 is broken
+      # Should be approximately 1000ms (doubled from 500ms)
       new_time = Process.read_timer(new_ref)
+      assert new_time >= 850 and new_time <= 1100, 
+        "Second Timer G should be ~1000ms (doubled), got #{new_time}ms"
       
-      # Expected: ~2000ms for second firing (doubled from 1000ms)
-      # Actual: ~1000ms (always the same due to bug)
-      # This test documents the bug exists
-      assert new_time > 900 and new_time < 1100, 
-        "Timer G should use exponential backoff but is stuck at 1000ms (bug at line 1748)"
+      # Wait for it to fire again
+      Process.sleep(1100)
+      
+      # Should now be at 2000ms (doubled again)
+      third_ref = get_timer_ref(pid, :g)
+      assert third_ref != new_ref
+      third_time = Process.read_timer(third_ref)
+      assert third_time >= 1700 and third_time <= 2100,
+        "Third Timer G should be ~2000ms, got #{third_time}ms"
     end
   end
 

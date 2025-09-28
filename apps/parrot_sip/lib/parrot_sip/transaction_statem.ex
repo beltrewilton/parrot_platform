@@ -1038,6 +1038,13 @@ defmodule ParrotSip.TransactionStatem do
     ref = Process.send_after(self(), {:event, timer_name}, timeout)
     updated_data = %{data | timers: Map.put(data.timers || %{}, timer_name, ref)}
     
+    # For Timer G, track the initial interval for exponential backoff
+    updated_data = if timer_name == :g do
+      Map.put(updated_data, :timer_g_interval, timeout)
+    else
+      updated_data
+    end
+    
     case process_actions(rest, updated_data) do
       {:keep_state_and_data, _} -> {:keep_state, updated_data}
       {:keep_state, result_data} -> {:keep_state, result_data}
@@ -1743,13 +1750,15 @@ defmodule ParrotSip.TransactionStatem do
       Process.cancel_timer(timers[:g])
     end
 
-    # Get the current interval (stored timer ref doesn't help, so start with 500ms and double it)
-    # In a real implementation, we'd track the interval. For now, use 1000ms (doubled from initial 500ms)
-    new_interval = min(1000, 4000)
+    # Get the current interval and double it, capping at 4000ms per RFC 3261
+    # Timer G starts at 500ms (set when entering completed state)
+    current_interval = Map.get(state, :timer_g_interval, 500)
+    new_interval = min(current_interval * 2, 4000)
+    
     timer_ref = Process.send_after(self(), {:event, :g}, new_interval)
     new_timers = Map.put(timers, :g, timer_ref)
 
-    {:keep_state, %{state | timers: new_timers}}
+    {:keep_state, %{state | timers: new_timers, timer_g_interval: new_interval}}
   end
 
   def handle_event(
