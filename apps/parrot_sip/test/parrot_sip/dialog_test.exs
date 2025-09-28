@@ -2095,5 +2095,82 @@ defmodule ParrotSip.DialogProcessTest do
       # Should have used fallback uri
       assert dialog.remote_target != ""
     end
+
+    test "uas_process returns error for missing cseq" do
+      # Test line 841-842: missing CSeq header
+      dialog = %Dialog{
+        id: "test-dialog",
+        state: :confirmed,
+        call_id: "test-call",
+        local_tag: "local",
+        remote_tag: "remote",
+        local_seq: 1,
+        remote_seq: 1,
+        remote_uri: "sip:alice@atlanta.com",
+        local_uri: "sip:bob@biloxi.com",
+        remote_target: "sip:alice@127.0.0.1:5060",
+        route_set: [],
+        secure: false
+      }
+      
+      request = %Message{
+        method: :info,
+        cseq: nil  # Missing CSeq
+      }
+      
+      assert {:error, :missing_cseq} = Dialog.uas_process(request, dialog)
+    end
+
+    test "uas_process returns error for invalid cseq" do
+      # Test line 844-845: invalid CSeq (not a map with number)
+      dialog = %Dialog{
+        id: "test-dialog",
+        state: :confirmed,
+        call_id: "test-call",
+        local_tag: "local",
+        remote_tag: "remote",
+        local_seq: 1,
+        remote_seq: 1,
+        remote_uri: "sip:alice@atlanta.com",
+        local_uri: "sip:bob@biloxi.com",
+        remote_target: "sip:alice@127.0.0.1:5060",
+        route_set: [],
+        secure: false
+      }
+      
+      request = %Message{
+        method: :info,
+        cseq: %{method: :info}  # Missing number field
+      }
+      
+      assert {:error, :invalid_cseq} = Dialog.uas_process(request, dialog)
+    end
+
+    test "uas_process handles BYE and terminates dialog" do
+      # Test line 834: BYE method terminates dialog
+      dialog = %Dialog{
+        id: "test-dialog",
+        state: :confirmed,
+        call_id: "test-call",
+        local_tag: "local",
+        remote_tag: "remote",
+        local_seq: 1,
+        remote_seq: 5,
+        remote_uri: "sip:alice@atlanta.com",
+        local_uri: "sip:bob@biloxi.com",
+        remote_target: "sip:alice@127.0.0.1:5060",
+        route_set: [],
+        secure: false
+      }
+      
+      bye_request = %Message{
+        method: :bye,
+        cseq: %CSeq{number: 10, method: :bye}
+      }
+      
+      assert {:ok, updated_dialog} = Dialog.uas_process(bye_request, dialog)
+      assert updated_dialog.state == :terminated
+      assert updated_dialog.remote_seq == 10
+    end
   end
 end
