@@ -1688,4 +1688,160 @@ defmodule ParrotSip.TransactionStatemTest do
     end
   end
 
+  describe "client_response error handling" do
+    test "handles malformed SIP response binary" do
+      via = %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKmalformed"}
+      }
+      
+      malformed_response = "GARBAGE DATA NOT A SIP MESSAGE"
+      
+      # Should handle parse error gracefully without crashing
+      assert :ok = TransactionStatem.client_response(via, malformed_response)
+    end
+    
+    test "handles response with binary CSeq header" do
+      via = %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKbinarycseq"}
+      }
+      
+      response_text = """
+      SIP/2.0 200 OK
+      Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKbinarycseq
+      From: <sip:alice@example.com>;tag=1234
+      To: <sip:bob@example.com>;tag=5678
+      Call-ID: test@example.com
+      CSeq: 1 INVITE
+      Content-Length: 0
+      
+      """
+      
+      # This tests the binary CSeq extraction path at lines 603-605
+      assert :ok = TransactionStatem.client_response(via, response_text)
+    end
+    
+    test "handles response with no branch in Via" do
+      via = %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{}
+      }
+      
+      response_text = """
+      SIP/2.0 200 OK
+      Via: SIP/2.0/UDP 127.0.0.1:5060
+      From: <sip:alice@example.com>;tag=1234
+      To: <sip:bob@example.com>;tag=5678
+      Call-ID: test@example.com
+      CSeq: 1 INVITE
+      Content-Length: 0
+      
+      """
+      
+      # Should handle missing branch gracefully (line 594, 615-616)
+      assert :ok = TransactionStatem.client_response(via, response_text)
+    end
+    
+    test "handles response for non-existent transaction" do
+      via = %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bKnonexistent"}
+      }
+      
+      response_text = """
+      SIP/2.0 200 OK
+      Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKnonexistent
+      From: <sip:alice@example.com>;tag=1234
+      To: <sip:bob@example.com>;tag=5678
+      Call-ID: test@example.com
+      CSeq: 1 INVITE
+      Content-Length: 0
+      
+      """
+      
+      # Should handle transaction not found gracefully (lines 624-627)
+      assert :ok = TransactionStatem.client_response(via, response_text)
+    end
+  end
+
+  describe "server_process edge cases" do
+    test "handles ACK for non-existent transaction with handler lacking process_ack" do
+      handler = %{module: __MODULE__, args: nil}
+      
+      ack = %Message{
+        type: :request,
+        method: :ack,
+        request_uri: "sip:test@example.com",
+        call_id: "nonexistent@example.com",
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bKnoack"}
+        },
+        from: %From{uri: "sip:alice@example.com", parameters: %{"tag" => "123"}},
+        to: %To{uri: "sip:bob@example.com", parameters: %{"tag" => "456"}},
+        cseq: %CSeq{number: 1, method: :ack},
+        other_headers: %{}
+      }
+      
+      # Should handle missing process_ack/2 gracefully (lines 235-236)
+      assert :ok = TransactionStatem.server_process(ack, handler)
+    end
+  end
+
+  describe "create_server_response error handling" do
+    test "returns error when transaction not found" do
+      request = build_invite("z9hG4bKnotfound")
+      response = Message.reply(request, 200, "OK")
+      
+      # Transaction doesn't exist in registry
+      assert {:error, "No transaction found"} = 
+        TransactionStatem.create_server_response(response, request)
+    end
+  end
+
+  describe "completed state retransmission handling" do
+    test "server transaction in completed retransmits on request", %{test_id: test_id} do
+      request = build_invite(unique_branch("z9hG4bKservercompleted", test_id))
+      {:ok, transaction} = Transaction.create_invite_server(request)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      
+      # Send error response to get to completed state
+      error_resp = Message.reply(request, 404, "Not Found")
+      :ok = TransactionStatem.server_response(error_resp, transaction)
+      assert_state(pid, :completed)
+      
+      # Now send a retransmitted request (lines 1441-1443)
+      # Server should retransmit the response
+      retransmitted_request = request
+      :gen_statem.cast(pid, {:received, retransmitted_request})
+      
+      Process.sleep(10)
+      # Should still be alive in completed state
+      assert Process.alive?(pid)
+    end
+  end
+
 end
