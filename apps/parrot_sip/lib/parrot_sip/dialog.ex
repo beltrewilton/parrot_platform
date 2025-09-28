@@ -806,21 +806,10 @@ defmodule ParrotSip.Dialog do
   """
   @spec uas_process(Message.t(), t()) :: {:ok, t()} | {:error, atom()}
   def uas_process(request, dialog) do
-    # Validate CSeq header
+    # Validate CSeq header first
     case request.cseq do
       %{number: remote_seq} when is_integer(remote_seq) ->
-        # Handle BYE request (terminates the dialog)
-        state = if request.method == :bye, do: :terminated, else: dialog.state
-
-        # RFC 3261 Section 12.2.2: Handle target refresh requests
-        # Target refresh requests (INVITE, UPDATE, SUBSCRIBE) can update the remote target
-        updated_dialog = 
-          dialog
-          |> Map.put(:remote_seq, remote_seq)
-          |> Map.put(:state, state)
-          |> maybe_update_remote_target(request)
-
-        {:ok, updated_dialog}
+        process_request_with_cseq(request, dialog, remote_seq)
       
       nil ->
         {:error, :missing_cseq}
@@ -828,6 +817,40 @@ defmodule ParrotSip.Dialog do
       _ ->
         {:error, :invalid_cseq}
     end
+  end
+  
+  # RFC 3261 Section 13.2.2.4: ACK uses same CSeq as INVITE
+  defp process_request_with_cseq(%Message{method: :ack}, dialog, _remote_seq) do
+    {:ok, dialog}
+  end
+  
+  # RFC 3262: PRACK is allowed in early dialogs and uses incremented CSeq
+  defp process_request_with_cseq(%Message{method: :prack}, %{state: :early} = dialog, remote_seq) 
+       when remote_seq > dialog.remote_seq do
+    updated_dialog = %{dialog | remote_seq: remote_seq}
+    {:ok, updated_dialog}
+  end
+  
+  # Normal request processing - CSeq must be greater than previous
+  defp process_request_with_cseq(request, dialog, remote_seq) 
+       when dialog.remote_seq == 0 or remote_seq > dialog.remote_seq do
+    # Handle BYE request (terminates the dialog)
+    state = if request.method == :bye, do: :terminated, else: dialog.state
+
+    # RFC 3261 Section 12.2.2: Handle target refresh requests
+    # Target refresh requests (INVITE, UPDATE, SUBSCRIBE) can update the remote target
+    updated_dialog = 
+      dialog
+      |> Map.put(:remote_seq, remote_seq)
+      |> Map.put(:state, state)
+      |> maybe_update_remote_target(request)
+
+    {:ok, updated_dialog}
+  end
+  
+  # Out of order CSeq - reject per RFC 3261 Section 12.2.2
+  defp process_request_with_cseq(_request, _dialog, _remote_seq) do
+    {:error, :cseq_out_of_order}
   end
   
   # RFC 3261 Section 12.2.2: Target refresh requests update the remote target
@@ -875,10 +898,21 @@ defmodule ParrotSip.Dialog do
       2
   """
   @spec uac_request(atom(), t()) :: {:ok, Message.t(), t()}
-  def uac_request(method, dialog) do
-    # Increment local sequence number
-    new_seq = dialog.local_seq + 1
-
+  def uac_request(method, dialog) when is_atom(method) do
+    uac_request(%Message{method: method}, dialog)
+  end
+  
+  # RFC 3261 Section 13.2.2.4: ACK uses same CSeq as INVITE
+  def uac_request(%Message{method: :ack} = template, dialog) do
+    build_uac_request(template, dialog, dialog.local_seq, false)
+  end
+  
+  # All other methods increment the CSeq
+  def uac_request(%Message{method: _method} = template, dialog) do
+    build_uac_request(template, dialog, dialog.local_seq + 1, true)
+  end
+  
+  defp build_uac_request(template, dialog, cseq_number, update_dialog_seq) do
     # Create basic headers
     from = %Headers.From{
       display_name: nil,
@@ -893,13 +927,13 @@ defmodule ParrotSip.Dialog do
     }
 
     cseq = %Headers.CSeq{
-      number: new_seq,
-      method: method
+      number: cseq_number,
+      method: template.method
     }
 
     # Create a basic request structure
     request = %Message{
-      method: method,
+      method: template.method,
       request_uri: dialog.remote_target,
       type: :request,
       direction: :outgoing,
@@ -917,12 +951,17 @@ defmodule ParrotSip.Dialog do
       call_id: dialog.call_id,
       cseq: cseq,
       max_forwards: 70,
-      body: "",
-      other_headers: %{}
+      # Preserve body and other_headers from template if provided
+      body: Map.get(template, :body, ""),
+      other_headers: Map.get(template, :other_headers, %{})
     }
 
-    # Update the dialog with the new sequence number
-    updated_dialog = %{dialog | local_seq: new_seq}
+    # Update the dialog's local sequence number if needed
+    updated_dialog = if update_dialog_seq do
+      %{dialog | local_seq: cseq_number}
+    else
+      dialog
+    end
 
     {:ok, request, updated_dialog}
   end

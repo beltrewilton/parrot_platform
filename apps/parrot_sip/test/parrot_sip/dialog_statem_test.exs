@@ -1429,6 +1429,7 @@ defmodule ParrotSip.DialogStatemTest do
 
   defp build_options_message do
     %Message{
+      type: :request,
       method: :options,
       request_uri: "sip:target@example.com",
       version: "SIP/2.0",
@@ -1451,7 +1452,7 @@ defmodule ParrotSip.DialogStatemTest do
         parameters: %{}
       },
       call_id: "test-call-id-options@example.com",
-      cseq: %CSeq{number: 1, method: :options},
+      cseq: %CSeq{number: 2, method: :options},
       other_headers: %{},
       body: ""
     }
@@ -1544,15 +1545,17 @@ defmodule ParrotSip.DialogStatemTest do
       
       # Now send a request with invalid CSeq to trigger error
       invalid_req = %Message{
+        type: :request,
         method: :info,
         call_id: dialog.call_id,
         cseq: %{method: :info}  # Missing 'number' field - invalid!
       }
       
-      # This should return error from Dialog.uas_process
+      # This should return error response from Dialog.uas_process
       result = :gen_statem.call(pid, {:uas_request, invalid_req})
       
-      assert {:error, :invalid_cseq} = result
+      # Should return an error response message
+      assert {:reply, %Message{status_code: 500}} = result
       
       # Dialog should still be alive
       assert Process.alive?(pid)
@@ -1570,13 +1573,15 @@ defmodule ParrotSip.DialogStatemTest do
       Process.sleep(10)
       
       invalid_req = %Message{
+        type: :request,
         method: :info,
         call_id: dialog.call_id,
         cseq: nil  # Missing CSeq entirely
       }
       
       result = :gen_statem.call(pid, {:uas_request, invalid_req})
-      assert {:error, :missing_cseq} = result
+      # Should return an error response message
+      assert {:reply, %Message{status_code: 500}} = result
       assert Process.alive?(pid)
     end
 

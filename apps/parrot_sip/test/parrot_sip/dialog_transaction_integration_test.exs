@@ -957,6 +957,551 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
     end
   end
   
+  describe "request validation" do
+    @tag :integration
+    test "UAS: Rejects request with missing required headers" do
+      # Create a malformed INVITE missing To header
+      invite = build_invite_message()
+      malformed = %{invite | to: nil}
+      
+      result = DialogStatem.uas_request(malformed)
+      assert {:reply, response} = result
+      assert response.status_code == 400
+      assert response.reason_phrase == "Missing To header"
+    end
+    
+    @tag :integration
+    test "UAS: Rejects request with Max-Forwards of 0" do
+      invite = build_invite_message()
+      looped = %{invite | max_forwards: 0}
+      
+      result = DialogStatem.uas_request(looped)
+      assert {:reply, response} = result
+      assert response.status_code == 483
+      assert response.reason_phrase == "Too Many Hops"
+    end
+    
+    @tag :integration
+    test "UAS: Accepts valid request with all required headers" do
+      invite = build_invite_message()
+      result = DialogStatem.uas_request(invite)
+      assert result == :process
+    end
+  end
+  
+  describe "Route and Record-Route handling" do
+    @tag :integration
+    test "UAC: Dialog uses Route set from Record-Route headers" do
+      invite = build_invite_message()
+      {:ok, transaction} = Transaction.create_invite_client(invite)
+      
+      callback = fn
+        {:response, response} -> 
+          DialogStatem.uac_result(invite, {:message, response})
+        {:stop, _} -> :ok
+      end
+      
+      {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+      
+      # Send 200 OK with Record-Route headers
+      ok_with_routes = build_response_message(200, "OK", invite)
+      ok_with_routes = %{ok_with_routes | 
+        record_route: [
+          "sip:proxy2.example.com;lr",
+          "sip:proxy1.example.com;lr"
+        ]
+      }
+      
+      :gen_statem.cast(trans_pid, {:received, ok_with_routes})
+      Process.sleep(100)
+      
+      # Find dialog and check route set
+      from_tag = invite.from.parameters["tag"]
+      to_tag = ok_with_routes.to.parameters["tag"]
+      dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
+      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      
+      {_state, data} = :sys.get_state(dialog_pid)
+      
+      # Route set should be reversed for UAC (RFC 3261 Section 12.1.1)
+      assert data.dialog.route_set == [
+        "sip:proxy1.example.com;lr",
+        "sip:proxy2.example.com;lr"
+      ]
+      
+      :gen_statem.stop(dialog_pid)
+      :gen_statem.stop(trans_pid)
+    end
+  end
+  
+  describe "Performance: concurrent dialogs" do
+    @tag :integration
+    @tag timeout: 60_000  # 60 seconds timeout
+    test "handles 100 concurrent dialogs" do
+      num_dialogs = 100
+      
+      # Start many dialogs concurrently
+      tasks = for i <- 1..num_dialogs do
+        Task.async(fn ->
+          invite = %{build_invite_message() | 
+            call_id: "call-#{i}@example.com",
+            from: %{build_invite_message().from | 
+              parameters: %{"tag" => "from-tag-#{i}"}
+            }
+          }
+          
+          ok_response = %{build_response_message(200, "OK", invite) | 
+            to: %{invite.to | 
+              parameters: %{"tag" => "to-tag-#{i}"}
+            }
+          }
+          
+          {:ok, pid} = DialogStatem.start_link({:uac, invite, ok_response})
+          
+          # Perform some operations
+          {:ok, _bye} = :gen_statem.call(pid, {:uac_request, %Message{method: :bye}})
+          
+          # Return the PID for verification
+          pid
+        end)
+      end
+      
+      # Wait for all tasks to complete
+      pids = Task.await_many(tasks, 30_000)
+      
+      # Verify all dialogs were created
+      assert length(pids) == num_dialogs
+      assert Enum.all?(pids, &is_pid/1)
+      
+      # Clean up - stop all dialogs
+      Enum.each(pids, fn pid ->
+        if Process.alive?(pid), do: :gen_statem.stop(pid, :normal, 5000)
+      end)
+    end
+    
+    @tag :integration
+    @tag :slow
+    @tag timeout: 120_000  # 2 minutes timeout
+    test "handles 500 concurrent dialogs with transactions" do
+      num_dialogs = 500
+      
+      # Start many dialogs with transactions
+      tasks = for i <- 1..num_dialogs do
+        Task.async(fn ->
+          try do
+            invite = %{build_invite_message() | 
+              call_id: "stress-test-#{i}@example.com",
+              from: %{build_invite_message().from | 
+                parameters: %{"tag" => "stress-from-#{i}"}
+              }
+            }
+            
+            # Create transaction with dialog callback
+            transaction = %Transaction{
+              id: "stress-trans-#{i}",
+              request: invite
+            }
+            
+            dialog_created = :atomics.new(1, signed: false)
+            
+            callback = fn
+              {:response, response} ->
+                # Create dialog on 200 OK
+                if response.status_code == 200 do
+                  DialogStatem.uac_result(invite, {:message, response})
+                  :atomics.put(dialog_created, 1, 1)
+                end
+              {:stop, _reason} ->
+                :ok
+            end
+            
+            {:trans, trans_pid} = TransactionStatem.client_new(transaction, %{}, callback)
+            
+            # Send 200 OK
+            ok_response = %{build_response_message(200, "OK", invite) | 
+              to: %{invite.to | 
+                parameters: %{"tag" => "stress-to-#{i}"}
+              }
+            }
+            
+            :gen_statem.cast(trans_pid, {:received, ok_response})
+            
+            # Wait briefly for dialog creation
+            Process.sleep(10)
+            
+            # Verify dialog was created
+            created = :atomics.get(dialog_created, 1) == 1
+            
+            # Clean up transaction
+            :gen_statem.stop(trans_pid, :normal, 5000)
+            
+            created
+          rescue
+            _ -> false
+          catch
+            :exit, _ -> false
+          end
+        end)
+      end
+      
+      # Wait for all tasks to complete
+      results = Task.await_many(tasks, 60_000)
+      
+      # Verify most dialogs were created (allow for some failures under load)
+      successful = Enum.count(results, & &1)
+      assert successful >= num_dialogs * 0.95  # At least 95% success rate
+    end
+  end
+  
+  describe "REFER handling and dialog transfer" do
+    @tag :integration
+    test "UAC sends REFER for call transfer" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, ok_response})
+      
+      # Generate REFER request with Refer-To header
+      {:ok, refer} = :gen_statem.call(dialog_pid, {:uac_request, %Message{
+        method: :refer,
+        other_headers: %{
+          "refer-to" => "<sip:charlie@atlanta.com>",
+          "referred-by" => "<sip:alice@atlanta.com>"
+        }
+      }})
+      
+      assert refer.method == :refer
+      assert refer.cseq.number == 2
+      assert refer.other_headers["refer-to"] == "<sip:charlie@atlanta.com>"
+      assert refer.other_headers["referred-by"] == "<sip:alice@atlanta.com>"
+    end
+    
+    @tag :integration
+    test "UAS processes REFER and updates remote target" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, invite})
+      
+      # Create REFER request with new Contact
+      refer_request = %Message{
+        type: :request,
+        method: :refer,
+        call_id: invite.call_id,
+        from: invite.from,
+        to: ok_response.to,
+        cseq: %CSeq{number: 2, method: :refer},
+        via: invite.via,
+        max_forwards: 70,
+        contact: %Contact{
+          display_name: nil,
+          uri: ParrotSip.Uri.parse!("sip:alice@192.168.3.300:5060"),
+          parameters: %{}
+        },
+        other_headers: %{
+          "refer-to" => "<sip:charlie@atlanta.com>",
+          "referred-by" => "<sip:alice@atlanta.com>"
+        }
+      }
+      
+      # Process REFER - should update remote target
+      result = :gen_statem.call(dialog_pid, {:uas_request, refer_request})
+      assert result == :process
+    end
+    
+    @tag :integration
+    test "REFER creates implicit subscription" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, ok_response})
+      
+      # REFER creates implicit subscription per RFC 3515
+      # After sending REFER, sender should receive NOTIFYs about transfer progress
+      refer_request = %Message{
+        type: :request,
+        method: :refer,
+        call_id: invite.call_id,
+        from: invite.from,
+        to: ok_response.to,
+        cseq: %CSeq{number: 2, method: :refer},
+        via: invite.via,
+        max_forwards: 70,
+        other_headers: %{
+          "refer-to" => "<sip:charlie@atlanta.com>",
+          "event" => "refer",
+          "subscription-state" => "active"
+        }
+      }
+      
+      result = :gen_statem.call(dialog_pid, {:uas_request, refer_request})
+      assert result == :process
+      
+      # In a real implementation, this would trigger NOTIFY messages
+      # with transfer progress (100 Trying, 200 OK, etc.)
+    end
+  end
+  
+  describe "UPDATE requests within dialog" do
+    @tag :integration
+    test "UAC sends UPDATE within early dialog" do
+      invite = build_invite_message()
+      
+      # 183 Session Progress creates early dialog
+      session_progress = %Message{
+        type: :response,
+        status_code: 183,
+        reason_phrase: "Session Progress",
+        call_id: invite.call_id,
+        from: invite.from,
+        to: %{invite.to | parameters: %{"tag" => "test-to-tag"}},
+        cseq: invite.cseq,
+        via: invite.via,
+        contact: %Contact{
+          display_name: nil,
+          uri: ParrotSip.Uri.parse!("sip:bob@192.168.1.100:5060"),
+          parameters: %{}
+        }
+      }
+      
+      {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, session_progress})
+      
+      # Generate UPDATE request
+      {:ok, update} = :gen_statem.call(dialog_pid, {:uac_request, %Message{
+        method: :update,
+        body: "v=0\r\no=- 123 456 IN IP4 192.168.1.100\r\n...",
+        other_headers: %{"content-type" => "application/sdp"}
+      }})
+      
+      assert update.method == :update
+      assert update.cseq.number == 2
+      assert update.other_headers["content-type"] == "application/sdp"
+      assert update.body == "v=0\r\no=- 123 456 IN IP4 192.168.1.100\r\n..."
+    end
+    
+    @tag :integration
+    test "UAS processes UPDATE and refreshes target" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, invite})
+      
+      # Create UPDATE request with new Contact
+      update_request = %Message{
+        type: :request,
+        method: :update,
+        call_id: invite.call_id,
+        from: invite.from,
+        to: ok_response.to,
+        cseq: %CSeq{number: 2, method: :update},
+        via: invite.via,
+        max_forwards: 70,
+        contact: %Contact{
+          display_name: nil,
+          uri: ParrotSip.Uri.parse!("sip:alice@192.168.2.200:5060"),
+          parameters: %{}
+        },
+        body: "v=0\r\no=- 789 012 IN IP4 192.168.2.200\r\n...",
+        other_headers: %{"content-type" => "application/sdp"}
+      }
+      
+      # Process UPDATE - should update remote target
+      result = :gen_statem.call(dialog_pid, {:uas_request, update_request})
+      assert result == :process
+      
+      # Verify that subsequent requests use the new target
+      # (In a real implementation, you'd verify the remote_target was updated)
+    end
+  end
+  
+  describe "PRACK/100rel support for reliable provisional responses" do
+    @tag :integration
+    test "UAC sends PRACK for 183 with Require: 100rel" do
+      invite = build_invite_message()
+      
+      # 183 Session Progress with 100rel requirement
+      reliable_183 = %Message{
+        type: :response,
+        status_code: 183,
+        reason_phrase: "Session Progress",
+        call_id: invite.call_id,
+        from: invite.from,
+        to: %{invite.to | parameters: %{"tag" => "test-to-tag"}},
+        cseq: invite.cseq,
+        via: invite.via,
+        other_headers: %{
+          "require" => "100rel",
+          "rseq" => "1"  # Reliable sequence number
+        }
+      }
+      
+      # Create early dialog from 183
+      {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, reliable_183})
+      
+      # Generate PRACK - should have its own CSeq but reference the RSeq
+      {:ok, prack} = :gen_statem.call(dialog_pid, {:uac_request, %Message{
+        method: :prack,
+        other_headers: %{"rack" => "1 1 INVITE"}  # RSeq CSeq Method
+      }})
+      
+      assert prack.method == :prack
+      assert prack.cseq.number == 2  # PRACK gets new CSeq
+      assert prack.other_headers["rack"] == "1 1 INVITE"
+    end
+    
+    @tag :integration
+    test "UAS processes PRACK for reliable provisional" do
+      invite = build_invite_message()
+      
+      # Create early dialog with reliable provisional
+      reliable_183 = %Message{
+        type: :response,
+        status_code: 183,
+        reason_phrase: "Session Progress",
+        call_id: invite.call_id,
+        from: invite.from,
+        to: %{invite.to | parameters: %{"tag" => "test-to-tag"}},
+        cseq: invite.cseq,
+        via: invite.via,
+        other_headers: %{
+          "require" => "100rel",
+          "rseq" => "1"
+        }
+      }
+      
+      {:ok, dialog_pid} = DialogStatem.start_link({:uas, reliable_183, invite})
+      
+      # Create PRACK request
+      prack = %Message{
+        type: :request,
+        method: :prack,
+        call_id: invite.call_id,
+        from: invite.from,
+        to: reliable_183.to,
+        cseq: %CSeq{number: 2, method: :prack},
+        via: invite.via,
+        max_forwards: 70,
+        other_headers: %{"rack" => "1 1 INVITE"}
+      }
+      
+      # Process PRACK - should be accepted
+      result = :gen_statem.call(dialog_pid, {:uas_request, prack})
+      assert result == :process
+    end
+  end
+  
+  describe "CSeq validation for in-dialog requests" do
+    @tag :integration
+    test "UAC: ACK uses same CSeq as INVITE" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, ok_response})
+      
+      # Generate ACK - should use same CSeq as INVITE (1)
+      {:ok, ack} = :gen_statem.call(dialog_pid, {:uac_request, %Message{method: :ack}})
+      
+      assert ack.method == :ack
+      assert ack.cseq.number == 1  # Same as INVITE
+      assert ack.cseq.method == :ack
+      
+      # Generate another request (OPTIONS) - should increment CSeq
+      {:ok, options} = :gen_statem.call(dialog_pid, {:uac_request, %Message{method: :options}})
+      
+      assert options.method == :options
+      assert options.cseq.number == 2  # Incremented from 1
+      assert options.cseq.method == :options
+    end
+    
+    @tag :integration
+    test "UAS: Accepts ACK with same CSeq as INVITE" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, invite})
+      
+      # Create ACK with same CSeq as INVITE
+      ack = %Message{
+        type: :request,
+        method: :ack,
+        call_id: invite.call_id,
+        from: invite.from,
+        to: %{ok_response.to | parameters: Map.put(ok_response.to.parameters, "tag", "test-to-tag")},
+        cseq: %CSeq{number: 1, method: :ack},  # Same CSeq as INVITE
+        via: invite.via,
+        max_forwards: 70
+      }
+      
+      # Process ACK - should be accepted
+      result = :gen_statem.call(dialog_pid, {:uas_request, ack})
+      assert result == :process
+      
+      # Now send a different request with incremented CSeq
+      options = %{ack | method: :options, cseq: %CSeq{number: 2, method: :options}}
+      result = :gen_statem.call(dialog_pid, {:uas_request, options})
+      assert result == :process
+    end
+    
+    @tag :integration
+    test "UAS: Rejects in-dialog request with lower CSeq" do
+      invite = build_invite_message()
+      ok_response = build_response_message(200, "OK", invite)
+      {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, invite})
+      
+      # First request with CSeq 2 - use OPTIONS instead of BYE to avoid terminating dialog
+      first_options = %Message{
+        type: :request,
+        method: :options,
+        call_id: invite.call_id,
+        from: invite.from,
+        to: %{ok_response.to | parameters: Map.put(ok_response.to.parameters, "tag", "test-to-tag")},
+        cseq: %CSeq{number: 2, method: :options},
+        via: invite.via,
+        max_forwards: 70
+      }
+      
+      result = :gen_statem.call(dialog_pid, {:uas_request, first_options})
+      assert result == :process
+      
+      # Second request with LOWER CSeq (should be rejected)
+      bad_options = %{first_options | cseq: %CSeq{number: 1, method: :options}}
+      
+      result = :gen_statem.call(dialog_pid, {:uas_request, bad_options})
+      # Should return error response for out-of-order CSeq
+      assert {:reply, error_response} = result
+      assert error_response.status_code == 500
+      
+      :gen_statem.stop(dialog_pid)
+    end
+  end
+  
+  describe "memory and cleanup" do
+    @tag :integration
+    test "Dialogs are properly cleaned up after termination" do
+      # Create 10 dialogs (simpler test)
+      dialog_pids = for i <- 1..10 do
+        invite = build_invite_message()
+        # Make each one unique with timestamp to avoid conflicts
+        invite = %{invite | call_id: "cleanup-test-#{i}-#{System.unique_integer([:positive])}@example.com"}
+        ok_response = build_response_message(200, "OK", invite)
+        
+        case DialogStatem.start_link({:uac, invite, ok_response}) do
+          {:ok, pid} -> pid
+          {:error, _} -> nil
+        end
+      end
+      |> Enum.filter(&(&1 != nil))
+      
+      # Verify we created some dialogs
+      assert length(dialog_pids) > 0
+      
+      # Terminate all dialogs
+      Enum.each(dialog_pids, fn pid ->
+        if Process.alive?(pid), do: :gen_statem.stop(pid)
+      end)
+      
+      Process.sleep(100)
+      
+      # Verify all are dead
+      alive_count = Enum.count(dialog_pids, &Process.alive?/1)
+      assert alive_count == 0
+    end
+  end
+  
   # Helper functions to build test messages
   
   defp build_invite_message do

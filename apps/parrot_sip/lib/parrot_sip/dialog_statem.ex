@@ -565,10 +565,17 @@ defmodule ParrotSip.DialogStatem do
 
         {:next_state, new_state, updated_data, [{:reply, from, :process}]}
       
+      {:error, :cseq_out_of_order} ->
+        Logger.warning("dialog #{inspect(data.id)}: rejecting out-of-order CSeq")
+        # Send 500 response for out-of-order CSeq per RFC 3261
+        error_response = Message.reply(req_sip_msg, 500, "Server Internal Error")
+        {:keep_state_and_data, [{:reply, from, {:reply, error_response}}]}
+        
       {:error, reason} ->
         Logger.error("dialog #{inspect(data.id)}: failed to process UAS request: #{inspect(reason)}")
-        # Return error to caller, keep state
-        {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+        # Send generic error response
+        error_response = Message.reply(req_sip_msg, 500, "Server Internal Error")
+        {:keep_state_and_data, [{:reply, from, {:reply, error_response}}]}
     end
   end
 
@@ -603,7 +610,8 @@ defmodule ParrotSip.DialogStatem do
   defp process_uac_request(_state, req_sip_msg, data, from) do
     # Create in-dialog request
     # Dialog.uac_request always returns {:ok, request, updated_dialog}
-    {:ok, request, updated_dialog} = Dialog.uac_request(req_sip_msg.method, data.dialog)
+    # Pass the full message template (with other_headers) if available
+    {:ok, request, updated_dialog} = Dialog.uac_request(req_sip_msg, data.dialog)
     updated_data = %{data | dialog: updated_dialog}
     {:keep_state, updated_data, [{:reply, from, {:ok, request}}]}
   end
@@ -709,9 +717,34 @@ defmodule ParrotSip.DialogStatem do
     end
   end
 
-  defp uas_validate_request(%Message{} = _sip_msg) do
-    # For now, just allow processing
-    # In a real implementation, this would validate the request
+  # RFC 3261 Section 8.1.1: Validate required headers
+  defp uas_validate_request(%Message{to: nil} = sip_msg) do
+    {:reply, Message.reply(sip_msg, 400, "Missing To header")}
+  end
+  
+  defp uas_validate_request(%Message{from: nil} = sip_msg) do
+    {:reply, Message.reply(sip_msg, 400, "Missing From header")}
+  end
+  
+  defp uas_validate_request(%Message{call_id: nil} = sip_msg) do
+    {:reply, Message.reply(sip_msg, 400, "Missing Call-ID header")}
+  end
+  
+  defp uas_validate_request(%Message{cseq: nil} = sip_msg) do
+    {:reply, Message.reply(sip_msg, 400, "Missing CSeq header")}
+  end
+  
+  defp uas_validate_request(%Message{via: nil} = sip_msg) do
+    {:reply, Message.reply(sip_msg, 400, "Missing Via header")}
+  end
+  
+  # RFC 3261 Section 8.1.1.5: Check Max-Forwards to prevent loops
+  defp uas_validate_request(%Message{max_forwards: 0} = sip_msg) do
+    {:reply, Message.reply(sip_msg, 483, "Too Many Hops")}
+  end
+  
+  # All validations passed
+  defp uas_validate_request(%Message{}) do
     :process
   end
 
