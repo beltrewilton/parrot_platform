@@ -218,7 +218,14 @@ defmodule ParrotSip.DialogStatem do
     branch_key = "branch:" <> branch
     Logger.debug("dialog: early branch #{inspect(branch_key)}")
     Registry.register(ParrotSip.Registry, branch_key, nil)
-    Registry.register(ParrotSip.Registry, dialog.id, nil)
+    
+    # Register with dialog ID (may already be registered via start_link)
+    case Registry.register(ParrotSip.Registry, dialog.id, nil) do
+      {:ok, _} ->
+        Logger.debug("dialog: registered with ID #{inspect(dialog.id)}")
+      {:error, {:already_registered, _}} ->
+        Logger.debug("dialog: already registered with ID #{inspect(dialog.id)}")
+    end
 
     data = %Data{
       id: dialog.id,
@@ -236,7 +243,14 @@ defmodule ParrotSip.DialogStatem do
 
   def init({:uac, out_req, resp_sip_msg}) do
     {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
-    Registry.register(ParrotSip.Registry, dialog.id, nil)
+    
+    # Register with dialog ID (may already be registered via start_link)
+    case Registry.register(ParrotSip.Registry, dialog.id, nil) do
+      {:ok, _} ->
+        Logger.debug("dialog: registered with ID #{inspect(dialog.id)}")
+      {:error, {:already_registered, _}} ->
+        Logger.debug("dialog: already registered with ID #{inspect(dialog.id)}")
+    end
 
     data = %Data{
       id: dialog.id,
@@ -361,6 +375,7 @@ defmodule ParrotSip.DialogStatem do
     dialog_id = Dialog.from_message(out_req)
 
     if Dialog.is_complete?(dialog_id) do
+      # Dialog ID is complete (has to-tag), try to find confirmed dialog
       dialog_id_str = Dialog.to_string(dialog_id)
 
       case find_dialog(dialog_id_str) do
@@ -375,7 +390,41 @@ defmodule ParrotSip.DialogStatem do
           uac_trans_result(dialog_pid, trans_result)
       end
     else
-      uac_no_dialog_result(out_req, trans_result)
+      # Dialog ID incomplete (no to-tag yet)
+      # Try to find early dialog by branch for early/confirmed transitions
+      case trans_result do
+        {:message, response} ->
+          # Check if response has a to-tag (needed to build complete dialog ID)
+          response_to_tag = if response.to, do: response.to.parameters["tag"], else: nil
+          
+          if response_to_tag do
+            # Build complete dialog ID from response
+            from_tag = if out_req.from, do: out_req.from.parameters["tag"], else: nil
+            call_id = out_req.call_id
+            complete_dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, response_to_tag)
+            
+            # First check if THIS specific dialog already exists (forking case)
+            case find_dialog(complete_dialog_id_str) do
+              {:ok, dialog_pid} ->
+                # Found the exact dialog, update it
+                Logger.debug("dialog: found dialog by ID #{complete_dialog_id_str}, updating")
+                uac_trans_result(dialog_pid, trans_result)
+              
+              {:error, :no_dialog} ->
+                # Dialog with this to-tag doesn't exist yet, create it
+                Logger.debug("dialog: no dialog found for to-tag #{response_to_tag}, creating new")
+                uac_no_dialog_result(out_req, trans_result)
+            end
+          else
+            # No to-tag in response, can't create dialog
+            Logger.debug("dialog: response has no to-tag, not creating dialog")
+            :ok
+          end
+        
+        {:stop, _reason} ->
+          # Transaction stopped, nothing to do
+          :ok
+      end
     end
   end
 
@@ -578,14 +627,26 @@ defmodule ParrotSip.DialogStatem do
 
   # Helper functions
 
-  defp via_tuple({:uas, resp_sip_msg, _req_sip_msg}) do
-    dialog_id = Dialog.from_message(resp_sip_msg)
-    {:dialog, Dialog.to_string(dialog_id)}
+  defp via_tuple({:uas, resp_sip_msg, req_sip_msg}) do
+    # UAS: Extract tags from request and response to build correct dialog ID
+    from_tag = if req_sip_msg.from, do: req_sip_msg.from.parameters["tag"], else: nil
+    to_tag = if resp_sip_msg.to, do: resp_sip_msg.to.parameters["tag"], else: nil
+    call_id = req_sip_msg.call_id
+    
+    # For UAS: local=to_tag, remote=from_tag
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
+    {:dialog, dialog_id_str}
   end
 
-  defp via_tuple({:uac, _out_req, resp_sip_msg}) do
-    dialog_id = Dialog.from_message(resp_sip_msg)
-    {:dialog, Dialog.to_string(dialog_id)}
+  defp via_tuple({:uac, out_req, resp_sip_msg}) do
+    # UAC: Extract tags from request and response to build correct dialog ID
+    from_tag = if out_req.from, do: out_req.from.parameters["tag"], else: nil
+    to_tag = if resp_sip_msg.to, do: resp_sip_msg.to.parameters["tag"], else: nil
+    call_id = out_req.call_id
+    
+    # For UAC: local=from_tag, remote=to_tag
+    dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
+    {:dialog, dialog_id_str}
   end
 
   defp dialog_type(%Message{method: :notify}), do: :notify
@@ -667,15 +728,31 @@ defmodule ParrotSip.DialogStatem do
     end
   end
 
+  # RFC 3261 Section 12.1.1: Dialogs are created by:
+  # 1. 2xx responses to INVITE or SUBSCRIBE (confirmed dialog)
+  # 2. 1xx responses to INVITE with to-tag (early dialog)
+  defp should_create_dialog?(%Message{status_code: status_code, to: %{parameters: to_params}}, %Message{method: method})
+       when status_code >= 100 and status_code < 200 do
+    # Early dialog: 1xx response to INVITE with to-tag
+    method_atom = if is_binary(method), do: String.to_atom(String.downcase(method)), else: method
+    has_to_tag = Map.has_key?(to_params, "tag")
+    result = method_atom == :invite and has_to_tag
+
+    Logger.debug(
+      "should_create_dialog? early dialog: method=#{inspect(method)}, status=#{status_code}, has_to_tag=#{has_to_tag}, result=#{result}"
+    )
+
+    result
+  end
+
   defp should_create_dialog?(%Message{status_code: status_code}, %Message{method: method})
        when status_code >= 200 and status_code < 300 do
-    # Dialogs are created by 2xx responses to INVITE or SUBSCRIBE
-    # Convert to atom if it's a string
+    # Confirmed dialog: 2xx responses to INVITE or SUBSCRIBE
     method_atom = if is_binary(method), do: String.to_atom(String.downcase(method)), else: method
     result = method_atom in [:invite, :subscribe]
 
     Logger.debug(
-      "should_create_dialog? method=#{inspect(method)} (#{inspect(method_atom)}), status=#{status_code}, result=#{result}"
+      "should_create_dialog? confirmed: method=#{inspect(method)} (#{inspect(method_atom)}), status=#{status_code}, result=#{result}"
     )
 
     result
@@ -683,7 +760,7 @@ defmodule ParrotSip.DialogStatem do
 
   defp should_create_dialog?(resp, req) do
     Logger.debug(
-      "should_create_dialog? not 2xx: resp status=#{inspect(resp.status_code)}, req method=#{inspect(req.method)}"
+      "should_create_dialog? no: resp status=#{inspect(resp.status_code)}, req method=#{inspect(req.method)}"
     )
 
     false
