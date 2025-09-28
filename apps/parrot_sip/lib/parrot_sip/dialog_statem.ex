@@ -210,40 +210,45 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data, actions}
   end
 
-  def init({:uac, out_req, resp_sip_msg}) do
-    # Create dialog from UAC perspective
-    # Dialog.uac_create always returns {:ok, dialog}
+  def init({:uac, out_req, %Message{status_code: code} = resp_sip_msg}) 
+      when code >= 100 and code < 200 do
     {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
-    dialog_id = dialog.id
-
-    # Handle early branch for provisional responses
-    early_branch =
-      if resp_sip_msg.status_code >= 100 and resp_sip_msg.status_code < 200 do
-        branch = get_branch_from_request(out_req)
-        branch_key = "branch:" <> branch
-        Logger.debug("dialog: early branch #{inspect(branch_key)}")
-        Registry.register(ParrotSip.Registry, branch_key, nil)
-        branch
-      else
-        nil
-      end
-
-    Logger.debug("dialog: init #{inspect(dialog_id)}")
-    Logger.debug("dialog: early branch #{inspect(early_branch)}")
-    Registry.register(ParrotSip.Registry, dialog_id, nil)
+    
+    branch = get_branch_from_request(out_req)
+    branch_key = "branch:" <> branch
+    Logger.debug("dialog: early branch #{inspect(branch_key)}")
+    Registry.register(ParrotSip.Registry, branch_key, nil)
+    Registry.register(ParrotSip.Registry, dialog.id, nil)
 
     data = %Data{
-      id: dialog_id,
+      id: dialog.id,
       dialog: dialog,
       local_contact: Message.get_header(out_req, "contact"),
-      early_branch: early_branch,
+      early_branch: branch,
       log_id: uac_log_id(resp_sip_msg),
       dialog_type: dialog_type(out_req)
     }
 
-    Logger.debug("dialog: data #{inspect(data)}")
     initial_state = if Dialog.is_early?(dialog), do: :early, else: :confirmed
-    Logger.info("dialog #{inspect(dialog_id)}: starting in #{inspect(initial_state)} state")
+    Logger.info("dialog #{inspect(dialog.id)}: starting in #{inspect(initial_state)} state")
+    {:ok, initial_state, data}
+  end
+
+  def init({:uac, out_req, resp_sip_msg}) do
+    {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
+    Registry.register(ParrotSip.Registry, dialog.id, nil)
+
+    data = %Data{
+      id: dialog.id,
+      dialog: dialog,
+      local_contact: Message.get_header(out_req, "contact"),
+      early_branch: nil,
+      log_id: uac_log_id(resp_sip_msg),
+      dialog_type: dialog_type(out_req)
+    }
+
+    initial_state = if Dialog.is_early?(dialog), do: :early, else: :confirmed
+    Logger.info("dialog #{inspect(dialog.id)}: starting in #{inspect(initial_state)} state")
     {:ok, initial_state, data}
   end
 
