@@ -227,32 +227,6 @@ defmodule ParrotSip.Dialog do
   5. CSeq is incremented from the last local sequence number
 
   This function currently delegates to DialogStatem for state management.
-  @doc \"""
-  Associates a request with its dialog and passes it to the dialog process.
-
-  ## Parameters
-
-  - `dialog_id`: The dialog ID to associate with the request
-  - `request`: The SIP request message
-
-  ## Returns
-
-  - `{:ok, request}`: The updated request with dialog information
-  - `{:error, :no_dialog}`: If no matching dialog exists
-  """
-  @spec find_and_use_dialog(String.t(), Message.t()) ::
-          {:ok, Message.t(), t()} | {:error, :no_dialog}
-  def find_and_use_dialog(dialog_id, request) do
-    case ParrotSip.DialogStatem.find_dialog(dialog_id) do
-      {:ok, pid} ->
-        {_state, %{dialog: dialog}} = :sys.get_state(pid)
-        uac_request(request.method, dialog)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   @doc """
   Processes a transaction result for the UAC.
 

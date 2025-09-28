@@ -1171,19 +1171,6 @@ defmodule ParrotSip.DialogTest do
     end
   end
 
-  describe "race conditions and process safety" do
-    test "find_and_use_dialog returns error for non-existent dialog" do
-      # This test documents Bug #3: race condition in find_and_use_dialog
-      # If process dies between lookup and :sys.get_state, it would crash
-      # For now, test that non-existent dialog returns error
-      
-      dialog_id_str = "nonexistent-call@example.com;local=abc;remote=xyz;uas"
-      request = %Message{method: :options}
-      
-      result = Dialog.find_and_use_dialog(dialog_id_str, request)
-      assert {:error, :no_dialog} = result
-    end
-  end
 
   describe "error handling" do
     test "create_from_invite returns error for missing Call-ID" do
@@ -1384,17 +1371,6 @@ defmodule ParrotSip.DialogTest do
     end
   end
 
-  describe "find_and_use_dialog/2" do
-    test "returns error when dialog not found" do
-      dialog_id_str = "nonexistent@example.com;local=tag1;remote=tag2"
-      request = %Message{method: :options}
-
-      result = Dialog.find_and_use_dialog(dialog_id_str, request)
-      # Should return error since dialog doesn't exist
-      assert {:error, :no_dialog} = result
-    end
-
-  end
 
   describe "uac_result/2" do
     test "returns :ok for transaction result" do
@@ -1903,12 +1879,13 @@ end
 defmodule ParrotSip.DialogProcessTest do
   use ExUnit.Case, async: false
 
-  alias ParrotSip.{Dialog, DialogStatem}
+  alias ParrotSip.Dialog
   alias ParrotSip.Message
   alias ParrotSip.Headers.{From, To, CSeq, Contact, Via}
 
   describe "dialog process integration" do
-    test "find_and_use_dialog with registered dialog process" do
+    test "uac_request creates request with incremented CSeq" do
+      # Test the functional API directly without process interaction
       invite = %Message{
         method: :invite,
         request_uri: "sip:user@example.com",
@@ -1967,18 +1944,12 @@ defmodule ParrotSip.DialogProcessTest do
         body: nil
       }
 
-      {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
-      {_state_name, %{dialog: dialog}} = :sys.get_state(pid)
-      dialog_id_str = dialog.id
+      {:ok, dialog} = Dialog.uac_create(invite, response)
 
-      options_request = %Message{method: :options}
-      result = Dialog.find_and_use_dialog(dialog_id_str, options_request)
+      {:ok, updated_request, updated_dialog} = Dialog.uac_request(:options, dialog)
       
-      assert {:ok, updated_request, updated_dialog} = result
       assert updated_request.method == :options
       assert updated_dialog.local_seq == 2
-
-      GenServer.stop(pid)
     end
 
     test "uac_create registers dialog in registry when supervisor starts child" do
