@@ -787,7 +787,22 @@ defmodule ParrotSip.TransactionStatem do
 
       # Start in the transaction's initial state (calling for INVITE, trying for non-INVITE)
       initial_state = transaction.state
-      {:ok, initial_state, state}
+      
+      # Start initial timers for client transactions per RFC 3261
+      initial_actions = case transaction.type do
+        :invite_client ->
+          # INVITE client starts with Timer A (retransmit) and Timer B (timeout)
+          [{:next_event, :internal, {:start_timer, :a, 500}},
+           {:next_event, :internal, {:start_timer, :b, 32000}}]
+        :non_invite_client ->
+          # Non-INVITE client starts with Timer E (retransmit) and Timer F (timeout)
+          [{:next_event, :internal, {:start_timer, :e, 500}},
+           {:next_event, :internal, {:start_timer, :f, 32000}}]
+        _ ->
+          []
+      end
+      
+      {:ok, initial_state, state, initial_actions}
     else
       # Server transaction initialization - extract handler from rest like original code
       handler =
@@ -1193,19 +1208,41 @@ defmodule ParrotSip.TransactionStatem do
         |> Map.put(:body, "")
 
       UAS.response(trying_resp, transaction)
+      
+      # After sending 100 Trying, INVITE server transactions move to proceeding
+      # Store the provisional response we sent
+      updated_state = put_in(state, [:data, :last_response], trying_resp)
+      
+      result = case Handler.transaction(transaction, sip_msg, handler) do
+        :ok ->
+          Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok, moving to proceeding")
+          {:next_state, :proceeding, updated_state}
+
+        :process_uas ->
+          Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas, moving to proceeding")
+          UAS.process(transaction, sip_msg, handler)
+          {:next_state, :proceeding, updated_state}
+          
+        err ->
+          Logger.error("Handler.transaction failed: #{inspect(err)}")
+          {:keep_state, state}
+      end
+      
+      result
+    else
+      # Non-INVITE transactions stay in trying until first response
+      case Handler.transaction(transaction, sip_msg, handler) do
+        :ok ->
+          Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok")
+          :ok
+
+        :process_uas ->
+          Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
+          UAS.process(transaction, sip_msg, handler)
+      end
+      
+      {:keep_state, state}
     end
-
-    case Handler.transaction(transaction, sip_msg, handler) do
-      :ok ->
-        Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok")
-        :ok
-
-      :process_uas ->
-        Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
-        UAS.process(transaction, sip_msg, handler)
-    end
-
-    {:keep_state, state}
   end
 
   def trying(:cast, {:send, response}, %{data: %{transaction: transaction}} = state) do
@@ -1728,6 +1765,64 @@ defmodule ParrotSip.TransactionStatem do
     end
   end
 
+  # Special handling for Timer A - INVITE client retransmission with exponential backoff
+  def handle_event(
+        :info,
+        {:event, :a},
+        :calling,
+        %{data: %{transaction: %{type: :invite_client}, outreq: request}, timers: timers} = state
+      ) do
+    Logger.debug("trans: timer A fired, retransmitting INVITE request and rescheduling")
+    
+    # Retransmit the request
+    send_via_transport_handler(:send_request, request, nil)
+    
+    # Reschedule timer A with exponential backoff (double the interval)
+    # Cancel old timer first
+    if Map.has_key?(timers, :a) do
+      Process.cancel_timer(timers[:a])
+    end
+    
+    # Get the current interval and double it
+    # Timer A starts at 500ms (T1 in RFC 3261)
+    current_interval = Map.get(state, :timer_a_interval, 500)
+    new_interval = current_interval * 2
+    
+    timer_ref = Process.send_after(self(), {:event, :a}, new_interval)
+    new_timers = Map.put(timers, :a, timer_ref)
+    
+    {:keep_state, %{state | timers: new_timers, timer_a_interval: new_interval}}
+  end
+  
+  # Special handling for Timer E - Non-INVITE client retransmission with exponential backoff
+  def handle_event(
+        :info,
+        {:event, :e},
+        :trying,
+        %{data: %{transaction: %{type: :non_invite_client}, outreq: request}, timers: timers} = state
+      ) do
+    Logger.debug("trans: timer E fired, retransmitting non-INVITE request and rescheduling")
+    
+    # Retransmit the request
+    send_via_transport_handler(:send_request, request, nil)
+    
+    # Reschedule timer E with exponential backoff (double the interval, max T2 = 4000ms)
+    # Cancel old timer first
+    if Map.has_key?(timers, :e) do
+      Process.cancel_timer(timers[:e])
+    end
+    
+    # Get the current interval and double it, capping at 4000ms (T2) per RFC 3261
+    current_interval = Map.get(state, :timer_e_interval, 500)
+    new_interval = min(current_interval * 2, 4000)
+    
+    timer_ref = Process.send_after(self(), {:event, :e}, new_interval)
+    new_timers = Map.put(timers, :e, timer_ref)
+    
+    {:keep_state, %{state | timers: new_timers, timer_e_interval: new_interval}}
+  end
+
+  # Special handling for Timer G - server retransmission with exponential backoff
   def handle_event(
         :info,
         {:event, :g},

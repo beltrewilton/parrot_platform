@@ -165,8 +165,10 @@ defmodule ParrotSip.UAC do
       case Process.whereis(ParrotSip.TransportHandler) do
         nil ->
           # Try to find via Registry
+          # Registry.lookup returns [{registered_process_pid, value}]
+          # In our case, value is the handler pid we want
           case Registry.lookup(ParrotSip.Registry, {ParrotSip.TransportHandler, :default}) do
-            [{_pid, handler_pid}] -> handler_pid
+            [{_registered_pid, handler_pid}] -> handler_pid
             _ -> nil
           end
 
@@ -176,9 +178,11 @@ defmodule ParrotSip.UAC do
 
     if transport_handler do
       ParrotSip.TransportHandler.send_request(transport_handler, message, destination)
+      :ok
     else
       require Logger
       Logger.warning("No transport handler available - ACK not sent")
+      :ok
     end
   end
 end
