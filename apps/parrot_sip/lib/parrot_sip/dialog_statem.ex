@@ -375,71 +375,109 @@ defmodule ParrotSip.DialogStatem do
     dialog_id = Dialog.from_message(out_req)
 
     if Dialog.is_complete?(dialog_id) do
-      # Dialog ID is complete (has to-tag), try to find confirmed dialog
-      dialog_id_str = Dialog.to_string(dialog_id)
-
-      case find_dialog(dialog_id_str) do
-        {:error, :no_dialog} ->
-          Logger.warning(
-            "dialog: #{uac_log_id(out_req)} is not found for request #{out_req.method}"
-          )
-
-          :ok
-
-        {:ok, dialog_pid} ->
-          uac_trans_result(dialog_pid, trans_result)
-      end
+      dialog_id
+      |> Dialog.to_string()
+      |> find_dialog()
+      |> handle_complete_dialog_lookup(out_req, trans_result)
     else
-      # Dialog ID incomplete (no to-tag yet)
-      # Try to find early dialog by branch for early/confirmed transitions
-      case trans_result do
-        {:message, response} ->
-          # Check if response has a to-tag (needed to build complete dialog ID)
-          response_to_tag = if response.to, do: response.to.parameters["tag"], else: nil
-          
-          if response_to_tag do
-            # Build complete dialog ID from response
-            from_tag = if out_req.from, do: out_req.from.parameters["tag"], else: nil
-            call_id = out_req.call_id
-            complete_dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, response_to_tag)
-            
-            # First check if THIS specific dialog already exists (forking case)
-            case find_dialog(complete_dialog_id_str) do
-              {:ok, dialog_pid} ->
-                # Found the exact dialog, update it
-                Logger.debug("dialog: found dialog by ID #{complete_dialog_id_str}, updating")
-                uac_trans_result(dialog_pid, trans_result)
-              
-              {:error, :no_dialog} ->
-                # Dialog with this to-tag doesn't exist yet, create it
-                Logger.debug("dialog: no dialog found for to-tag #{response_to_tag}, creating new")
-                uac_no_dialog_result(out_req, trans_result)
-            end
-          else
-            # No to-tag in response, can't create dialog
-            Logger.debug("dialog: response has no to-tag, not creating dialog")
-            :ok
-          end
-        
-        {:stop, reason} ->
-          # Transaction stopped (timeout, cancel, etc)
-          # Try to find any early dialogs by branch and terminate them
-          branch = get_branch_from_request(out_req)
-          branch_key = "branch:" <> branch
-          
-          case Registry.lookup(ParrotSip.Registry, branch_key) do
-            [{dialog_pid, _}] ->
-              # Found early dialog for this branch, send stop event
-              Logger.debug("dialog: transaction stopped (#{inspect(reason)}), terminating early dialog")
-              uac_trans_result(dialog_pid, trans_result)
-            
-            [] ->
-              # No early dialog exists, nothing to clean up
-              :ok
-          end
-      end
+      handle_incomplete_dialog(out_req, trans_result)
     end
   end
+
+  # Dialog found - forward the transaction result
+  defp handle_complete_dialog_lookup({:ok, dialog_pid}, _out_req, trans_result) do
+    uac_trans_result(dialog_pid, trans_result)
+  end
+
+  # Dialog not found - log warning
+  defp handle_complete_dialog_lookup({:error, :no_dialog}, out_req, _trans_result) do
+    Logger.warning(
+      "dialog: #{uac_log_id(out_req)} is not found for request #{out_req.method}"
+    )
+    :ok
+  end
+
+  # Handle incomplete dialog with message response
+  defp handle_incomplete_dialog(out_req, {:message, response}) do
+    handle_message_result(out_req, response)
+  end
+
+  # Handle incomplete dialog with stop signal
+  defp handle_incomplete_dialog(out_req, {:stop, reason}) do
+    handle_stop_result(out_req, reason)
+  end
+
+  # Handle message result for incomplete dialog
+  defp handle_message_result(out_req, response) do
+    response
+    |> get_to_tag()
+    |> handle_response_by_to_tag(out_req, response)
+  end
+
+  # Response has to-tag - try to find or create dialog
+  defp handle_response_by_to_tag(nil, _out_req, _response) do
+    Logger.debug("dialog: response has no to-tag, not creating dialog")
+    :ok
+  end
+
+  defp handle_response_by_to_tag(response_to_tag, out_req, response) do
+    from_tag = get_from_tag(out_req)
+    call_id = out_req.call_id
+    complete_dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, response_to_tag)
+    
+    complete_dialog_id_str
+    |> find_dialog()
+    |> handle_dialog_lookup_for_response(out_req, response, complete_dialog_id_str)
+  end
+
+  # Dialog found - update it
+  defp handle_dialog_lookup_for_response({:ok, dialog_pid}, _out_req, response, dialog_id_str) do
+    Logger.debug("dialog: found dialog by ID #{dialog_id_str}, updating")
+    uac_trans_result(dialog_pid, {:message, response})
+  end
+
+  # Dialog not found - create new one
+  defp handle_dialog_lookup_for_response({:error, :no_dialog}, out_req, response, dialog_id_str) do
+    Logger.debug("dialog: no dialog found for to-tag, creating new")
+    uac_no_dialog_result(out_req, {:message, response})
+  end
+
+  # Handle stop result for incomplete dialog
+  defp handle_stop_result(out_req, reason) do
+    out_req
+    |> get_branch_from_request()
+    |> lookup_early_dialog()
+    |> handle_early_dialog_lookup(reason)
+  end
+
+  # Look up early dialog by branch
+  defp lookup_early_dialog(branch) do
+    branch_key = "branch:" <> branch
+    Registry.lookup(ParrotSip.Registry, branch_key)
+  end
+
+  # Early dialog found - terminate it
+  defp handle_early_dialog_lookup([{dialog_pid, _}], reason) do
+    Logger.debug("dialog: transaction stopped (#{inspect(reason)}), terminating early dialog")
+    uac_trans_result(dialog_pid, {:stop, reason})
+  end
+
+  # No early dialog - nothing to clean up
+  defp handle_early_dialog_lookup([], _reason) do
+    :ok
+  end
+
+  # Helper to extract to-tag from response
+  defp get_to_tag(%Message{to: %{parameters: params}}) when is_map(params) do
+    params["tag"]
+  end
+  defp get_to_tag(_), do: nil
+
+  # Helper to extract from-tag from request
+  defp get_from_tag(%Message{from: %{parameters: params}}) when is_map(params) do
+    params["tag"]
+  end
+  defp get_from_tag(_), do: nil
 
   @spec set_owner(pid(), String.t()) :: :ok
   def set_owner(pid, dialog_id) when is_pid(pid) do
