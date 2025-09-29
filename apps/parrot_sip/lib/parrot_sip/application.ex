@@ -14,8 +14,6 @@ defmodule ParrotSip.Application do
       ParrotSip.Transaction.Supervisor,
       # Dialog supervisor
       ParrotSip.Dialog.Supervisor
-      # Handler adapter supervisor - commented out for simplification
-      # ParrotSip.HandlerAdapter.Supervisor
     ]
 
     opts = [strategy: :one_for_one, name: ParrotSip.Application]
