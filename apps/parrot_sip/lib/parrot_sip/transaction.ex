@@ -171,15 +171,29 @@ defmodule ParrotSip.Transaction do
   """
   @spec determine_transaction_type(Message.t()) :: transaction_type()
   def determine_transaction_type(message) do
-    sip_method = get_method(message)
-    is_request = is_request?(message)
-
-    cond do
-      is_request && sip_method == :invite -> :invite_server
-      is_request && sip_method != :invite -> :non_invite_server
-      !is_request && get_cseq_method(message) == :invite -> :invite_client
-      true -> :non_invite_client
-    end
+    determine_transaction_type_impl(
+      is_request?(message),
+      get_method(message),
+      get_cseq_method(message)
+    )
+  end
+  
+  # Request transactions - server side
+  defp determine_transaction_type_impl(true, :invite, _cseq_method) do
+    :invite_server
+  end
+  
+  defp determine_transaction_type_impl(true, _method, _cseq_method) do
+    :non_invite_server
+  end
+  
+  # Response transactions - client side
+  defp determine_transaction_type_impl(false, _method, :invite) do
+    :invite_client
+  end
+  
+  defp determine_transaction_type_impl(false, _method, _cseq_method) do
+    :non_invite_client
   end
 
   # Temporary helper function until Message.is_request? is implemented
@@ -230,18 +244,27 @@ defmodule ParrotSip.Transaction do
   def validate_message(message) do
     # TODO: Implement thorough message validation
     # For now, basic validation checking required headers
-    cond do
-      !has_header?(message, "via") ->
-        {:error, "Missing Via header"}
-
-      !has_header?(message, "cseq") ->
-        {:error, "Missing CSeq header"}
-
-      !has_header?(message, "call-id") ->
-        {:error, "Missing Call-ID header"}
-
-      true ->
-        {:ok, message}
+    validate_via_header(message)
+  end
+  
+  defp validate_via_header(message) do
+    case has_header?(message, "via") do
+      false -> {:error, "Missing Via header"}
+      true -> validate_cseq_header(message)
+    end
+  end
+  
+  defp validate_cseq_header(message) do
+    case has_header?(message, "cseq") do
+      false -> {:error, "Missing CSeq header"}
+      true -> validate_call_id_header(message)
+    end
+  end
+  
+  defp validate_call_id_header(message) do
+    case has_header?(message, "call-id") do
+      false -> {:error, "Missing Call-ID header"}
+      true -> {:ok, message}
     end
   end
 

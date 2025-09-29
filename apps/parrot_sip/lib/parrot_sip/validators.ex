@@ -77,6 +77,7 @@ defmodule ParrotSip.Validators do
       {:error, :unsupported_method}
   """
   @spec validate_method(atom()) :: :ok | {:error, atom()}
+  def validate_method(nil), do: {:error, :invalid_method_type}
   def validate_method(method) when is_atom(method) do
     allowed_methods = [:invite, :ack, :bye, :cancel, :options, :register, :info, :prack, :update]
 
@@ -137,11 +138,16 @@ defmodule ParrotSip.Validators do
   # Private functions
 
   defp validate_sdp_content(lines) do
-    # Additional SDP validation can be added here
-    # For now, just check that lines are formatted correctly
+    # Validate SDP line format per RFC 4566
+    # Valid SDP line prefixes are limited to specific letters
+    valid_prefixes = ["v", "o", "s", "i", "u", "e", "p", "c", "b", "t", "r", "z", "k", "a", "m"]
+    
     valid_format =
       Enum.all?(lines, fn line ->
-        String.match?(line, ~r/^[a-z]=.*$/)
+        case String.split(line, "=", parts: 2) do
+          [prefix, _] -> prefix in valid_prefixes
+          _ -> false
+        end
       end)
 
     if valid_format do
@@ -171,7 +177,7 @@ defmodule ParrotSip.Validators do
     # First try to find the field in the Message struct
     field_atom = header_name_to_field_atom(header_name)
 
-    if (field_atom in Message.__struct__()) |> Map.keys() do
+    if field_atom in Map.keys(Message.__struct__()) do
       # It's a known struct field, check if it's not nil
       not is_nil(Map.get(message, field_atom))
     else

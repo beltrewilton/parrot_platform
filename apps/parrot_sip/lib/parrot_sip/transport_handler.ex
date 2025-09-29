@@ -178,7 +178,7 @@ defmodule ParrotSip.TransportHandler do
   def handle_info({:packet_received, raw_data, {remote_ip, remote_port}, metadata}, state) do
     # Parse the raw SIP message
     case Parser.parse(raw_data) do
-      {:ok, sip_message, _rest} ->
+      {:ok, sip_message} ->
         # Add source information to the message
         local_ip = Map.get(metadata, :local_ip, {0, 0, 0, 0})
         local_port = Map.get(metadata, :local_port, 5060)
@@ -192,7 +192,7 @@ defmodule ParrotSip.TransportHandler do
         message_with_source = Map.put(sip_message, :source, source)
 
         Logger.debug(
-          "Parsed SIP #{message_with_source.type} #{if message_with_source.type == :request, do: message_with_source.method, else: "#{message_with_source.status} #{message_with_source.reason}"}"
+          "Parsed SIP #{message_with_source.type} #{if message_with_source.type == :request, do: message_with_source.method, else: "#{message_with_source.status_code} #{message_with_source.reason_phrase}"}"
         )
 
         # Route to transaction layer
@@ -272,32 +272,29 @@ defmodule ParrotSip.TransportHandler do
 
   # Route SIP requests to transaction layer (RFC 3261 Section 17.2.3)
   defp route_message(%{type: :request, method: method} = message, state) do
+    # Always route to handlers for visibility
+    route_to_handlers(message, state)
+    
+    # Also try to route to transaction layer
     case ParrotSip.TransactionStatem.server_process(message, %{}) do
-      {:ok, _transaction} ->
-        Logger.debug("Request routed to transaction layer: #{method}")
-        :ok
+      :ok ->
+        Logger.debug("Request forwarded to existing transaction: #{method}")
+        
+      {:ok, _pid} ->
+        Logger.debug("New transaction created for request: #{method}")
 
       {:error, reason} ->
-        Logger.warning("Failed to route request to transaction layer: #{inspect(reason)}")
-        route_to_handlers(message, state)
+        Logger.debug("Transaction layer routing failed: #{inspect(reason)}")
     end
+    
+    :ok
   end
 
   # Route SIP responses to client transactions (RFC 3261 Section 17.1.3)
   defp route_message(%{type: :response, status_code: status} = message, state) do
-    case ParrotSip.TransactionStatem.client_response(message, nil) do
-      :ok ->
-        Logger.debug("Response routed to client transaction: #{status}")
-        :ok
-
-      {:error, :no_transaction} ->
-        Logger.debug("Response has no matching client transaction: #{status}")
-        route_to_handlers(message, state)
-
-      {:error, reason} ->
-        Logger.warning("Failed to route response: #{inspect(reason)}")
-        route_to_handlers(message, state)
-    end
+    # For now, just route to handlers since we don't have client transaction lookup by response
+    Logger.debug("Response received: #{status} - routing to handlers")
+    route_to_handlers(message, state)
   end
 
   # Route to registered message handlers (for application-layer processing)
