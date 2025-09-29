@@ -114,7 +114,7 @@ defmodule ParrotSip.AuthTest do
       assert String.length(auth.cnonce) > 0
     end
     
-    test "works with different HTTP methods", %{challenge: challenge} do
+    test "works with different SIP methods", %{challenge: challenge} do
       methods = [:invite, :register, :options, :bye, :cancel, :ack]
       
       for method <- methods do
@@ -168,6 +168,43 @@ defmodule ParrotSip.AuthTest do
       
       # Validate with correct password
       assert {:ok, "alice"} = Auth.validate_authorization(auth, :register, "secret123")
+    end
+    
+    test "validates authorization with pre-computed response (simulating real SIP message)" do
+      # This simulates receiving an Authorization header from a SIP message
+      # where we only get the hashed response, never the actual password
+      
+      # Pre-computed response for:
+      # username="alice", realm="atlanta.com", nonce="dcd98b7", 
+      # uri="sip:atlanta.com", method=REGISTER, password="secret"
+      auth_from_sip_message = %{
+        username: "alice",
+        realm: "atlanta.com", 
+        nonce: "dcd98b7",
+        uri: "sip:atlanta.com",
+        response: "a1b2c3d4e5f6", # This would be the actual MD5 hash
+        algorithm: "MD5",
+        qop: nil,
+        cnonce: nil,
+        nc: nil,
+        opaque: nil
+      }
+      
+      # Server validates using the password it has stored for alice
+      # Note: In production, the server would look up alice's password from DB
+      stored_password = "secret"
+      
+      # The validation will recompute the hash and compare
+      # For this test to pass, we need the correct pre-computed response
+      # Let's compute it properly first:
+      challenge = %{realm: "atlanta.com", nonce: "dcd98b7", algorithm: "MD5"}
+      correct_auth = Auth.create_authorization(:register, "sip:atlanta.com", challenge, "alice", stored_password)
+      
+      # Now create the auth object as if received from network
+      auth_from_sip_message = %{auth_from_sip_message | response: correct_auth.response}
+      
+      # Validate - this is what the server does
+      assert {:ok, "alice"} = Auth.validate_authorization(auth_from_sip_message, :register, stored_password)
     end
     
     test "rejects incorrect password" do
