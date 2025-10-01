@@ -205,23 +205,23 @@ defmodule ParrotSip.MessageTest do
     end
 
     test "top_via with pattern matching instead of function" do
-      # Single Via
+      # Single Via in list
       msg1 =
         Message.new_request(:invite, "sip:bob@example.com")
-        |> Message.put_via(Via.new("single.com", "udp"))
+        |> Message.put_via([Via.new("single.com", "udp")])
 
-      assert %Message{via: %Via{host: "single.com"}} = msg1
+      assert %Message{via: [%Via{host: "single.com"}]} = msg1
 
-      # Via list
+      # Via list with multiple
       msg2 =
         Message.new_request(:invite, "sip:bob@example.com")
         |> Message.put_via([Via.new("first.com", "tcp"), Via.new("second.com", "udp")])
 
       assert %Message{via: [%Via{host: "first.com"} | _]} = msg2
 
-      # No Via
+      # Empty Via list
       msg3 = Message.new_request(:invite, "sip:bob@example.com")
-      assert %Message{via: nil} = msg3
+      assert %Message{via: []} = msg3
     end
   end
 end

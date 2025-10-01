@@ -19,8 +19,8 @@ defmodule ParrotSip.MessageCreationTest do
       assert message.direction == :outgoing
       assert message.body == ""
 
-      # All header fields should be nil by default
-      assert message.via == nil
+      # All header fields should be nil/empty by default
+      assert message.via == []
       assert message.from == nil
       assert message.to == nil
       assert message.call_id == nil
@@ -84,8 +84,8 @@ defmodule ParrotSip.MessageCreationTest do
       assert response.direction == :outgoing
       assert response.body == ""
 
-      # All header fields should be nil by default
-      assert response.via == nil
+      # All header fields should be nil/empty by default
+      assert response.via == []
       assert response.from == nil
       assert response.to == nil
       assert response.call_id == nil
@@ -187,9 +187,9 @@ defmodule ParrotSip.MessageCreationTest do
 
       # Add first via
       message = Message.add_via(message, Via.new("first.com", "udp"))
-      assert message.via.host == "first.com"
+      assert [%Via{host: "first.com"}] = message.via
 
-      # Add second via (creates list)
+      # Add second via (prepends to list)
       message = Message.add_via(message, Via.new("second.com", "tcp"))
       assert [%Via{host: "second.com"}, %Via{host: "first.com"}] = message.via
 

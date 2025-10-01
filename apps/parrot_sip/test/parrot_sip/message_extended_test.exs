@@ -11,7 +11,7 @@ defmodule ParrotSip.MessageExtendedTest do
       assert response.reason_phrase == "OK"
       assert response.version == "SIP/2.0"
       # No more headers map - check individual fields
-      assert response.via == nil
+      assert response.via == []
       assert response.from == nil
       assert response.to == nil
       assert response.call_id == nil
