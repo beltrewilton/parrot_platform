@@ -244,6 +244,7 @@ defmodule ParrotSip.Message do
       direction: :outgoing,
       dialog_id: Keyword.get(opts, :dialog_id, nil),
       transaction_id: Keyword.get(opts, :transaction_id, nil),
+      via: [],
       other_headers: %{}
     }
   end
@@ -280,6 +281,7 @@ defmodule ParrotSip.Message do
       direction: :outgoing,
       dialog_id: Keyword.get(opts, :dialog_id, nil),
       transaction_id: Keyword.get(opts, :transaction_id, nil),
+      via: [],
       other_headers: %{}
     }
   end
@@ -481,13 +483,10 @@ defmodule ParrotSip.Message do
 
   # Helper to add to list headers (Via, Route, Record-Route)
   @spec add_via(t(), Via.t()) :: t()
-  def add_via(%__MODULE__{via: nil} = msg, via), do: %{msg | via: via}
+  def add_via(%__MODULE__{via: []} = msg, via), do: %{msg | via: [via]}
 
   def add_via(%__MODULE__{via: vias} = msg, via) when is_list(vias),
     do: %{msg | via: [via | vias]}
-
-  def add_via(%__MODULE__{via: existing} = msg, via),
-    do: %{msg | via: [via, existing]}
 
   @doc """
   Sets the body of the message and updates the content_length field.
