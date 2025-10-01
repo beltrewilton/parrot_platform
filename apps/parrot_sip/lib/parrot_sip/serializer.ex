@@ -313,11 +313,6 @@ defmodule ParrotSip.Serializer do
   # Prepares a message for a specific transport type
   @spec prepare_message(Message.t(), atom(), map()) :: Message.t()
   defp prepare_message(%Message{type: :request} = message, transport_type, opts) do
-    # Add Via header for requests
-    local_host = Map.get(opts, :local_host, "localhost")
-    local_port = Map.get(opts, :local_port, default_port_for_transport(transport_type))
-    branch = "z9hG4bK" <> generate_branch_id()
-
     # Add missing required headers for requests if not present
     message =
       if !has_header?(message, "max-forwards") do
@@ -326,12 +321,28 @@ defmodule ParrotSip.Serializer do
         message
       end
 
-    # Create and set Via header as a list
-    via_header =
-      ParrotSip.Headers.Via.new(local_host, transport_type, local_port, %{"branch" => branch})
+    # Only add Via header if one doesn't already exist
+    message =
+      case message.via do
+        [] ->
+          # No Via header - add one for transmission
+          local_host = Map.get(opts, :local_host, "localhost")
+          local_port = Map.get(opts, :local_port, default_port_for_transport(transport_type))
+          branch = "z9hG4bK" <> generate_branch_id()
 
-    %{message | via: [via_header]}
-    |> ensure_content_length()
+          via_header =
+            ParrotSip.Headers.Via.new(local_host, transport_type, local_port, %{
+              "branch" => branch
+            })
+
+          %{message | via: [via_header]}
+
+        _existing_via ->
+          # Via header already exists - preserve it
+          message
+      end
+
+    ensure_content_length(message)
   end
 
   defp prepare_message(%Message{type: :response} = message, _transport_type, _opts) do
