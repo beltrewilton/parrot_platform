@@ -315,9 +315,9 @@ defmodule ParrotSip.DialogStatem do
           Logger.debug("dialog #{inspect(dialog_pid)}: found dialog")
 
           try do
-            :gen_statem.call(dialog_pid, {:uas_request, sip_msg})
+            :gen_statem.call(dialog_pid, {:uas_request, sip_msg}, 5000)
           catch
-            :exit, {reason, _} when reason in [:normal, :noproc] ->
+            :exit, {reason, _} when reason in [:normal, :noproc, :timeout] ->
               resp = Message.reply(sip_msg, 481, "Call/Transaction Does Not Exist")
               {:reply, resp}
           end
@@ -358,11 +358,15 @@ defmodule ParrotSip.DialogStatem do
   end
 
   @spec uac_request(String.t(), Message.t()) ::
-          {:ok, Message.t()} | {:error, :no_dialog}
+          {:ok, Message.t()} | {:error, :no_dialog} | {:error, :timeout}
   def uac_request(dialog_id, sip_msg) do
     case find_dialog(dialog_id) do
       {:ok, dialog_pid} ->
-        :gen_statem.call(dialog_pid, {:uac_request, sip_msg})
+        try do
+          :gen_statem.call(dialog_pid, {:uac_request, sip_msg}, 5000)
+        catch
+          :exit, {:timeout, _} -> {:error, :timeout}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -656,8 +660,9 @@ defmodule ParrotSip.DialogStatem do
 
   defp process_set_owner(_state, pid, data) do
     # Monitor the owner process
+    # Demonitor old owner and flush any pending DOWN messages
     if data.owner_mon do
-      Process.demonitor(data.owner_mon)
+      Process.demonitor(data.owner_mon, [:flush])
     end
 
     mon = Process.monitor(pid)

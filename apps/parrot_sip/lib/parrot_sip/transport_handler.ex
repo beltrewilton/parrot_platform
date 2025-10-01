@@ -88,16 +88,22 @@ defmodule ParrotSip.TransportHandler do
 
   @doc """
   Registers a handler to receive parsed SIP messages.
+
+  ## Options
+  - `timeout` - GenServer call timeout in milliseconds (default: 5000)
   """
-  def register_handler(transport_handler, handler_pid) do
-    GenServer.call(transport_handler, {:register_handler, handler_pid})
+  def register_handler(transport_handler, handler_pid, timeout \\ 5000) do
+    GenServer.call(transport_handler, {:register_handler, handler_pid}, timeout)
   end
 
   @doc """
   Sets or updates the transport reference.
+
+  ## Options
+  - `timeout` - GenServer call timeout in milliseconds (default: 5000)
   """
-  def set_transport(handler, transport_ref) do
-    GenServer.call(handler, {:set_transport, transport_ref})
+  def set_transport(handler, transport_ref, timeout \\ 5000) do
+    GenServer.call(handler, {:set_transport, transport_ref}, timeout)
   end
 
   # GenServer Callbacks
@@ -226,7 +232,7 @@ defmodule ParrotSip.TransportHandler do
         Process.monitor(pid)
 
         # Register as a handler with the transport
-        GenServer.call(pid, {:register_handler, handler_pid, []})
+        GenServer.call(pid, {:register_handler, handler_pid, []}, 5000)
 
       {:error, reason} ->
         Logger.error("Failed to register with transport: #{reason}")

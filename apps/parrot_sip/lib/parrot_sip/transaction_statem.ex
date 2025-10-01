@@ -1088,7 +1088,13 @@ source = extract_source(data, last_response)
         data
 
       {ref, new_timers} ->
-        Process.cancel_timer(ref)
+        Process.cancel_timer(ref, info: false)
+        # Flush any pending timer messages
+        receive do
+          {:event, ^timer_name} -> :ok
+        after
+          0 -> :ok
+        end
         %{data | timers: new_timers}
     end
   end
@@ -1807,12 +1813,14 @@ source = extract_source(data, last_response)
         
       %{owner_mon: ^monitor_ref, type: :server, data: %{transaction: transaction}} ->
         # For server transactions, send auto-response if no final response sent yet
-        if transaction.last_response && transaction.last_response.status_code >= 200 do
-          Logger.debug("Server owner died but final response already sent")
-          {:keep_state, state}
-        else
-          Logger.debug("Server owner died, sending auto-response")
-          handle_owner_down(pid, state)
+        case transaction.last_response do
+          %{status_code: code} when code >= 200 ->
+            Logger.debug("Server owner died but final response already sent")
+            {:keep_state, state}
+
+          _ ->
+            Logger.debug("Server owner died, sending auto-response")
+            handle_owner_down(pid, state)
         end
         
       _ ->
@@ -1834,16 +1842,22 @@ source = extract_source(data, last_response)
     send_via_transport_handler(:send_request, request, nil)
     
     # Reschedule timer A with exponential backoff (double the interval)
-    # Cancel old timer first
+    # Cancel old timer and flush any pending timer messages to prevent race condition
     if Map.has_key?(timers, :a) do
-      Process.cancel_timer(timers[:a])
+      Process.cancel_timer(timers[:a], info: false)
+      # Flush any pending timer A messages
+      receive do
+        {:event, :a} -> :ok
+      after
+        0 -> :ok
+      end
     end
-    
+
     # Get the current interval and double it
     # Timer A starts at 500ms (T1 in RFC 3261)
     current_interval = Map.get(state.data, :timer_a_interval, 500)
     new_interval = current_interval * 2
-    
+
     timer_ref = Process.send_after(self(), {:event, :a}, new_interval)
     new_timers = Map.put(timers, :a, timer_ref)
     
@@ -1864,15 +1878,21 @@ source = extract_source(data, last_response)
     send_via_transport_handler(:send_request, request, nil)
     
     # Reschedule timer E with exponential backoff (double the interval, max T2 = 4000ms)
-    # Cancel old timer first
+    # Cancel old timer and flush any pending timer messages to prevent race condition
     if Map.has_key?(timers, :e) do
-      Process.cancel_timer(timers[:e])
+      Process.cancel_timer(timers[:e], info: false)
+      # Flush any pending timer E messages
+      receive do
+        {:event, :e} -> :ok
+      after
+        0 -> :ok
+      end
     end
-    
+
     # Get the current interval and double it, capping at 4000ms (T2) per RFC 3261
     current_interval = Map.get(state.data, :timer_e_interval, 500)
     new_interval = min(current_interval * 2, 4000)
-    
+
     timer_ref = Process.send_after(self(), {:event, :e}, new_interval)
     new_timers = Map.put(timers, :e, timer_ref)
     
@@ -1898,16 +1918,22 @@ source = extract_source(data, last_response)
     end
 
     # Reschedule timer G with exponential backoff (double the interval, max 4000ms per RFC 3261)
-    # Cancel old timer first
+    # Cancel old timer and flush any pending timer messages to prevent race condition
     if Map.has_key?(timers, :g) do
-      Process.cancel_timer(timers[:g])
+      Process.cancel_timer(timers[:g], info: false)
+      # Flush any pending timer G messages
+      receive do
+        {:event, :g} -> :ok
+      after
+        0 -> :ok
+      end
     end
 
     # Get the current interval and double it, capping at 4000ms per RFC 3261
     # Timer G starts at 500ms (set when entering completed state)
     current_interval = Map.get(state.data, :timer_g_interval, 500)
     new_interval = min(current_interval * 2, 4000)
-    
+
     timer_ref = Process.send_after(self(), {:event, :g}, new_interval)
     new_timers = Map.put(timers, :g, timer_ref)
 
@@ -1963,12 +1989,17 @@ source = extract_source(data, last_response)
         _state,
         %{data: %{transaction: transaction, handler: handler}} = state
       ) do
-    unless transaction.last_response && transaction.last_response.status_code >= 200 do
-      Logger.warning("trans: remote side did not respond after CANCEL request: terminate")
+    case transaction.last_response do
+      %{status_code: code} when code >= 200 ->
+        # Final response already received
+        :ok
 
-      if is_function(handler) do
-        handler.({:stop, :timeout})
-      end
+      _ ->
+        Logger.warning("trans: remote side did not respond after CANCEL request: terminate")
+
+        if is_function(handler) do
+          handler.({:stop, :timeout})
+        end
     end
 
     {:stop, :normal, state}

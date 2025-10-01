@@ -16,10 +16,12 @@ defmodule ParrotSip.Dialog.Supervisor do
 
   @impl true
   def init([]) do
+    # Use conservative restart limits to surface bugs rather than mask them
+    # If dialogs are crashing frequently, it indicates a bug that should be fixed
     DynamicSupervisor.init(
       strategy: :one_for_one,
-      max_restarts: 1000,
-      max_seconds: 1
+      max_restarts: 10,
+      max_seconds: 5
     )
   end
 end

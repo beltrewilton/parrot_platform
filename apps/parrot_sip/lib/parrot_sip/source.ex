@@ -48,21 +48,6 @@ defmodule ParrotSip.Source do
   end
 
   @doc """
-  Creates a source ID from a module and options.
-
-  ## Parameters
-  - `module`: The module associated with the source
-  - `options`: Source-specific options
-
-  ## Returns
-  - `source_id()`: A source ID tuple
-  """
-  @spec make_source_id(module(), term()) :: source_id()
-  def make_source_id(module, options) do
-    {module, options}
-  end
-
-  @doc """
   Gets the local address from a source.
 
   ## Parameters
@@ -85,21 +70,4 @@ defmodule ParrotSip.Source do
   """
   @spec remote(t()) :: {:inet.ip_address(), :inet.port_number()}
   def remote(%__MODULE__{remote: remote}), do: remote
-
-  @doc """
-  Sends a response to a source.
-
-  ## Parameters
-  - `response`: SIP message containing a response
-  - `message`: Original SIP message
-
-  ## Returns
-  - `:ok`: Response was sent successfully
-  """
-  @spec send_response(ParrotSip.Message.t(), ParrotSip.Message.t()) :: :ok
-  def send_response(_response, _message) do
-    # This is a callback that will be implemented by transport modules
-    # For now, just return :ok as a placeholder
-    :ok
-  end
 end

@@ -12,16 +12,22 @@ defmodule ParrotSip do
 
   @doc """
   Sends a SIP request.
+
+  ## Options
+  - `timeout` - GenServer call timeout in milliseconds (default: 5000)
   """
-  def send_request(uac, request) do
-    GenServer.call(uac, {:send_request, request})
+  def send_request(uac, request, timeout \\ 5000) do
+    GenServer.call(uac, {:send_request, request}, timeout)
   end
 
   @doc """
   Sends a SIP response.
+
+  ## Options
+  - `timeout` - GenServer call timeout in milliseconds (default: 5000)
   """
-  def send_response(uas, response) do
-    GenServer.call(uas, {:send_response, response})
+  def send_response(uas, response, timeout \\ 5000) do
+    GenServer.call(uas, {:send_response, response}, timeout)
   end
 
   @doc """
