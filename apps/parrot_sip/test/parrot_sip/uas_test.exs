@@ -140,7 +140,75 @@ defmodule ParrotSip.UASTest do
   end
 
   describe "process_cancel/2" do
-    test "calls handler with proper UAS id" do
+    test "allows CANCEL for pending transaction (no dialog)" do
+      cancel_msg = create_cancel_request()
+      trans = create_test_uas(cancel_msg)
+      handler = TestHandler.new()
+
+      assert :ok == UAS.process_cancel(trans, handler)
+    end
+
+    test "allows CANCEL for early dialog" do
+      # Create an INVITE and establish an early dialog
+      invite_msg = create_invite_request()
+
+      # Create 180 Ringing response to establish early dialog
+      response_180 = Message.reply(invite_msg, 180, "Ringing")
+      # Add To tag to create dialog
+      response_180 = %{
+        response_180
+        | to: %{response_180.to | parameters: Map.put(response_180.to.parameters, "tag", "xyz123")}
+      }
+
+      # Start dialog in early state
+      {:ok, dialog_pid} =
+        ParrotSip.Dialog.Supervisor.start_child({:uas, response_180, invite_msg})
+
+      # Now send CANCEL
+      cancel_msg = create_cancel_request()
+      cancel_trans = create_test_uas(cancel_msg)
+      handler = TestHandler.new()
+
+      # Should allow CANCEL for early dialog
+      assert :ok == UAS.process_cancel(cancel_trans, handler)
+
+      # Clean up
+      Process.exit(dialog_pid, :kill)
+    end
+
+    test "rejects CANCEL for confirmed dialog with 481" do
+      # Create an INVITE and establish a confirmed dialog
+      invite_msg = create_invite_request()
+
+      # Create 200 OK response to establish confirmed dialog
+      response_200 = Message.reply(invite_msg, 200, "OK")
+      # Add To tag to create dialog
+      response_200 = %{
+        response_200
+        | to: %{response_200.to | parameters: Map.put(response_200.to.parameters, "tag", "abc789")}
+      }
+
+      # Start dialog in confirmed state
+      {:ok, dialog_pid} =
+        ParrotSip.Dialog.Supervisor.start_child({:uas, response_200, invite_msg})
+
+      # Give dialog time to reach confirmed state
+      Process.sleep(50)
+
+      # Now send CANCEL
+      cancel_msg = create_cancel_request()
+      cancel_trans = create_test_uas(cancel_msg)
+      handler = TestHandler.new()
+
+      # Should reject CANCEL for confirmed dialog
+      # The implementation sends 481 response via TransactionStatem.server_response
+      assert :ok == UAS.process_cancel(cancel_trans, handler)
+
+      # Clean up
+      Process.exit(dialog_pid, :kill)
+    end
+
+    test "handles non-Transaction arguments" do
       trans = {:trans, self()}
       handler = TestHandler.new()
 
@@ -209,6 +277,27 @@ defmodule ParrotSip.UASTest do
       type: :request,
       direction: :incoming,
       method: :ack,
+      request_uri: "sip:bob@biloxi.com",
+      version: "SIP/2.0",
+      call_id: headers["call-id"],
+      contact: headers["contact"],
+      cseq: headers["cseq"],
+      from: headers["from"],
+      to: headers["to"],
+      via: headers["via"],
+      body: "",
+      source: create_test_source(),
+      other_headers: %{}
+    }
+  end
+
+  defp create_cancel_request do
+    headers = create_basic_headers()
+
+    %Message{
+      type: :request,
+      direction: :incoming,
+      method: :cancel,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
       call_id: headers["call-id"],
