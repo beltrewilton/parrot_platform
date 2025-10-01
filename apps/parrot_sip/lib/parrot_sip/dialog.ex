@@ -1123,8 +1123,27 @@ defmodule ParrotSip.Dialog do
   end
 
   # Helper to normalize URI to string
-  # TODO: The codebase should standardize on ONE URI format (string OR struct)
-  # This function exists because URIs arrive in mixed formats from different sources
+  #
+  # NOTE: Current URI format is intentionally mixed (string OR ParrotSip.Uri struct):
+  #
+  # RATIONALE:
+  # - Header parsers (From, To, Contact, etc.) return Uri structs when parsing succeeds,
+  #   but fall back to strings when parsing fails, preserving the original value
+  # - This allows the library to handle both well-formed and malformed URIs gracefully
+  # - Dialog and transaction layers only need the string form for matching/identification
+  #
+  # STANDARDIZATION PATH (if needed in future):
+  # - Decision: Standardize ALL URIs as strings throughout the codebase
+  # - Benefits: Simpler code, no struct conversion overhead, easier to debug
+  # - Changes needed:
+  #   1. Update all header modules (From, To, Contact, Route, RecordRoute, ReferTo)
+  #      to store :uri as String.t() only
+  #   2. Update type specs from `String.t() | Uri.t()` to just `String.t()`
+  #   3. Keep Uri.parse/1 available for when applications need structured URIs
+  #   4. Update ~200 test cases expecting Uri structs
+  # - Breaking change: Applications relying on Uri structs in headers would break
+  #
+  # CURRENT APPROACH: Keep mixed format, normalize at usage points (like this function)
   defp extract_uri(uri) when is_binary(uri), do: uri
   defp extract_uri(%Uri{} = uri), do: Uri.to_string(uri)
   defp extract_uri(nil), do: ""
