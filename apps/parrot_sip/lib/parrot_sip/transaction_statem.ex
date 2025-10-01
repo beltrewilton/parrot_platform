@@ -773,8 +773,8 @@ defmodule ParrotSip.TransactionStatem do
         },
         owner_mon: nil,
         timers: %{},
-        # TODO: Make configurable
-        log: false,
+        # Debug logging flag - configurable via options or application env
+        log: Map.get(options, :debug_log, Application.get_env(:parrot_sip, :transaction_debug_log, false)),
         logbranch: branch
       }
 
@@ -826,8 +826,8 @@ defmodule ParrotSip.TransactionStatem do
         },
         owner_mon: nil,
         timers: %{},
-        # TODO: Make configurable
-        log: false,
+        # Debug logging flag - configurable via application env
+        log: Application.get_env(:parrot_sip, :transaction_debug_log, false),
         logbranch: branch
       }
 
