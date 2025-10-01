@@ -66,10 +66,49 @@ defmodule ParrotSip.UAS do
     :ok
   end
 
-  @spec process_cancel(Transaction.t(), Handler.handler()) :: :ok
+  @spec process_cancel(Transaction.t() | any(), Handler.handler()) :: :ok
+  def process_cancel(%Transaction{request: cancel_msg} = trans, handler) do
+    # RFC 3261 Section 9.2: CANCEL can only cancel pending requests
+    # Check if this CANCEL matches an established dialog
+    case DialogStatem.uas_find(cancel_msg) do
+      {:ok, dialog_pid} ->
+        # Found a dialog - check if it's in confirmed state
+        dialog_state = get_dialog_state(dialog_pid)
+
+        case dialog_state do
+          :confirmed ->
+            # RFC 3261 Section 9.2: CANCEL cannot cancel a confirmed dialog
+            # The UAC should use BYE instead
+            Logger.debug("uas: rejecting CANCEL for confirmed dialog - should use BYE")
+            resp = Message.reply(cancel_msg, 481, "Call/Transaction Does Not Exist")
+            TransactionStatem.server_response(resp, trans)
+            :ok
+
+          :early ->
+            # Early dialog - CANCEL is valid, proceed normally
+            Logger.debug("uas: CANCEL for early dialog - proceeding")
+            id = {:uas_id, trans}
+            Handler.uas_cancel(id, handler)
+
+          _ ->
+            # Unknown state - allow handler to decide
+            Logger.debug("uas: CANCEL for dialog in unknown state")
+            id = {:uas_id, trans}
+            Handler.uas_cancel(id, handler)
+        end
+
+      :not_found ->
+        # No dialog found - this is a CANCEL for a transaction that hasn't
+        # established a dialog yet (normal case)
+        Logger.debug("uas: CANCEL for pending transaction")
+        id = {:uas_id, trans}
+        Handler.uas_cancel(id, handler)
+    end
+  end
+
   def process_cancel(trans, handler) do
+    # Handle non-Transaction arguments (e.g., test mocks)
     id = {:uas_id, trans}
-    # TODO: in-dialog CANCEL?
     Handler.uas_cancel(id, handler)
   end
 
@@ -87,6 +126,20 @@ defmodule ParrotSip.UAS do
 
   @spec sipmsg(Transaction.t()) :: Message.t()
   def sipmsg(%Transaction{request: req_sip_msg}), do: req_sip_msg
+
+  # Get the current state of a dialog
+  @spec get_dialog_state(pid()) :: :early | :confirmed | :terminated | :unknown
+  defp get_dialog_state(dialog_pid) do
+    try do
+      :sys.get_state(dialog_pid)
+      |> case do
+        {state, _data} when state in [:early, :confirmed, :terminated] -> state
+        _ -> :unknown
+      end
+    catch
+      :exit, _ -> :unknown
+    end
+  end
 
   @spec make_reply(integer(), binary(), Transaction.t(), Message.t()) :: Message.t()
   def make_reply(code, reason_phrase, %Transaction{} = _transaction, req_sip_msg) do
