@@ -54,6 +54,10 @@ defmodule ParrotSip.Handler do
     mod.transaction_stop(trans, trans_result, args)
   end
 
+  def transaction_stop(_trans, _trans_result, _handler) do
+    :ok
+  end
+
   @spec uas_request(ParrotSip.UAS.t(), ParrotSip.Message.t(), handler()) :: :ok
   def uas_request(uas, req_sip_msg, %__MODULE__{module: mod, args: args}) do
     mod.uas_request(uas, req_sip_msg, args)

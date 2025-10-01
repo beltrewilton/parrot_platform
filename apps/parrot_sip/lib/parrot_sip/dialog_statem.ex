@@ -437,7 +437,7 @@ defmodule ParrotSip.DialogStatem do
   end
 
   # Dialog not found - create new one
-  defp handle_dialog_lookup_for_response({:error, :no_dialog}, out_req, response, dialog_id_str) do
+  defp handle_dialog_lookup_for_response({:error, :no_dialog}, out_req, response, _dialog_id_str) do
     Logger.debug("dialog: no dialog found for to-tag, creating new")
     uac_no_dialog_result(out_req, {:message, response})
   end
@@ -863,8 +863,6 @@ defmodule ParrotSip.DialogStatem do
 
     :ok
   end
-
-  defp uac_no_dialog_result(_out_req, {:stop, _reason}), do: :ok
 
   defp start_uac_dialog(out_req, resp_sip_msg) do
     case ParrotSip.Dialog.Supervisor.start_child({:uac, out_req, resp_sip_msg}) do

@@ -789,15 +789,20 @@ defmodule ParrotSip.TransactionStatem do
       initial_state = transaction.state
       
       # Start initial timers for client transactions per RFC 3261
+      # Allow timer overrides from options for testing
       initial_actions = case transaction.type do
         :invite_client ->
           # INVITE client starts with Timer A (retransmit) and Timer B (timeout)
-          [{:next_event, :internal, {:start_timer, :a, 500}},
-           {:next_event, :internal, {:start_timer, :b, 32000}}]
+          timer_a = Map.get(options, :timer_a, 500)    # Default T1
+          timer_b = Map.get(options, :timer_b, 32000)  # Default 64*T1
+          [{:next_event, :internal, {:start_timer, :a, timer_a}},
+           {:next_event, :internal, {:start_timer, :b, timer_b}}]
         :non_invite_client ->
           # Non-INVITE client starts with Timer E (retransmit) and Timer F (timeout)
-          [{:next_event, :internal, {:start_timer, :e, 500}},
-           {:next_event, :internal, {:start_timer, :f, 32000}}]
+          timer_e = Map.get(options, :timer_e, 500)    # Default T1
+          timer_f = Map.get(options, :timer_f, 32000)  # Default 64*T1
+          [{:next_event, :internal, {:start_timer, :e, timer_e}},
+           {:next_event, :internal, {:start_timer, :f, timer_f}}]
         _ ->
           []
       end
@@ -918,6 +923,7 @@ defmodule ParrotSip.TransactionStatem do
     case action do
       {:send_response, response} ->
         Logger.debug("[process_actions] Action is :send_response. Response: #{inspect(response)}")
+        
         # Try to get the source from state, transaction, or response
         source = extract_source(data, response)
 
@@ -959,10 +965,11 @@ defmodule ParrotSip.TransactionStatem do
 
         Logger.debug("[process_actions] Timer started. Timers map: #{inspect(timers)}")
 
-        case process_actions(rest, %{data | timers: timers}) do
-          {:keep_state_and_data, _} -> {:keep_state, data}
-          {:keep_state, _} -> {:keep_state, data}
-          :stop -> {:stop, :normal, data}
+        new_data = %{data | timers: timers}
+        case process_actions(rest, new_data) do
+          {:keep_state_and_data, _} -> {:keep_state, new_data}
+          {:keep_state, updated_data} -> {:keep_state, updated_data}
+          :stop -> {:stop, :normal, new_data}
         end
 
       {:cancel_timer, timer_name} ->
@@ -989,7 +996,7 @@ defmodule ParrotSip.TransactionStatem do
             "[process_actions] Retransmitting last response: #{inspect(last_response)}"
           )
 
-          source = extract_source(data, last_response)
+source = extract_source(data, last_response)
 
           if source do
             send_via_transport_handler(:send_response, last_response, source)
@@ -1308,6 +1315,11 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, new_state}
   end
 
+  def trying(:internal, {:start_timer, timer_name, timeout}, state) do
+    # Handle timer start events
+    handle_event(:internal, {:start_timer, timer_name, timeout}, :trying, state)
+  end
+
   def trying(:cast, event, state), do: handle_common_event(event, state)
 
   def trying(:info, event, state), do: handle_event(:info, event, :trying, state)
@@ -1409,6 +1421,11 @@ defmodule ParrotSip.TransactionStatem do
     apply_state_transition(transaction, {:receive_response, status_code}, state,
       update_response: response
     )
+  end
+
+  def calling(:internal, {:start_timer, timer_name, timeout}, state) do
+    # Handle timer start events
+    handle_event(:internal, {:start_timer, timer_name, timeout}, :calling, state)
   end
 
   def calling(:cast, event, state), do: handle_common_event(event, state)
@@ -1693,10 +1710,49 @@ defmodule ParrotSip.TransactionStatem do
   - RFC 3261 Section 17: Transaction Layer (cleanup and termination)
   """
   @impl :gen_statem
-  def terminate(reason, _state, data) do
+  def terminate(reason, state_name, %{data: data} = _state) do
     case reason do
-      :normal -> Logger.debug("trans: finished. state: #{inspect(data, @inspect_opts)}")
-      _ -> Logger.error("trans: finished with error: #{inspect(reason, @inspect_opts)}")
+      :normal -> 
+        Logger.debug("trans: finished. state: #{inspect(data, @inspect_opts)}")
+        
+        # If this is a client transaction with a callback, notify it
+        # Check if we're terminating due to timeout (when in calling/trying state)
+        if data[:handler] && is_function(data.handler) do
+          case state_name do
+            :calling -> 
+              # INVITE client timeout (Timer B)
+              try do
+                data.handler.({:stop, :timeout})
+              rescue
+                FunctionClauseError -> :ok
+                _ -> :ok
+              end
+            :trying ->
+              # Non-INVITE client timeout (Timer F)  
+              try do
+                data.handler.({:stop, :timeout})
+              rescue
+                FunctionClauseError -> :ok
+                _ -> :ok
+              end
+            _ ->
+              # Normal termination
+              try do
+                data.handler.({:stop, :normal})
+              rescue
+                FunctionClauseError -> :ok
+                _ -> :ok
+              end
+          end
+        end
+        
+      _ -> 
+        Logger.error("trans: finished with error: #{inspect(reason, @inspect_opts)}")
+        
+        # Notify callback of error if present
+        if data[:handler] && is_function(data.handler) do
+          data.handler.({:stop, reason})
+        end
     end
 
     :ok
@@ -1785,13 +1841,14 @@ defmodule ParrotSip.TransactionStatem do
     
     # Get the current interval and double it
     # Timer A starts at 500ms (T1 in RFC 3261)
-    current_interval = Map.get(state, :timer_a_interval, 500)
+    current_interval = Map.get(state.data, :timer_a_interval, 500)
     new_interval = current_interval * 2
     
     timer_ref = Process.send_after(self(), {:event, :a}, new_interval)
     new_timers = Map.put(timers, :a, timer_ref)
     
-    {:keep_state, %{state | timers: new_timers, timer_a_interval: new_interval}}
+    new_data = Map.put(state.data, :timer_a_interval, new_interval)
+    {:keep_state, %{state | timers: new_timers, data: new_data}}
   end
   
   # Special handling for Timer E - Non-INVITE client retransmission with exponential backoff
@@ -1813,13 +1870,14 @@ defmodule ParrotSip.TransactionStatem do
     end
     
     # Get the current interval and double it, capping at 4000ms (T2) per RFC 3261
-    current_interval = Map.get(state, :timer_e_interval, 500)
+    current_interval = Map.get(state.data, :timer_e_interval, 500)
     new_interval = min(current_interval * 2, 4000)
     
     timer_ref = Process.send_after(self(), {:event, :e}, new_interval)
     new_timers = Map.put(timers, :e, timer_ref)
     
-    {:keep_state, %{state | timers: new_timers, timer_e_interval: new_interval}}
+    new_data = Map.put(state.data, :timer_e_interval, new_interval)
+    {:keep_state, %{state | timers: new_timers, data: new_data}}
   end
 
   # Special handling for Timer G - server retransmission with exponential backoff
@@ -1847,13 +1905,14 @@ defmodule ParrotSip.TransactionStatem do
 
     # Get the current interval and double it, capping at 4000ms per RFC 3261
     # Timer G starts at 500ms (set when entering completed state)
-    current_interval = Map.get(state, :timer_g_interval, 500)
+    current_interval = Map.get(state.data, :timer_g_interval, 500)
     new_interval = min(current_interval * 2, 4000)
     
     timer_ref = Process.send_after(self(), {:event, :g}, new_interval)
     new_timers = Map.put(timers, :g, timer_ref)
 
-    {:keep_state, %{state | timers: new_timers, timer_g_interval: new_interval}}
+    new_data = Map.put(state.data, :timer_g_interval, new_interval)
+    {:keep_state, %{state | timers: new_timers, data: new_data}}
   end
 
   def handle_event(
@@ -1880,6 +1939,21 @@ defmodule ParrotSip.TransactionStatem do
       
       {:error, _reason} ->
         {:keep_state, state}
+    end
+  end
+
+  def handle_event(
+        :internal,
+        {:start_timer, timer_name, timeout},
+        _state_name,
+        state
+      ) do
+    # Process timer start actions
+    actions = [{:start_timer, timer_name, timeout}]
+    case process_actions(actions, state) do
+      {:keep_state_and_data, _} -> {:keep_state, state}
+      {:keep_state, new_state} -> {:keep_state, new_state}
+      :stop -> {:stop, :normal, state}
     end
   end
 

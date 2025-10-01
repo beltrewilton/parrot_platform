@@ -1175,8 +1175,28 @@ defmodule ParrotSip.Transaction do
     {:ok, :completed, [:start_timer_d]}
   end
 
+  def next_state(%{type: :invite_client, state: :calling}, {:timer, :b}) do
+    # Timer B fires in calling state - timeout for INVITE client transaction
+    {:ok, :terminated, [:terminate_transaction]}
+  end
+
+  def next_state(%{type: :invite_client, state: :proceeding}, {:timer, :b}) do
+    # Timer B can also fire in proceeding state - timeout for INVITE client transaction
+    {:ok, :terminated, [:terminate_transaction]}
+  end
+
   def next_state(%{type: :invite_client, state: :completed}, {:timer, :d}) do
     {:ok, :terminated, [:terminate]}
+  end
+
+  def next_state(%{type: :non_invite_client, state: :trying}, {:timer, :f}) do
+    # Timer F fires in trying state - timeout for non-INVITE client transaction
+    {:ok, :terminated, [:terminate_transaction]}
+  end
+
+  def next_state(%{type: :non_invite_client, state: :proceeding}, {:timer, :f}) do
+    # Timer F can also fire in proceeding state - timeout for non-INVITE client transaction
+    {:ok, :terminated, [:terminate_transaction]}
   end
 
   def next_state(%{type: :non_invite_client, state: :trying}, {:receive_response, status})
