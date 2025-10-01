@@ -121,13 +121,11 @@ defmodule ParrotSip.Transaction do
   """
   @spec generate_id(Message.t()) :: String.t()
   def generate_id(message) do
-    # TODO: Replace with pure Elixir implementation
-    # This will combine method, branch, and other relevant parameters
     branch = get_branch(message)
     generate_transaction_id(determine_transaction_type(message), branch, message)
   end
 
-  # Temporary helper function until Message.method is implemented
+  # Helper function to safely extract method from message
   defp get_method(%{method: method}) when is_atom(method), do: method
   defp get_method(_), do: :unknown
 
@@ -196,16 +194,11 @@ defmodule ParrotSip.Transaction do
     :non_invite_client
   end
 
-  # Temporary helper function until Message.is_request? is implemented
-  defp is_request?(%ParrotSip.Message{type: :request} = _msg) do
-    true
-  end
+  # Helper function to check if message is a request
+  defp is_request?(%ParrotSip.Message{type: :request}), do: true
+  defp is_request?(_), do: false
 
-  defp is_request?(_msg) do
-    false
-  end
-
-  # Temporary helper function until Message.cseq is implemented
+  # Helper function to safely extract CSeq method from message
   defp get_cseq_method(%{cseq: %{method: method}}), do: method
   defp get_cseq_method(_), do: :unknown
 
@@ -242,49 +235,60 @@ defmodule ParrotSip.Transaction do
   """
   @spec validate_message(Message.t()) :: {:ok, Message.t()} | {:error, String.t()}
   def validate_message(message) do
-    # TODO: Implement thorough message validation
-    # For now, basic validation checking required headers
-    validate_via_header(message)
-  end
-  
-  defp validate_via_header(message) do
-    case has_header?(message, "via") do
-      false -> {:error, "Missing Via header"}
-      true -> validate_cseq_header(message)
-    end
-  end
-  
-  defp validate_cseq_header(message) do
-    case has_header?(message, "cseq") do
-      false -> {:error, "Missing CSeq header"}
-      true -> validate_call_id_header(message)
-    end
-  end
-  
-  defp validate_call_id_header(message) do
-    case has_header?(message, "call-id") do
-      false -> {:error, "Missing Call-ID header"}
-      true -> {:ok, message}
+    # RFC 3261 Section 8.1.1: Required headers for all SIP messages
+    with :ok <- validate_via_header(message),
+         :ok <- validate_cseq_header(message),
+         :ok <- validate_call_id_header(message),
+         :ok <- validate_from_header(message),
+         :ok <- validate_to_header(message),
+         :ok <- validate_request_specific(message),
+         :ok <- validate_response_specific(message) do
+      {:ok, message}
     end
   end
 
-  # Helper function to check if a message has a header
-  defp has_header?(message, header_name) do
-    downcased = String.downcase(header_name)
+  # Via header validation (RFC 3261 Section 8.1.1.7)
+  defp validate_via_header(%{via: via}) when is_list(via) and length(via) > 0, do: :ok
+  defp validate_via_header(_), do: {:error, "Missing or invalid Via header"}
 
-    case downcased do
-      "via" -> not is_nil(message.via) and message.via != []
-      "from" -> not is_nil(message.from)
-      "to" -> not is_nil(message.to)
-      "call-id" -> not is_nil(message.call_id)
-      "cseq" -> not is_nil(message.cseq)
-      "contact" -> not is_nil(message.contact)
-      "max-forwards" -> not is_nil(message.max_forwards)
-      "content-length" -> not is_nil(message.content_length)
-      "content-type" -> not is_nil(message.content_type)
-      _ -> Map.has_key?(message.other_headers || %{}, downcased)
-    end
+  # CSeq header validation (RFC 3261 Section 8.1.1.5)
+  defp validate_cseq_header(%{cseq: %{number: num, method: method}})
+    when is_integer(num) and is_atom(method), do: :ok
+  defp validate_cseq_header(_), do: {:error, "Missing or invalid CSeq header"}
+
+  # Call-ID header validation (RFC 3261 Section 8.1.1.4)
+  defp validate_call_id_header(%{call_id: call_id}) when is_binary(call_id) and call_id != "", do: :ok
+  defp validate_call_id_header(_), do: {:error, "Missing or invalid Call-ID header"}
+
+  # From header validation (RFC 3261 Section 8.1.1.3)
+  defp validate_from_header(%{from: %{uri: uri}}) when not is_nil(uri), do: :ok
+  defp validate_from_header(_), do: {:error, "Missing or invalid From header"}
+
+  # To header validation (RFC 3261 Section 8.1.1.2)
+  defp validate_to_header(%{to: %{uri: uri}}) when not is_nil(uri), do: :ok
+  defp validate_to_header(_), do: {:error, "Missing or invalid To header"}
+
+  # Request-specific validation (RFC 3261 Section 8.1.1)
+  defp validate_request_specific(%{type: :request, method: :register} = message) do
+    # REGISTER requests must have Contact header (RFC 3261 Section 10.2)
+    validate_contact_header_present(message)
   end
+  defp validate_request_specific(%{type: :request, method: method, request_uri: uri})
+    when is_atom(method) and is_binary(uri) and uri != "", do: :ok
+  defp validate_request_specific(%{type: :request}),
+    do: {:error, "Invalid request: missing method or request URI"}
+  defp validate_request_specific(_), do: :ok
+
+  # Response-specific validation (RFC 3261 Section 8.1.2)
+  defp validate_response_specific(%{type: :response, status_code: code, reason_phrase: phrase})
+    when is_integer(code) and code >= 100 and code < 700 and is_binary(phrase), do: :ok
+  defp validate_response_specific(%{type: :response}),
+    do: {:error, "Invalid response: missing or invalid status code or reason phrase"}
+  defp validate_response_specific(_), do: :ok
+
+  # Contact header validation helper
+  defp validate_contact_header_present(%{contact: contact}) when not is_nil(contact), do: :ok
+  defp validate_contact_header_present(_), do: {:error, "REGISTER request must have Contact header"}
 
   defstruct [
     :id,

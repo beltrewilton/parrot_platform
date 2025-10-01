@@ -309,21 +309,21 @@ defmodule ParrotSip.TransactionTest do
       message = build_invite_request("z9hG4bK")
       message = %{message | via: []}
 
-      assert {:error, "Missing Via header"} = Transaction.validate_message(message)
+      assert {:error, "Missing or invalid Via header"} = Transaction.validate_message(message)
     end
 
     test "returns error when missing CSeq" do
       message = build_invite_request("z9hG4bK")
       message = %{message | cseq: nil}
 
-      assert {:error, "Missing CSeq header"} = Transaction.validate_message(message)
+      assert {:error, "Missing or invalid CSeq header"} = Transaction.validate_message(message)
     end
 
     test "returns error when missing Call-ID" do
       message = build_invite_request("z9hG4bK")
       message = %{message | call_id: nil}
 
-      assert {:error, "Missing Call-ID header"} = Transaction.validate_message(message)
+      assert {:error, "Missing or invalid Call-ID header"} = Transaction.validate_message(message)
     end
   end
 
