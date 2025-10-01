@@ -91,8 +91,35 @@ defmodule ParrotSip.Connection do
   end
 
   def conn_data(data, %__MODULE__{} = conn) do
-    # Stream transport (TCP, TLS)
-    # Not implemented yet - focus on UDP for now
+    # Stream transport (TCP, TLS, SCTP) - ARCHITECTURAL NOTE
+    #
+    # THIS MODULE SHOULD NOT HANDLE STREAM TRANSPORT FRAMING!
+    #
+    # CORRECT SEPARATION OF CONCERNS:
+    # - ParrotTransport: Handles ALL transport protocols (UDP, TCP, TLS, SCTP, WS)
+    #   * For UDP: delivers raw datagrams
+    #   * For TCP/TLS/SCTP: handles framing, buffering, and delivers complete messages
+    #   * No knowledge of SIP protocol
+    #
+    # - ParrotSip.Connection: Receives complete message binaries from ParrotTransport
+    #   * Parses SIP messages (already complete)
+    #   * Handles SIP protocol logic
+    #   * No knowledge of transport implementation
+    #
+    # BENEFITS OF THIS ARCHITECTURE:
+    # 1. Clear separation: transport concerns stay in parrot_transport
+    # 2. Scalability: each app can be deployed/scaled independently
+    # 3. Reusability: parrot_transport can be used by other protocols
+    # 4. Testability: easier to test SIP logic without transport complexity
+    #
+    # CURRENT IMPLEMENTATION:
+    # - ParrotSip.Connection only handles UDP (message-oriented)
+    # - Stream transports should be added to ParrotTransport first
+    # - Once ParrotTransport delivers complete messages, ParrotSip just parses them
+    #
+    # TODO: This clause exists because Connection was ported from ERSIP which
+    # handled its own transport. Consider removing this module entirely and having
+    # ParrotTransport deliver directly to transaction/dialog layers.
     {conn, {:bad_message, data, :stream_transport_not_implemented}}
   end
 
