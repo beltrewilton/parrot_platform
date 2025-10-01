@@ -326,11 +326,11 @@ defmodule ParrotSip.Serializer do
         message
       end
 
-    # Create and set Via header
+    # Create and set Via header as a list
     via_header =
       ParrotSip.Headers.Via.new(local_host, transport_type, local_port, %{"branch" => branch})
 
-    %{message | via: via_header}
+    %{message | via: [via_header]}
     |> ensure_content_length()
   end
 
@@ -632,7 +632,7 @@ defmodule ParrotSip.Serializer do
 
     case downcased do
       "via" ->
-        not is_nil(message.via)
+        not Enum.empty?(message.via || [])
 
       "from" ->
         not is_nil(message.from)
@@ -823,17 +823,14 @@ defmodule ParrotSip.Serializer do
     end
   end
 
-  # Build Via headers
+  # Build Via headers - Via is always a list
   defp build_via_headers(nil, headers), do: headers
+  defp build_via_headers([], headers), do: headers
 
   defp build_via_headers(via, headers) when is_list(via) do
     # Via headers must be separate lines, not comma-separated
     via_headers = Enum.map(via, fn v -> format_header("via", v) end)
     via_headers ++ headers
-  end
-
-  defp build_via_headers(via, headers) do
-    [format_header("via", via) | headers]
   end
 
   # Build other headers from the catch-all map

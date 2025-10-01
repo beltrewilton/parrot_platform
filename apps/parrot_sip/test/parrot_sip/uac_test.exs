@@ -145,7 +145,7 @@ defmodule ParrotSip.UACTest do
     end
     
     test "adds branch to ACK message" do
-      # ACK without branch
+      # ACK without branch - Via must be a list
       via = %Via{
         protocol: "SIP",
         version: "2.0",
@@ -154,15 +154,15 @@ defmodule ParrotSip.UACTest do
         port: 5060,
         parameters: %{}
       }
-      
-      ack_message = build_test_ack() |> Map.put(:via, via)
-      
+
+      ack_message = build_test_ack() |> Map.put(:via, [via])
+
       # The UAC.ack_request function should add a branch
       # We can't directly test the message sent to transport without complex mocking,
       # but we can verify the function succeeds
       result = UAC.ack_request(ack_message)
       assert result == :ok
-      
+
       # Test that branch generation works
       branch = ParrotSip.Branch.generate()
       assert String.starts_with?(branch, "z9hG4bK")

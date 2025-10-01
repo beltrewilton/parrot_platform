@@ -44,7 +44,7 @@ defmodule ParrotSip.Message do
     :dialog_id,
 
     # Core headers as struct fields (RFC 3261 mandatory/common)
-    # Via.t() | [Via.t()]
+    # [Via.t()] - Always a list for consistency, may be empty
     :via,
     # From.t()
     :from,
@@ -104,7 +104,7 @@ defmodule ParrotSip.Message do
           dialog_id: String.t() | nil,
 
           # Header fields
-          via: Via.t() | [Via.t()] | nil,
+          via: [Via.t()],
           from: From.t() | nil,
           to: To.t() | nil,
           call_id: String.t() | CallId.t() | nil,

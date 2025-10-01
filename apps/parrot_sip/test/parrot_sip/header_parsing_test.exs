@@ -20,7 +20,9 @@ defmodule ParrotSip.HeaderParsingTest do
 
       {:ok, message} = Parser.parse(raw_message)
 
-      via = message.via
+      # Via is now a list, get the first element
+      assert is_list(message.via)
+      via = hd(message.via)
       assert is_map(via)
       assert via.host == "pc33.atlanta.com"
       assert via.transport == :udp

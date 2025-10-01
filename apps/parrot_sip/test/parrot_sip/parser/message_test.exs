@@ -61,7 +61,7 @@ defmodule ParrotSip.Parser.MessageTest do
       assert Enum.at(rest, 0).parameters["branch"] == "def"
     end
 
-    test "take_topmost/1 returns {topmost, nil} from a SIP message struct with one Via" do
+    test "take_topmost/1 returns {topmost, rest} from a SIP message struct with one Via" do
       raw = """
       SIP/2.0 200 OK\r
       Via: SIP/2.0/UDP host1;branch=abc\r
@@ -75,7 +75,7 @@ defmodule ParrotSip.Parser.MessageTest do
       {:ok, msg} = Parser.parse(raw)
       {top, rest} = Via.take_topmost(msg)
       assert top.host == "host1"
-      assert rest == nil
+      assert rest == []
     end
   end
 
@@ -112,8 +112,9 @@ defmodule ParrotSip.Parser.MessageTest do
       assert message.direction == :incoming
 
       # Check headers
-      assert message.via.host == "pc33.atlanta.com"
-      assert message.via.parameters["branch"] == "z9hG4bK776asdhds"
+      [via | _] = message.via
+      assert via.host == "pc33.atlanta.com"
+      assert via.parameters["branch"] == "z9hG4bK776asdhds"
 
       assert message.from.display_name == "Alice"
       # URI is now a struct

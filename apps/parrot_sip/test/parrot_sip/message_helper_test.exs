@@ -12,13 +12,13 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
 
-      # Direct access to via field
-      via_string = ParrotSip.Headers.Via.format(updated.via)
+      # Direct access to via field - get first via from list
+      via_string = ParrotSip.Headers.Via.format(hd(updated.via))
       assert via_string =~ "received=192.168.1.1"
     end
 
@@ -28,14 +28,14 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse(
+          [ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=10.0.0.1"
-          )
+          )]
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
 
-      via_string = ParrotSip.Headers.Via.format(updated.via)
+      via_string = ParrotSip.Headers.Via.format(hd(updated.via))
       assert via_string =~ "received=192.168.1.1"
       refute via_string =~ "received=10.0.0.1"
     end
@@ -45,7 +45,7 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via: nil
+        via: []
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
@@ -61,12 +61,12 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
 
-      via_string = ParrotSip.Headers.Via.format(updated.via)
+      via_string = ParrotSip.Headers.Via.format(hd(updated.via))
       assert via_string =~ "rport=12345"
     end
 
@@ -76,14 +76,14 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse(
+          [ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
-          )
+          )]
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
 
-      via_string = ParrotSip.Headers.Via.format(updated.via)
+      via_string = ParrotSip.Headers.Via.format(hd(updated.via))
       assert via_string =~ "rport=12345"
       refute via_string =~ "rport;"
     end
@@ -94,14 +94,14 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse(
+          [ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport=9999"
-          )
+          )]
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
 
-      via_string = ParrotSip.Headers.Via.format(updated.via)
+      via_string = ParrotSip.Headers.Via.format(hd(updated.via))
       assert via_string =~ "rport=12345"
       refute via_string =~ "rport=9999"
     end
@@ -113,11 +113,11 @@ defmodule ParrotSip.MessageHelperTest do
         status_code: 200,
         reason_phrase: "OK",
         type: :response,
-        via: ParrotSip.Headers.Via.parse("SIP/2.0/UDP server.biloxi.com:5060;branch=z9hG4bK74bf9")
+        via: [ParrotSip.Headers.Via.parse("SIP/2.0/UDP server.biloxi.com:5060;branch=z9hG4bK74bf9")]
       }
 
       updated = MessageHelper.remove_top_via(message)
-      assert updated.via == nil
+      assert updated.via == []
     end
 
     test "removes only the top Via header when multiple are present" do
@@ -143,7 +143,7 @@ defmodule ParrotSip.MessageHelperTest do
         status_code: 200,
         reason_phrase: "OK",
         type: :response,
-        via: nil
+        via: []
       }
 
       updated = MessageHelper.remove_top_via(message)
@@ -159,17 +159,17 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse(
+          [ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
-          )
+          )]
       }
 
       source_info = %{host: "192.168.1.100", port: 12345}
 
       updated = MessageHelper.apply_nat_handling(message, source_info)
 
-      assert updated.via.parameters["received"] == "192.168.1.100"
-      assert updated.via.parameters["rport"] == "12345"
+      assert hd(updated.via).parameters["received"] == "192.168.1.100"
+      assert hd(updated.via).parameters["rport"] == "12345"
     end
 
     test "only adds received parameter when host differs" do
@@ -178,14 +178,14 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
       }
 
       source_info = %{host: "192.168.1.100", port: 5060}
 
       updated = MessageHelper.apply_nat_handling(message, source_info)
 
-      assert updated.via.parameters["received"] == "192.168.1.100"
+      assert hd(updated.via).parameters["received"] == "192.168.1.100"
     end
 
     test "only adds rport parameter when empty rport present and port differs" do
@@ -194,14 +194,14 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse("SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK74bf9;rport")
+          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK74bf9;rport")]
       }
 
       source_info = %{host: "192.168.1.100", port: 12345}
 
       updated = MessageHelper.apply_nat_handling(message, source_info)
 
-      assert updated.via.parameters["rport"] == "12345"
+      assert hd(updated.via).parameters["rport"] == "12345"
     end
   end
 
@@ -212,9 +212,9 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse(
+          [ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport=12345"
-          )
+          )]
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -232,7 +232,7 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -250,9 +250,9 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse(
+          [ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport"
-          )
+          )]
       }
 
       response = Message.new_response(200, "OK", %{}, [])
@@ -269,7 +269,7 @@ defmodule ParrotSip.MessageHelperTest do
         request_uri: "sip:bob@example.com",
         type: :request,
         via:
-          ParrotSip.Headers.Via.parse("SIP/2.0/TLS client.atlanta.com:5061;branch=z9hG4bK74bf9")
+          [ParrotSip.Headers.Via.parse("SIP/2.0/TLS client.atlanta.com:5061;branch=z9hG4bK74bf9")]
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}

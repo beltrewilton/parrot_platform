@@ -273,7 +273,7 @@ defmodule ParrotSip.Transaction do
     downcased = String.downcase(header_name)
 
     case downcased do
-      "via" -> not is_nil(message.via)
+      "via" -> not is_nil(message.via) and message.via != []
       "from" -> not is_nil(message.from)
       "to" -> not is_nil(message.to)
       "call-id" -> not is_nil(message.call_id)
@@ -956,16 +956,12 @@ defmodule ParrotSip.Transaction do
   """
   @spec extract_branch(Message.t()) :: {:ok, String.t()} | {:error, atom()}
   def extract_branch(%Message{via: nil}), do: {:error, :no_via}
-
-  def extract_branch(%Message{via: %Headers.Via{parameters: %{"branch" => branch}}}),
-    do: {:ok, branch}
+  def extract_branch(%Message{via: []}), do: {:error, :no_via}
 
   def extract_branch(%Message{via: [%Headers.Via{parameters: %{"branch" => branch}} | _]}),
     do: {:ok, branch}
 
-  def extract_branch(%Message{via: %Headers.Via{}}), do: {:error, :no_branch}
   def extract_branch(%Message{via: [%Headers.Via{} | _]}), do: {:error, :no_branch}
-  def extract_branch(_), do: {:error, :no_via}
 
   @doc """
   Classifies a SIP response by status code.

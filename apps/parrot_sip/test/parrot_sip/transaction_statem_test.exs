@@ -930,14 +930,14 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      via: %Via{
+      via: [%Via{
         protocol: "SIP",
         version: "2.0",
         transport: :udp,
         host: "pc33.atlanta.com",
         port: 5060,
         parameters: %{"branch" => branch}
-      },
+      }],
       from: %From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -969,14 +969,14 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :register,
       request_uri: "sip:registrar.biloxi.com",
       version: "SIP/2.0",
-      via: %Via{
+      via: [%Via{
         protocol: "SIP",
         version: "2.0",
         transport: :udp,
         host: "pc33.atlanta.com",
         port: 5060,
         parameters: %{"branch" => branch}
-      },
+      }],
       from: %From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -1012,14 +1012,14 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :cancel,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      via: %Via{
+      via: [%Via{
         protocol: "SIP",
         version: "2.0",
         transport: :udp,
         host: "pc33.atlanta.com",
         port: 5060,
         parameters: %{"branch" => branch}
-      },
+      }],
       from: %From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -1054,14 +1054,14 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :bye,
       request_uri: "sip:alice@pc33.atlanta.com",
       version: "SIP/2.0",
-      via: %Via{
+      via: [%Via{
         protocol: "SIP",
         version: "2.0",
         transport: :udp,
         host: "biloxi.com",
         port: 5060,
         parameters: %{"branch" => branch}
-      },
+      }],
       from: %From{
         display_name: "Bob",
         uri: "sip:bob@biloxi.com",

@@ -18,7 +18,9 @@ defmodule ParrotSip.SimpleHeaderTest do
     {:ok, message} = Parser.parse(raw_message)
 
     # Check that headers are maps with expected keys
-    via = message.via
+    # Via is now a list, get the first element
+    assert is_list(message.via)
+    via = hd(message.via)
     assert is_map(via)
     assert via.host == "pc33.atlanta.com"
     assert via.transport == :udp

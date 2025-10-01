@@ -389,6 +389,14 @@ defmodule ParrotSip.Parser do
   end
 
   # Helper function to update repeatable headers (single value)
+  # For Via headers, always store as a list for consistency
+  defp update_repeatable_header(headers, "via" = name, parsed) do
+    case Map.get(headers, name) do
+      nil -> Map.put(headers, name, [parsed])
+      existing when is_list(existing) -> Map.put(headers, name, existing ++ [parsed])
+    end
+  end
+
   defp update_repeatable_header(headers, name, parsed) do
     case Map.get(headers, name) do
       nil -> Map.put(headers, name, parsed)

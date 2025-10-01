@@ -5,25 +5,26 @@ defmodule ParrotSip.MessageViaTest do
   alias ParrotSip.Headers.Via
 
   test "handles Via headers as struct fields" do
-    # Via is now a struct field, not in headers map
+    # Via is now a list of struct fields, not in headers map
     message = %Message{
       method: :invite,
       request_uri: "sip:bob@example.com",
       type: :request,
       dialog_id: "dlg-via",
       transaction_id: "txn-via",
-      via: Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+      via: [Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
     }
 
     assert message.dialog_id == "dlg-via"
     assert message.transaction_id == "txn-via"
 
-    # Direct access to Via struct field
-    assert is_struct(message.via, Via)
-    assert message.via.host == "client.atlanta.com"
-    assert message.via.port == 5060
-    assert message.via.transport == :udp
-    assert message.via.parameters["branch"] == "z9hG4bK74bf9"
+    # Direct access to Via list
+    [first_via | _] = message.via
+    assert is_struct(first_via, Via)
+    assert first_via.host == "client.atlanta.com"
+    assert first_via.port == 5060
+    assert first_via.transport == :udp
+    assert first_via.parameters["branch"] == "z9hG4bK74bf9"
 
     # Via as a list of structs
     message = %Message{
@@ -66,7 +67,7 @@ defmodule ParrotSip.MessageViaTest do
       type: :request,
       dialog_id: "dlg-via2",
       transaction_id: "txn-via2",
-      via: Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+      via: [Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
     }
 
     assert message.dialog_id == "dlg-via2"
@@ -75,23 +76,25 @@ defmodule ParrotSip.MessageViaTest do
     # Add received parameter
     updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
 
-    # Via is directly accessible as struct field
-    assert is_struct(updated.via, Via)
-    assert updated.via.parameters["received"] == "192.168.1.1"
+    # Via is directly accessible as list
+    [first_via | _] = updated.via
+    assert is_struct(first_via, Via)
+    assert first_via.parameters["received"] == "192.168.1.1"
 
     # Convert back to string for assertion
-    via_string = Via.format(updated.via)
+    via_string = Via.format(first_via)
     assert via_string =~ "received=192.168.1.1"
 
     # Add rport parameter
     with_rport = MessageHelper.set_rport_parameter(message, 12345)
 
-    # Via is directly accessible as struct field
-    assert is_struct(with_rport.via, Via)
-    assert with_rport.via.parameters["rport"] == "12345"
+    # Via is directly accessible as list
+    [first_via_rport | _] = with_rport.via
+    assert is_struct(first_via_rport, Via)
+    assert first_via_rport.parameters["rport"] == "12345"
 
     # Convert back to string for assertion
-    rport_string = Via.format(with_rport.via)
+    rport_string = Via.format(first_via_rport)
     assert rport_string =~ "rport=12345"
   end
 end

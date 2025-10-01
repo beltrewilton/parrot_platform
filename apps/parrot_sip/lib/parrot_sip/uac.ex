@@ -118,19 +118,12 @@ defmodule ParrotSip.UAC do
   end
 
   @spec add_branch_to_via(Message.t(), String.t()) :: Message.t()
-  defp add_branch_to_via(%Message{via: nil} = msg, _branch), do: msg
+  defp add_branch_to_via(%Message{via: []}, _branch), do: raise("Cannot add branch to empty Via list")
 
-  defp add_branch_to_via(%Message{via: via} = msg, branch) when is_struct(via, Via) do
-    updated_via = Via.with_parameter(via, "branch", branch)
-    %{msg | via: updated_via}
-  end
-
-  defp add_branch_to_via(%Message{via: [first_via | rest]} = msg, branch) when is_list(msg.via) do
+  defp add_branch_to_via(%Message{via: [first_via | rest]} = msg, branch) do
     updated_via = Via.with_parameter(first_via, "branch", branch)
     %{msg | via: [updated_via | rest]}
   end
-
-  defp add_branch_to_via(msg, _branch), do: msg
 
   @spec create_client_transaction(Message.t(), String.t()) :: {:ok, Transaction.t()}
   defp create_client_transaction(%Message{method: method} = request, branch) do

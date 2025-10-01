@@ -777,7 +777,7 @@ defmodule ParrotSip.DialogStatem do
     {:reply, Message.reply(sip_msg, 400, "Missing CSeq header")}
   end
   
-  defp uas_validate_request(%Message{via: nil} = sip_msg) do
+  defp uas_validate_request(%Message{via: []} = sip_msg) do
     {:reply, Message.reply(sip_msg, 400, "Missing Via header")}
   end
   

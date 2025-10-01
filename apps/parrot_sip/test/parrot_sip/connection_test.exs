@@ -97,7 +97,7 @@ defmodule ParrotSip.ConnectionTest do
 
       {_conn, {:new_request, message}} = Connection.conn_data(request, conn)
 
-      via_header = message.via
+      [via_header | _] = message.via
       assert via_header.parameters["received"] == "192.168.1.2"
     end
 
@@ -119,7 +119,7 @@ defmodule ParrotSip.ConnectionTest do
 
       {_conn, {:new_request, message}} = Connection.conn_data(request, conn)
 
-      via_header = message.via
+      [via_header | _] = message.via
 
       assert via_header.host == "pc33.atlanta.com"
       assert via_header.host_type == :hostname
@@ -146,7 +146,7 @@ defmodule ParrotSip.ConnectionTest do
 
       {_conn, {:new_request, message}} = Connection.conn_data(request, conn)
 
-      via_header = message.via
+      [via_header | _] = message.via
       refute via_header.parameters["rport"] == "5070"
     end
   end

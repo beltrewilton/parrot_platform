@@ -110,7 +110,7 @@ defmodule ParrotSip.SerializerTest do
         |> Message.put_call_id(ParrotSip.Headers.parse_call_id("a84b4c76e66710@pc33.atlanta.com"))
         |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
         |> Message.put_via(
-          ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com:5060;branch=z9hG4bK776asdhds")
+          [ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com:5060;branch=z9hG4bK776asdhds")]
         )
 
       encoded = Serializer.encode(response)
@@ -428,7 +428,7 @@ defmodule ParrotSip.SerializerTest do
         |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
         |> Message.put_max_forwards(70)
         |> Message.put_via(
-          ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds")
+          [ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds")]
         )
         |> Message.put_header("user-agent", long_value)
 
@@ -521,7 +521,7 @@ defmodule ParrotSip.SerializerTest do
         |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
         |> Message.put_max_forwards(70)
         |> Message.put_via(
-          ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds")
+          [ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds")]
         )
         |> Message.put_content_type(
           ParrotSip.Headers.parse_content_type("multipart/mixed;boundary=boundary1")
@@ -570,7 +570,7 @@ defmodule ParrotSip.SerializerTest do
         |> Message.put_cseq(ParrotSip.Headers.parse_cseq("314159 INVITE"))
         |> Message.put_max_forwards(70)
         |> Message.put_via(
-          ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds")
+          [ParrotSip.Headers.parse_via("SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds")]
         )
         |> Message.put_content_type(
           ParrotSip.Headers.parse_content_type("multipart/mixed;boundary=boundary1")

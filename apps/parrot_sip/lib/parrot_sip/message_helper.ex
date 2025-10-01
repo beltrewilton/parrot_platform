@@ -36,30 +36,17 @@ defmodule ParrotSip.MessageHelper do
   ## Examples
 
       iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> message = ParrotSip.Message.set_header(message, "via", "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+      iex> via = ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+      iex> message = %{message | via: [via]}
       iex> updated = ParrotSip.MessageHelper.set_received_parameter(message, "192.168.1.1")
-      iex> ParrotSip.Message.get_header(updated, "via")
-      %ParrotSip.Headers.Via{
-        port: 5060,
-        version: "2.0",
-        protocol: "SIP",
-        host: "client.atlanta.com",
-        parameters: %{"branch" => "z9hG4bK74bf9", "received" => "192.168.1.1"},
-        transport: :udp,
-        host_type: :hostname
-      }
+      iex> [updated_via] = ParrotSip.Message.get_header(updated, "via")
+      iex> updated_via.parameters["received"]
+      "192.168.1.1"
   """
   @spec set_received_parameter(Message.t(), String.t()) :: Message.t()
-  def set_received_parameter(%Message{via: nil} = message, _ip_address), do: message
+  def set_received_parameter(%Message{via: []} = message, _ip_address), do: message
 
-  def set_received_parameter(%Message{via: via} = message, ip_address)
-      when is_struct(via, ParrotSip.Headers.Via) do
-    updated_via = ParrotSip.Headers.Via.with_parameter(via, "received", ip_address)
-    %{message | via: updated_via}
-  end
-
-  def set_received_parameter(%Message{via: [first_via | rest]} = message, ip_address)
-      when is_list(message.via) do
+  def set_received_parameter(%Message{via: [first_via | rest]} = message, ip_address) do
     updated_via = ParrotSip.Headers.Via.with_parameter(first_via, "received", ip_address)
     %{message | via: [updated_via | rest]}
   end
@@ -82,30 +69,17 @@ defmodule ParrotSip.MessageHelper do
   ## Examples
 
       iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> message = ParrotSip.Message.set_header(message, "via", "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport")
+      iex> via = ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport")
+      iex> message = %{message | via: [via]}
       iex> updated = ParrotSip.MessageHelper.set_rport_parameter(message, 12345)
-      iex> ParrotSip.Message.get_header(updated, "via")
-      %ParrotSip.Headers.Via{
-        port: 5060,
-        version: "2.0",
-        protocol: "SIP",
-        host: "client.atlanta.com",
-        parameters: %{"branch" => "z9hG4bK74bf9", "rport" => "12345"},
-        transport: :udp,
-        host_type: :hostname
-      }
+      iex> [updated_via] = ParrotSip.Message.get_header(updated, "via")
+      iex> updated_via.parameters["rport"]
+      "12345"
   """
   @spec set_rport_parameter(Message.t(), non_neg_integer()) :: Message.t()
-  def set_rport_parameter(%Message{via: nil} = message, _port), do: message
+  def set_rport_parameter(%Message{via: []} = message, _port), do: message
 
-  def set_rport_parameter(%Message{via: via} = message, port)
-      when is_struct(via, ParrotSip.Headers.Via) do
-    updated_via = ParrotSip.Headers.Via.with_parameter(via, "rport", Integer.to_string(port))
-    %{message | via: updated_via}
-  end
-
-  def set_rport_parameter(%Message{via: [first_via | rest]} = message, port)
-      when is_list(message.via) do
+  def set_rport_parameter(%Message{via: [first_via | rest]} = message, port) do
     updated_via =
       ParrotSip.Headers.Via.with_parameter(first_via, "rport", Integer.to_string(port))
 
@@ -144,19 +118,9 @@ defmodule ParrotSip.MessageHelper do
       ]
   """
   @spec remove_top_via(Message.t()) :: Message.t()
-  def remove_top_via(%Message{via: nil} = message), do: message
+  def remove_top_via(%Message{via: []} = message), do: message
 
-  def remove_top_via(%Message{via: _single_via} = message)
-      when is_struct(message.via, ParrotSip.Headers.Via) do
-    %{message | via: nil}
-  end
-
-  def remove_top_via(%Message{via: [_top | []]} = message) do
-    %{message | via: []}
-  end
-
-  def remove_top_via(%Message{via: [_top | rest]} = message) when is_list(message.via) do
-    # Always keep as list to preserve the original type
+  def remove_top_via(%Message{via: [_top | rest]} = message) do
     %{message | via: rest}
   end
 
@@ -177,47 +141,31 @@ defmodule ParrotSip.MessageHelper do
 
       iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
       iex> via = ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport")
-      iex> message = ParrotSip.Message.set_header(message, "via", via)
+      iex> message = %{message | via: [via]}
       iex> source_info = %{host: "192.168.1.100", port: 12345}
       iex> updated = ParrotSip.MessageHelper.apply_nat_handling(message, source_info)
-      iex> ParrotSip.Message.get_header(updated, "via")
-      %ParrotSip.Headers.Via{
-        port: 5060,
-        version: "2.0",
-        protocol: "SIP",
-        host: "client.atlanta.com",
-        parameters: %{"branch" => "z9hG4bK74bf9", "received" => "192.168.1.100", "rport" => "12345"},
-        transport: :udp,
-        host_type: :hostname
-      }
+      iex> [updated_via] = ParrotSip.Message.get_header(updated, "via")
+      iex> updated_via.parameters["received"]
+      "192.168.1.100"
+      iex> updated_via.parameters["rport"]
+      "12345"
   """
   @spec apply_nat_handling(Message.t(), map()) :: Message.t()
-  def apply_nat_handling(%Message{via: nil} = message, _source_info), do: message
+  def apply_nat_handling(%Message{via: []} = message, _source_info), do: message
 
-  def apply_nat_handling(%Message{via: via} = message, %{host: host, port: port}) do
-    top_via =
-      case via do
-        v when is_struct(v, ParrotSip.Headers.Via) -> v
-        [v | _] when is_list(via) -> v
-        _ -> nil
-      end
-
-    if top_via do
-      # Apply changes sequentially to build the final message
-      message =
-        if top_via.host != host do
-          # Only add received parameter if the host differs
-          set_received_parameter(message, host)
-        else
-          message
-        end
-
-      # Check if rport is present as an empty parameter
-      if Map.get(top_via.parameters, "rport") == "" and top_via.port != port do
-        set_rport_parameter(message, port)
+  def apply_nat_handling(%Message{via: [top_via | _]} = message, %{host: host, port: port}) do
+    # Apply changes sequentially to build the final message
+    message =
+      if top_via.host != host do
+        # Only add received parameter if the host differs
+        set_received_parameter(message, host)
       else
         message
       end
+
+    # Check if rport is present as an empty parameter
+    if Map.get(top_via.parameters, "rport") == "" and top_via.port != port do
+      set_rport_parameter(message, port)
     else
       message
     end
@@ -241,7 +189,8 @@ defmodule ParrotSip.MessageHelper do
   ## Examples
 
       iex> request = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
-      iex> request = ParrotSip.Message.set_header(request, "via", "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport=12345")
+      iex> via = ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport=12345")
+      iex> request = %{request | via: [via]}
       iex> response = ParrotSip.Message.new_response(200, "OK")
       iex> response = ParrotSip.MessageHelper.symmetric_response_routing(request, response)
       iex> response.source.host
@@ -250,50 +199,39 @@ defmodule ParrotSip.MessageHelper do
       12345
   """
   @spec symmetric_response_routing(Message.t(), Message.t()) :: Message.t()
-  def symmetric_response_routing(%Message{via: nil} = _request, response), do: response
+  def symmetric_response_routing(%Message{via: []}, response), do: response
 
-  def symmetric_response_routing(%Message{via: via} = _request, response) do
-    top_via =
-      case via do
-        v when is_struct(v, ParrotSip.Headers.Via) -> v
-        [v | _] when is_list(via) -> v
-        _ -> nil
+  def symmetric_response_routing(%Message{via: [top_via | _]}, response) do
+    received = Map.get(top_via.parameters, "received")
+    rport = Map.get(top_via.parameters, "rport")
+
+    # Determine target host and port
+    host = if received && received != "", do: received, else: top_via.host
+
+    port =
+      case rport do
+        nil ->
+          top_via.port || 5060
+
+        "" ->
+          top_via.port || 5060
+
+        value ->
+          case Integer.parse(value) do
+            {port_num, _} -> port_num
+            :error -> top_via.port || 5060
+          end
       end
 
-    if top_via do
-      received = Map.get(top_via.parameters, "received")
-      rport = Map.get(top_via.parameters, "rport")
+    # Create source for response
+    source = %{
+      type: top_via.transport,
+      host: host,
+      port: port
+    }
 
-      # Determine target host and port
-      host = if received && received != "", do: received, else: top_via.host
-
-      port =
-        case rport do
-          nil ->
-            top_via.port || 5060
-
-          "" ->
-            top_via.port || 5060
-
-          value ->
-            case Integer.parse(value) do
-              {port_num, _} -> port_num
-              :error -> top_via.port || 5060
-            end
-        end
-
-      # Create source for response
-      source = %{
-        type: top_via.transport,
-        host: host,
-        port: port
-      }
-
-      # Update response with routing information
-      %{response | source: source}
-    else
-      response
-    end
+    # Update response with routing information
+    %{response | source: source}
   end
 
   @doc """
