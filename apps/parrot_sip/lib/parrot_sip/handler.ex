@@ -23,6 +23,29 @@ defmodule ParrotSip.Handler do
   @callback uas_cancel(ParrotSip.UAS.id(), any()) :: :ok
   @callback process_ack(ParrotSip.Message.t(), any()) :: :ok
 
+  # Optional method-specific callbacks
+  @callback handle_options(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_invite(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_bye(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_cancel(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_register(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_subscribe(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_notify(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_message(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_info(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+
+  @optional_callbacks [
+    handle_options: 3,
+    handle_invite: 3,
+    handle_bye: 3,
+    handle_cancel: 3,
+    handle_register: 3,
+    handle_subscribe: 3,
+    handle_notify: 3,
+    handle_message: 3,
+    handle_info: 3
+  ]
+
   @spec new(module(), any()) :: handler()
   @spec new(module(), any(), keyword()) :: handler()
 
@@ -60,8 +83,28 @@ defmodule ParrotSip.Handler do
 
   @spec uas_request(ParrotSip.UAS.t(), ParrotSip.Message.t(), handler()) :: :ok
   def uas_request(uas, req_sip_msg, %__MODULE__{module: mod, args: args}) do
-    mod.uas_request(uas, req_sip_msg, args)
+    # Try method-specific callback first, fall back to generic uas_request
+    method = req_sip_msg.method
+    method_callback = method_to_callback(method)
+
+    if function_exported?(mod, method_callback, 3) do
+      apply(mod, method_callback, [uas, req_sip_msg, args])
+    else
+      mod.uas_request(uas, req_sip_msg, args)
+    end
   end
+
+  # Map SIP methods to callback function names
+  defp method_to_callback(:options), do: :handle_options
+  defp method_to_callback(:invite), do: :handle_invite
+  defp method_to_callback(:bye), do: :handle_bye
+  defp method_to_callback(:cancel), do: :handle_cancel
+  defp method_to_callback(:register), do: :handle_register
+  defp method_to_callback(:subscribe), do: :handle_subscribe
+  defp method_to_callback(:notify), do: :handle_notify
+  defp method_to_callback(:message), do: :handle_message
+  defp method_to_callback(:info), do: :handle_info
+  defp method_to_callback(_), do: nil
 
   @spec uas_cancel(ParrotSip.UAS.id(), handler()) :: :ok
   def uas_cancel(uas_id, %__MODULE__{module: mod, args: args}) do
