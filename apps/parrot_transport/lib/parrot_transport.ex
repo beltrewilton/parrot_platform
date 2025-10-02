@@ -37,10 +37,10 @@ defmodule ParrotTransport do
         start_supervised_listener(ParrotTransport.UdpListener, config)
 
       :tcp ->
-        {:error, :not_implemented}
+        {:error, :use_start_tcp_listener}
 
       :tls ->
-        {:error, :not_implemented}
+        {:error, :use_start_tls_listener}
 
       _other ->
         {:error, :unsupported_transport}
@@ -61,6 +61,22 @@ defmodule ParrotTransport do
   @spec start_tcp_listener(ListenerConfig.t(), pid()) :: {:ok, pid()} | {:error, term()}
   def start_tcp_listener(%ListenerConfig{transport: :tcp} = config, handler_pid) do
     start_supervised_tcp_listener(config, handler_pid)
+  end
+
+  @doc """
+  Starts a TLS listener with a specified handler.
+
+  ## Parameters
+    * `config` - A `ListenerConfig` struct with transport: :tls
+    * `handler_pid` - Process to receive incoming packets from accepted connections
+
+  ## Returns
+    * `{:ok, pid}` - Listener process PID
+    * `{:error, reason}` - Startup failure reason
+  """
+  @spec start_tls_listener(ListenerConfig.t(), pid()) :: {:ok, pid()} | {:error, term()}
+  def start_tls_listener(%ListenerConfig{transport: :tls} = config, handler_pid) do
+    start_supervised_tls_listener(config, handler_pid)
   end
 
   @doc """
@@ -158,6 +174,31 @@ defmodule ParrotTransport do
     child_spec = %{
       id: config.name || make_ref(),
       start: {ParrotTransport.TcpListener, :start_link, [config, handler_pid]},
+      restart: :temporary
+    }
+
+    case DynamicSupervisor.start_child(ParrotTransport.ListenerSupervisor, child_spec) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:error, {:already_started, pid}}
+
+      {:error, {:bind_error, reason}} ->
+        {:error, reason}
+
+      {:error, {:shutdown, {:bind_error, reason}}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp start_supervised_tls_listener(config, handler_pid) do
+    child_spec = %{
+      id: config.name || make_ref(),
+      start: {ParrotTransport.TlsListener, :start_link, [config, handler_pid]},
       restart: :temporary
     }
 
