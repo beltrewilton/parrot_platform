@@ -3,7 +3,7 @@ defmodule ParrotTransport do
   Public API for protocol-agnostic transport layer.
 
   This module provides the primary interface for starting listeners,
-  registering handlers, and sending/receiving data over UDP, TCP, and TLS.
+  registering handlers, and sending/receiving data over UDP, TCP, TLS, and WebSocket.
 
   All transports are completely protocol-agnostic and deliver raw binary
   packets to registered handlers via the IncomingPacket struct.
@@ -42,6 +42,9 @@ defmodule ParrotTransport do
       :tls ->
         {:error, :use_start_tls_listener}
 
+      :websocket ->
+        {:error, :use_start_websocket_listener}
+
       _other ->
         {:error, :unsupported_transport}
     end
@@ -77,6 +80,22 @@ defmodule ParrotTransport do
   @spec start_tls_listener(ListenerConfig.t(), pid()) :: {:ok, pid()} | {:error, term()}
   def start_tls_listener(%ListenerConfig{transport: :tls} = config, handler_pid) do
     start_supervised_tls_listener(config, handler_pid)
+  end
+
+  @doc """
+  Starts a WebSocket listener with a specified handler.
+
+  ## Parameters
+    * `config` - A `ListenerConfig` struct with transport: :websocket
+    * `handler_pid` - Process to receive incoming packets from accepted connections
+
+  ## Returns
+    * `{:ok, pid}` - Listener process PID
+    * `{:error, reason}` - Startup failure reason
+  """
+  @spec start_websocket_listener(ListenerConfig.t(), pid()) :: {:ok, pid()} | {:error, term()}
+  def start_websocket_listener(%ListenerConfig{transport: :websocket} = config, handler_pid) do
+    start_supervised_websocket_listener(config, handler_pid)
   end
 
   @doc """
@@ -199,6 +218,31 @@ defmodule ParrotTransport do
     child_spec = %{
       id: config.name || make_ref(),
       start: {ParrotTransport.TlsListener, :start_link, [config, handler_pid]},
+      restart: :temporary
+    }
+
+    case DynamicSupervisor.start_child(ParrotTransport.ListenerSupervisor, child_spec) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:error, {:already_started, pid}}
+
+      {:error, {:bind_error, reason}} ->
+        {:error, reason}
+
+      {:error, {:shutdown, {:bind_error, reason}}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp start_supervised_websocket_listener(config, handler_pid) do
+    child_spec = %{
+      id: config.name || make_ref(),
+      start: {ParrotTransport.WebsocketListener, :start_link, [config, handler_pid]},
       restart: :temporary
     }
 
