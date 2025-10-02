@@ -34,6 +34,25 @@ defmodule ParrotSip.Handler do
   @callback handle_message(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
   @callback handle_info(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
 
+  # Optional transaction state callbacks
+  @callback handle_transaction_trying(ParrotSip.Transaction.t(), ParrotSip.Message.t(), any()) ::
+              :ok
+  @callback handle_transaction_proceeding(
+              ParrotSip.Transaction.t(),
+              ParrotSip.Message.t(),
+              any()
+            ) :: :ok
+  @callback handle_transaction_completed(
+              ParrotSip.Transaction.t(),
+              ParrotSip.Message.t(),
+              any()
+            ) :: :ok
+  @callback handle_transaction_confirmed(
+              ParrotSip.Transaction.t(),
+              ParrotSip.Message.t(),
+              any()
+            ) :: :ok
+
   @optional_callbacks [
     handle_options: 3,
     handle_invite: 3,
@@ -43,7 +62,11 @@ defmodule ParrotSip.Handler do
     handle_subscribe: 3,
     handle_notify: 3,
     handle_message: 3,
-    handle_info: 3
+    handle_info: 3,
+    handle_transaction_trying: 3,
+    handle_transaction_proceeding: 3,
+    handle_transaction_completed: 3,
+    handle_transaction_confirmed: 3
   ]
 
   @spec new(module(), any()) :: handler()
@@ -114,5 +137,42 @@ defmodule ParrotSip.Handler do
   @spec process_ack(ParrotSip.Message.t(), handler()) :: :ok
   def process_ack(sip_msg, %__MODULE__{module: mod, args: args}) do
     mod.process_ack(sip_msg, args)
+  end
+
+  @spec transaction_trying(ParrotSip.Transaction.t(), ParrotSip.Message.t(), handler()) :: :ok
+  def transaction_trying(trans, sip_msg, %__MODULE__{module: mod, args: args}) do
+    if function_exported?(mod, :handle_transaction_trying, 3) do
+      apply(mod, :handle_transaction_trying, [trans, sip_msg, args])
+    else
+      :ok
+    end
+  end
+
+  @spec transaction_proceeding(ParrotSip.Transaction.t(), ParrotSip.Message.t(), handler()) ::
+          :ok
+  def transaction_proceeding(trans, sip_msg, %__MODULE__{module: mod, args: args}) do
+    if function_exported?(mod, :handle_transaction_proceeding, 3) do
+      apply(mod, :handle_transaction_proceeding, [trans, sip_msg, args])
+    else
+      :ok
+    end
+  end
+
+  @spec transaction_completed(ParrotSip.Transaction.t(), ParrotSip.Message.t(), handler()) :: :ok
+  def transaction_completed(trans, sip_msg, %__MODULE__{module: mod, args: args}) do
+    if function_exported?(mod, :handle_transaction_completed, 3) do
+      apply(mod, :handle_transaction_completed, [trans, sip_msg, args])
+    else
+      :ok
+    end
+  end
+
+  @spec transaction_confirmed(ParrotSip.Transaction.t(), ParrotSip.Message.t(), handler()) :: :ok
+  def transaction_confirmed(trans, sip_msg, %__MODULE__{module: mod, args: args}) do
+    if function_exported?(mod, :handle_transaction_confirmed, 3) do
+      apply(mod, :handle_transaction_confirmed, [trans, sip_msg, args])
+    else
+      :ok
+    end
   end
 end

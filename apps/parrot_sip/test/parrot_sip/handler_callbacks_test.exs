@@ -8,7 +8,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
 
   use ExUnit.Case, async: false
 
-  alias ParrotSip.{Handler, Message, Transaction, UAS}
+  alias ParrotSip.{Handler, Message, Transaction}
   alias ParrotSip.Headers.{Via, From, To, CSeq}
 
   describe "method-specific callbacks - handle_options/3" do
