@@ -211,6 +211,96 @@ def uas_request(uas, sip_msg, _args) do
 end
 ```
 
+## Rich Callback System
+
+**apps/parrot_sip now supports optional method-specific and transaction state callbacks:**
+
+### Method-Specific Callbacks
+
+Instead of manually dispatching in `uas_request/3`, you can implement method-specific callbacks:
+
+```elixir
+defmodule MyApp.SipHandler do
+  @behaviour ParrotSip.Handler
+
+  # Optional - automatically called for OPTIONS requests
+  def handle_options(uas, sip_msg, args) do
+    response = Message.reply(sip_msg, 200, "OK")
+    UAS.response(response, uas)
+    :ok
+  end
+
+  # Optional - automatically called for INVITE requests
+  def handle_invite(uas, sip_msg, args) do
+    ringing = Message.reply(sip_msg, 180, "Ringing")
+    UAS.response(ringing, uas)
+    :ok
+  end
+
+  # Required - fallback for methods without specific handlers
+  def uas_request(uas, sip_msg, args) do
+    response = Message.reply(sip_msg, 501, "Not Implemented")
+    UAS.response(response, uas)
+    :ok
+  end
+end
+```
+
+**Available method callbacks:** `handle_options/3`, `handle_invite/3`, `handle_bye/3`, `handle_cancel/3`, `handle_register/3`, `handle_subscribe/3`, `handle_notify/3`, `handle_message/3`, `handle_info/3`
+
+### Transaction State Callbacks
+
+Get notified when transactions change state:
+
+```elixir
+defmodule MyApp.SipHandler do
+  @behaviour ParrotSip.Handler
+
+  # Optional - called when transaction enters :trying state
+  def handle_transaction_trying(trans, sip_msg, args) do
+    Logger.info("Transaction #{trans.id} trying")
+    :ok
+  end
+
+  # Optional - called when transaction enters :proceeding state
+  def handle_transaction_proceeding(trans, sip_msg, args) do
+    Logger.info("Transaction #{trans.id} proceeding")
+    :ok
+  end
+
+  # Optional - called when transaction enters :completed state
+  def handle_transaction_completed(trans, sip_msg, args) do
+    Logger.info("Transaction #{trans.id} completed")
+    :ok
+  end
+
+  # Optional - called when transaction enters :confirmed state (INVITE only)
+  def handle_transaction_confirmed(trans, sip_msg, args) do
+    Logger.info("Transaction #{trans.id} confirmed")
+    :ok
+  end
+end
+```
+
+**Available transaction callbacks:** `handle_transaction_trying/3`, `handle_transaction_proceeding/3`, `handle_transaction_completed/3`, `handle_transaction_confirmed/3`
+
+### Dialog State Callbacks
+
+**Note**: Dialog callbacks are defined in the behavior but not yet wired up to DialogStatem. This requires UAS/DialogStatem integration work to pass the Handler through the dialog creation flow.
+
+```elixir
+# Defined but not yet functional:
+def handle_dialog_early(dialog, sip_msg, args) do
+  Logger.info("Dialog #{dialog.id} early")
+  :ok
+end
+
+def handle_dialog_confirmed(dialog, sip_msg, args) do
+  Logger.info("Dialog #{dialog.id} confirmed")
+  :ok
+end
+```
+
 ## Bottom Line
 
 **Yes, the foundational APIs are the same:**
@@ -222,5 +312,6 @@ end
 **What changed:**
 - Old: HandlerAdapter wraps simple callbacks
 - New: You implement `ParrotSip.Handler` behavior directly
+- New: Rich callback system for method-specific and transaction state handling
 
 **The new way is more verbose but more explicit and easier to understand.**
