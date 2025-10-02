@@ -14,6 +14,9 @@ defmodule ParrotTransport do
   @doc """
   Starts a transport listener under the application's supervisor.
 
+  For UDP listeners, use `register_handler/2` to receive packets.
+  For TCP listeners, pass a handler PID in the config or use `start_tcp_listener/2`.
+
   ## Parameters
     * `config` - A `ListenerConfig` struct specifying transport type, port, and options
 
@@ -25,6 +28,7 @@ defmodule ParrotTransport do
 
       config = %ListenerConfig{transport: :udp, port: 5060}
       {:ok, pid} = ParrotTransport.start_listener(config)
+      :ok = ParrotTransport.register_handler(pid, self())
   """
   @spec start_listener(ListenerConfig.t()) :: {:ok, pid()} | {:error, term()}
   def start_listener(%ListenerConfig{} = config) do
@@ -41,6 +45,22 @@ defmodule ParrotTransport do
       _other ->
         {:error, :unsupported_transport}
     end
+  end
+
+  @doc """
+  Starts a TCP listener with a specified handler.
+
+  ## Parameters
+    * `config` - A `ListenerConfig` struct with transport: :tcp
+    * `handler_pid` - Process to receive incoming packets from accepted connections
+
+  ## Returns
+    * `{:ok, pid}` - Listener process PID
+    * `{:error, reason}` - Startup failure reason
+  """
+  @spec start_tcp_listener(ListenerConfig.t(), pid()) :: {:ok, pid()} | {:error, term()}
+  def start_tcp_listener(%ListenerConfig{transport: :tcp} = config, handler_pid) do
+    start_supervised_tcp_listener(config, handler_pid)
   end
 
   @doc """
@@ -113,6 +133,31 @@ defmodule ParrotTransport do
     child_spec = %{
       id: config.name || make_ref(),
       start: {module, :start_link, [config]},
+      restart: :temporary
+    }
+
+    case DynamicSupervisor.start_child(ParrotTransport.ListenerSupervisor, child_spec) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:error, {:already_started, pid}}
+
+      {:error, {:bind_error, reason}} ->
+        {:error, reason}
+
+      {:error, {:shutdown, {:bind_error, reason}}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp start_supervised_tcp_listener(config, handler_pid) do
+    child_spec = %{
+      id: config.name || make_ref(),
+      start: {ParrotTransport.TcpListener, :start_link, [config, handler_pid]},
       restart: :temporary
     }
 
