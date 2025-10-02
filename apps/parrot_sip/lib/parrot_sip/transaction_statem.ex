@@ -860,6 +860,21 @@ defmodule ParrotSip.TransactionStatem do
   defp classify_to_event(code) when code >= 100 and code < 200, do: {:send_provisional, code}
   defp classify_to_event(code), do: {:send_final, code}
 
+  # Helper to call Handler state transition callbacks
+  defp call_state_transition_callback(:proceeding, transaction, sip_msg, handler) do
+    Handler.transaction_proceeding(transaction, sip_msg, handler)
+  end
+
+  defp call_state_transition_callback(:completed, transaction, sip_msg, handler) do
+    Handler.transaction_completed(transaction, sip_msg, handler)
+  end
+
+  defp call_state_transition_callback(:confirmed, transaction, sip_msg, handler) do
+    Handler.transaction_confirmed(transaction, sip_msg, handler)
+  end
+
+  defp call_state_transition_callback(_state, _transaction, _sip_msg, _handler), do: :ok
+
   # Helper function to apply state transitions from Transaction.next_state/2
   # This centralizes the common pattern of:
   # 1. Update transaction state
@@ -895,6 +910,11 @@ defmodule ParrotSip.TransactionStatem do
 
         # Check if gen_statem state should transition
         if transaction.state != new_state_atom do
+          # Call state transition callback if handler exists (only for server transactions with Handler struct)
+          if state.data.handler && is_struct(state.data.handler, ParrotSip.Handler) && state.data[:origmsg] do
+            call_state_transition_callback(new_state_atom, new_transaction, state.data.origmsg, state.data.handler)
+          end
+
           case process_actions(actions, new_state) do
             :stop -> {:stop, :normal, new_state}
             {:keep_state, result_state} -> {:next_state, new_state_atom, result_state}
@@ -1213,6 +1233,9 @@ source = extract_source(data, last_response)
       ) do
     Logger.debug(":handle_transaction_setup -> Trying transaction setup")
 
+    # Call transaction state callback for :trying state
+    Handler.transaction_trying(transaction, sip_msg, handler)
+
     # Only send 100 Trying for INVITE server transactions (RFC 3261 17.2.1)
     # Non-INVITE server transactions should not automatically send 100 Trying (RFC 3261 17.2.2)
     if sip_msg.method == :invite do
@@ -1229,11 +1252,13 @@ source = extract_source(data, last_response)
       result = case Handler.transaction(transaction, sip_msg, handler) do
         :ok ->
           Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok, moving to proceeding")
+          Handler.transaction_proceeding(transaction, sip_msg, handler)
           {:next_state, :proceeding, updated_state}
 
         :process_uas ->
           Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas, moving to proceeding")
           UAS.process(transaction, sip_msg, handler)
+          Handler.transaction_proceeding(transaction, sip_msg, handler)
           {:next_state, :proceeding, updated_state}
           
         err ->
