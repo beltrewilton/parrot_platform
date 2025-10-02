@@ -91,7 +91,20 @@ defmodule ParrotTransport.Connection do
   def stop(conn) do
     GenStateMachine.call(conn, :stop)
   end
-  
+
+  @doc """
+  Starts a simple TLS connection handler (non-gen_statem).
+
+  This spawns a dedicated process for handling a TLS socket with framing.
+  Returns the PID for the connection process.
+  """
+  @spec start_tls(:ssl.sslsocket(), tuple(), tuple(), pid()) :: pid()
+  def start_tls(ssl_socket, remote_addr, local_addr, handler) do
+    spawn_link(fn ->
+      tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, %ContentLength{})
+    end)
+  end
+
   # ============================================================================
   # gen_statem callbacks
   # ============================================================================
@@ -305,4 +318,73 @@ defmodule ParrotTransport.Connection do
   end
 
   defp format_addr(ip), do: inspect(ip)
+
+  # ============================================================================
+  # TLS Connection Loop (Simple Process)
+  # ============================================================================
+
+  defp tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, framing) do
+    # Set socket to active mode to receive messages
+    :ssl.setopts(ssl_socket, [{:active, :once}])
+
+    receive do
+      {:ssl, ^ssl_socket, data} ->
+        # Process received data through framing
+        case ContentLength.process(framing, data) do
+          {:ok, messages, new_framing} when is_list(messages) ->
+            # Send each complete message to handler
+            for message <- messages do
+              source = %Source{
+                transport: :tls,
+                remote_addr: remote_addr,
+                local_addr: local_addr,
+                connection: self()
+              }
+
+              metadata = %Metadata{
+                timestamp: System.system_time(:millisecond),
+                connection_id: inspect(self()),
+                tls_info: get_tls_info(ssl_socket)
+              }
+
+              packet = %IncomingPacket{
+                data: message,
+                source: source,
+                metadata: metadata
+              }
+
+              send(handler, {:incoming_packet, packet})
+            end
+
+            # Continue with updated framing state
+            tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, new_framing)
+
+          {:error, reason} ->
+            Logger.error("[TlsConnection] Framing error: #{inspect(reason)}")
+            :ssl.close(ssl_socket)
+        end
+
+      {:ssl_closed, ^ssl_socket} ->
+        Logger.debug("[TlsConnection] Socket closed")
+        :ok
+
+      {:ssl_error, ^ssl_socket, reason} ->
+        Logger.error("[TlsConnection] Socket error: #{inspect(reason)}")
+        :ssl.close(ssl_socket)
+    end
+  end
+
+  defp get_tls_info(ssl_socket) do
+    case :ssl.connection_information(ssl_socket) do
+      {:ok, info} ->
+        %{
+          protocol: Keyword.get(info, :protocol),
+          cipher_suite: Keyword.get(info, :cipher_suite),
+          sni_hostname: Keyword.get(info, :sni_hostname)
+        }
+
+      {:error, _} ->
+        nil
+    end
+  end
 end
