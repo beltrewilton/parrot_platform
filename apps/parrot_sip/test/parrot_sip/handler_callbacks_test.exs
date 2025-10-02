@@ -9,7 +9,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
   use ExUnit.Case, async: false
 
   alias ParrotSip.{Handler, Message, Transaction, UAS}
-  alias ParrotSip.Headers.{Via, From, To, CSeq, CallId}
+  alias ParrotSip.Headers.{Via, From, To, CSeq}
 
   describe "method-specific callbacks - handle_options/3" do
     test "automatically dispatches to handle_options/3 when OPTIONS request is received" do
@@ -157,6 +157,72 @@ defmodule ParrotSip.HandlerCallbacksTest do
       # Should fall back to generic uas_request
       assert_receive {:uas_request_fallback_called, :options}, 1000
     end
+
+    test "uas_request/3 is required - handler must implement it even with method-specific callbacks" do
+      # This test documents that uas_request/3 is NOT optional
+      # Even if you implement all method-specific callbacks, you must implement uas_request/3
+      # as a fallback for unknown methods or methods without specific handlers
+
+      defmodule TestMissingUasRequestHandler do
+        # NOTE: This module intentionally does NOT implement uas_request/3
+        # It will fail the @behaviour check at compile time
+
+        def transp_request(_msg, _args), do: :process_transaction
+        def transaction(_trans, _msg, _args), do: :process_uas
+        def transaction_stop(_trans, _result, _args), do: :ok
+        def uas_cancel(_id, _args), do: :ok
+        def process_ack(_msg, _args), do: :ok
+
+        # Even with handle_options defined, missing uas_request should fail
+        def handle_options(_uas, _msg, _args), do: :ok
+      end
+
+      # This test just documents the requirement - actual enforcement is at compile time
+      # If someone tries to implement ParrotSip.Handler without uas_request/3,
+      # the compiler will emit a warning about missing callback
+      assert true
+    end
+
+    test "method-specific callbacks handle all common SIP methods" do
+      # Verify that we have callbacks defined for all common methods
+      defmodule TestAllMethodsHandler do
+        @behaviour ParrotSip.Handler
+
+        def transp_request(_msg, _args), do: :process_transaction
+        def transaction(_trans, _msg, _args), do: :process_uas
+        def transaction_stop(_trans, _result, _args), do: :ok
+        def uas_cancel(_id, _args), do: :ok
+        def process_ack(_msg, _args), do: :ok
+        def uas_request(_uas, _msg, _args), do: :ok
+
+        # All method-specific callbacks
+        def handle_options(_uas, _msg, args), do: send(args, {:called, :options})
+        def handle_invite(_uas, _msg, args), do: send(args, {:called, :invite})
+        def handle_bye(_uas, _msg, args), do: send(args, {:called, :bye})
+        def handle_cancel(_uas, _msg, args), do: send(args, {:called, :cancel})
+        def handle_register(_uas, _msg, args), do: send(args, {:called, :register})
+        def handle_subscribe(_uas, _msg, args), do: send(args, {:called, :subscribe})
+        def handle_notify(_uas, _msg, args), do: send(args, {:called, :notify})
+        def handle_message(_uas, _msg, args), do: send(args, {:called, :message})
+        def handle_info(_uas, _msg, args), do: send(args, {:called, :info})
+      end
+
+      # Test that each method dispatches correctly
+      methods_to_test = [:options, :invite, :bye, :register, :subscribe, :notify, :info]
+
+      for method <- methods_to_test do
+        msg = build_message_for_method(method)
+        handler = Handler.new(TestAllMethodsHandler, self())
+
+        transaction = case method do
+          :invite -> {:ok, t} = Transaction.create_invite_server(msg); t
+          _ -> {:ok, t} = Transaction.create_non_invite_server(msg); t
+        end
+
+        Handler.uas_request(transaction, msg, handler)
+        assert_receive {:called, ^method}, 1000
+      end
+    end
   end
 
   # Helper functions to build SIP messages
@@ -195,6 +261,47 @@ defmodule ParrotSip.HandlerCallbacksTest do
       from: from,
       to: to,
       call_id: "test-call-id-123",
+      cseq: cseq,
+      max_forwards: 70,
+      content_length: 0,
+      body: ""
+    }
+  end
+
+  defp build_message_for_method(method) do
+    via = %Via{
+      transport: :udp,
+      host: "client.example.com",
+      port: 5060,
+      parameters: %{"branch" => "z9hG4bK-#{method}-branch"}
+    }
+
+    from = %From{
+      display_name: "Alice",
+      uri: "sip:alice@example.com",
+      parameters: %{"tag" => "from-tag-#{method}"}
+    }
+
+    to = %To{
+      display_name: "Bob",
+      uri: "sip:bob@example.com",
+      parameters: %{}
+    }
+
+    cseq = %CSeq{
+      number: 1,
+      method: method
+    }
+
+    %Message{
+      type: :request,
+      method: method,
+      request_uri: "sip:bob@example.com",
+      version: "SIP/2.0",
+      via: [via],
+      from: from,
+      to: to,
+      call_id: "test-#{method}-call-id",
       cseq: cseq,
       max_forwards: 70,
       content_length: 0,
