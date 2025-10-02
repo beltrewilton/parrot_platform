@@ -50,7 +50,8 @@ defmodule ParrotTransport.UdpListener do
   """
   @spec start_link(ListenerConfig.t()) :: GenStateMachine.on_start()
   def start_link(%ListenerConfig{transport: :udp} = config) do
-    GenStateMachine.start_link(__MODULE__, config)
+    opts = if config.name, do: [name: config.name], else: []
+    GenStateMachine.start_link(__MODULE__, config, opts)
   end
 
   @doc """
@@ -92,24 +93,11 @@ defmodule ParrotTransport.UdpListener do
 
   @impl GenStateMachine
   def init(config) do
-    data = %Data{config: config}
-    {:ok, :initializing, data}
-  end
-
-  # ============================================================================
-  # State: :initializing
-  # ============================================================================
-
-  def initializing(:enter, _old_state, _data) do
-    # Trigger socket creation
-    send(self(), :bind_socket)
-    :keep_state_and_data
-  end
-
-  def initializing(:info, :bind_socket, data) do
-    case create_socket(data.config) do
+    # Bind socket synchronously during init to catch errors early
+    case create_socket(config) do
       {:ok, socket, local_ip, local_port} ->
-        new_data = %{data |
+        data = %Data{
+          config: config,
           socket: socket,
           local_ip: local_ip,
           local_port: local_port
@@ -117,7 +105,7 @@ defmodule ParrotTransport.UdpListener do
 
         Logger.info("[UdpListener] Bound to #{format_addr(local_ip)}:#{local_port}")
 
-        {:next_state, :bound, new_data}
+        {:ok, :bound, data}
 
       {:error, reason} ->
         Logger.error("[UdpListener] Failed to bind socket: #{inspect(reason)}")
