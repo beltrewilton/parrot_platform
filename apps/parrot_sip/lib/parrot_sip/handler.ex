@@ -53,6 +53,10 @@ defmodule ParrotSip.Handler do
               any()
             ) :: :ok
 
+  # Optional dialog state callbacks
+  @callback handle_dialog_early(ParrotSip.Dialog.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_dialog_confirmed(ParrotSip.Dialog.t(), ParrotSip.Message.t(), any()) :: :ok
+
   @optional_callbacks [
     handle_options: 3,
     handle_invite: 3,
@@ -66,7 +70,9 @@ defmodule ParrotSip.Handler do
     handle_transaction_trying: 3,
     handle_transaction_proceeding: 3,
     handle_transaction_completed: 3,
-    handle_transaction_confirmed: 3
+    handle_transaction_confirmed: 3,
+    handle_dialog_early: 3,
+    handle_dialog_confirmed: 3
   ]
 
   @spec new(module(), any()) :: handler()
@@ -171,6 +177,24 @@ defmodule ParrotSip.Handler do
   def transaction_confirmed(trans, sip_msg, %__MODULE__{module: mod, args: args}) do
     if function_exported?(mod, :handle_transaction_confirmed, 3) do
       apply(mod, :handle_transaction_confirmed, [trans, sip_msg, args])
+    else
+      :ok
+    end
+  end
+
+  @spec dialog_early(ParrotSip.Dialog.t(), ParrotSip.Message.t(), handler()) :: :ok
+  def dialog_early(dialog, sip_msg, %__MODULE__{module: mod, args: args}) do
+    if function_exported?(mod, :handle_dialog_early, 3) do
+      apply(mod, :handle_dialog_early, [dialog, sip_msg, args])
+    else
+      :ok
+    end
+  end
+
+  @spec dialog_confirmed(ParrotSip.Dialog.t(), ParrotSip.Message.t(), handler()) :: :ok
+  def dialog_confirmed(dialog, sip_msg, %__MODULE__{module: mod, args: args}) do
+    if function_exported?(mod, :handle_dialog_confirmed, 3) do
+      apply(mod, :handle_dialog_confirmed, [dialog, sip_msg, args])
     else
       :ok
     end
