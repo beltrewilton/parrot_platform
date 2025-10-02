@@ -1,75 +1,136 @@
 defmodule ParrotTransport do
   @moduledoc """
-  Transport layer with no protocol knowledge.
-  
-  This module provides a protocol-agnostic transport layer for sending and receiving
-  network packets. It supports UDP, TCP, and TLS transports.
+  Public API for protocol-agnostic transport layer.
+
+  This module provides the primary interface for starting listeners,
+  registering handlers, and sending/receiving data over UDP, TCP, and TLS.
+
+  All transports are completely protocol-agnostic and deliver raw binary
+  packets to registered handlers via the IncomingPacket struct.
   """
 
+  alias ParrotTransport.Types.ListenerConfig
+
   @doc """
-  Starts a transport listener of the specified type.
-  
-  ## Options
-    * `:port` - The port to listen on (required)
-    * `:ip` - The IP address to bind to (defaults to {0,0,0,0})
-    * `:name` - Optional name for the transport process
-    * `:handler` - PID or registered name of the handler process
-  
+  Starts a transport listener under the application's supervisor.
+
+  ## Parameters
+    * `config` - A `ListenerConfig` struct specifying transport type, port, and options
+
   ## Returns
-    * `{:ok, transport_ref}` - The transport reference for sending packets
-    * `{:error, reason}` - If the transport could not be started
+    * `{:ok, pid}` - Listener process PID
+    * `{:error, reason}` - Startup failure reason
+
+  ## Examples
+
+      config = %ListenerConfig{transport: :udp, port: 5060}
+      {:ok, pid} = ParrotTransport.start_listener(config)
   """
-  def start_listener(type, opts) do
-    case type do
+  @spec start_listener(ListenerConfig.t()) :: {:ok, pid()} | {:error, term()}
+  def start_listener(%ListenerConfig{} = config) do
+    case config.transport do
       :udp ->
-        ParrotTransport.Udp.start_link(opts)
-      _other ->
+        start_supervised_listener(ParrotTransport.UdpListener, config)
+
+      :tcp ->
         {:error, :not_implemented}
+
+      :tls ->
+        {:error, :not_implemented}
+
+      _other ->
+        {:error, :unsupported_transport}
     end
   end
 
   @doc """
-  Registers a handler process to receive packets from the transport.
-  
-  The handler will receive messages in the format:
-  `{:packet_received, data, source, metadata}`
-  
-  Where:
-    * `data` - The raw binary packet data
-    * `source` - The source address as `{ip, port}`
-    * `metadata` - Additional transport metadata
+  Stops a running listener.
+
+  ## Parameters
+    * `listener` - Listener PID or registered name
+
+  ## Returns
+    * `:ok`
   """
-  def register_handler(transport_ref, handler_pid, opts \\ []) do
-    GenServer.call(transport_ref, {:register_handler, handler_pid, opts})
+  @spec stop_listener(GenStateMachine.server_ref()) :: :ok
+  def stop_listener(listener) do
+    ParrotTransport.UdpListener.stop(listener)
   end
 
   @doc """
-  Sends a raw packet through the transport.
-  
+  Registers a handler process to receive incoming packets.
+
+  The handler will receive `{:incoming_packet, IncomingPacket.t()}` messages.
+
   ## Parameters
-    * `transport_ref` - The transport reference
-    * `data` - Raw binary data to send
-    * `destination` - Target address as `{ip, port}`
-  """
-  def send_packet(transport_ref, data, destination) do
-    GenServer.cast(transport_ref, {:send_packet, data, destination})
-  end
-  
-  @doc """
-  Unregisters a handler from the transport.
-  """
-  def unregister_handler(transport_ref, handler_pid) do
-    GenServer.call(transport_ref, {:unregister_handler, handler_pid})
-  end
-  
-  @doc """
-  Gets the local address the transport is bound to.
-  
+    * `listener` - Listener PID or registered name
+    * `handler_pid` - Process to receive packets
+
   ## Returns
-    * `{:ok, {ip, port}}` - The local address
-    * `{:error, reason}` - If the address cannot be retrieved
+    * `:ok`
   """
-  def get_local_address(transport_ref) do
-    GenServer.call(transport_ref, :get_local_address)
+  @spec register_handler(GenStateMachine.server_ref(), pid()) :: :ok
+  def register_handler(listener, handler_pid) do
+    ParrotTransport.UdpListener.register_handler(listener, handler_pid)
+  end
+
+  @doc """
+  Sends data through a transport.
+
+  ## Parameters
+    * `listener` - Listener PID or registered name
+    * `data` - Binary data to send
+    * `destination` - Tuple of `{ip, port}`
+
+  ## Returns
+    * `:ok`
+  """
+  @spec send_data(GenStateMachine.server_ref(), binary(), {tuple(), integer()}) :: :ok
+  def send_data(listener, data, destination) do
+    ParrotTransport.UdpListener.send_data(listener, data, destination)
+  end
+
+  @doc """
+  Gets the local address a listener is bound to.
+
+  ## Parameters
+    * `listener` - Listener PID or registered name
+
+  ## Returns
+    * `{:ok, {ip, port}}`
+  """
+  @spec get_local_address(GenStateMachine.server_ref()) ::
+          {:ok, {:inet.ip_address(), :inet.port_number()}}
+  def get_local_address(listener) do
+    ParrotTransport.UdpListener.get_local_address(listener)
+  end
+
+  # ============================================================================
+  # Private Functions
+  # ============================================================================
+
+  defp start_supervised_listener(module, config) do
+    child_spec = %{
+      id: config.name || make_ref(),
+      start: {module, :start_link, [config]},
+      restart: :temporary
+    }
+
+    case DynamicSupervisor.start_child(ParrotTransport.ListenerSupervisor, child_spec) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:error, {:already_started, pid}}
+
+      {:error, {:bind_error, reason}} ->
+        {:error, reason}
+
+      {:error, {:shutdown, {:bind_error, reason}}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 end
