@@ -44,16 +44,28 @@ All implementation followed strict TDD: Tests written first, then implementation
 - Content-Length framing integration for message boundaries
 - Handles connection loss, TCP errors, framing errors
 - Streams complete messages to handler process
+- Supports both outbound (dial) and inbound (accept) modes
+
+### 6. TCP Listener gen_statem (12 tests - ALL PASSING)
+- File: lib/parrot_transport/tcp_listener.ex
+- Tests: test/parrot_transport/tcp_listener_test.exs
+- States: :listening → :stopping
+- Acceptor pool pattern for concurrent connection acceptance
+- Spawns Connection process for each accepted client
+- Transfers socket ownership with proper activation
+- Monitors connections for cleanup on disconnect
+- Handles accept errors with retry logic
 
 ## Test Coverage Summary
 
-Total: 71 tests, 0 failures
+Total: 83 tests, 0 failures
 
 - Types: 13 tests
-- Content-Length Framing: 29 tests  
+- Content-Length Framing: 29 tests
 - UDP Listener: 9 tests
 - Public API: 10 tests
 - TCP Connection: 10 tests
+- TCP Listener: 12 tests
 
 ## Architecture Highlights
 
@@ -84,38 +96,44 @@ Total: 71 tests, 0 failures
 
 ## What's Left (Not Implemented)
 
-1. **TCP Listener** - Would manage incoming TCP connections
-   - Accept incoming connections
-   - Spawn Connection processes for each
-   - Track active connections
-   - Note: Connection module is complete and handles all TCP logic
-
-2. **TLS Support** - Would wrap TCP with SSL
-   - Similar to TCP Listener but with :ssl module
+1. **TLS Support** - Would wrap TCP with SSL
+   - TLS Connection (modify Connection to use :ssl.connect)
+   - TLS Listener (modify TcpListener to use :ssl.listen)
    - Certificate/key configuration
-   - Same framing as TCP
+   - Same framing as TCP (Content-Length)
 
-3. **Public API TCP/TLS methods** - Extensions needed
-   - start_listener for :tcp/:tls transports
-   - Connection pooling/management
+2. **Integration Tests** - Cross-transport scenarios
+   - UDP + TCP running simultaneously
+   - Multiple TCP connections
+   - Large message bodies (10KB+ SDP)
+   - Connection reconnection under load
+
+3. **Performance & Optimization**
+   - Benchmarking (messages/sec, latency)
+   - Connection pooling for outbound
+   - Memory profiling
+   - Load testing (1000+ connections)
 
 ## Commit History
 
 1. a10a5ed - Add Types module with comprehensive test coverage
-2. d2a90fb - Add Content-Length framing module with comprehensive tests  
+2. d2a90fb - Add Content-Length framing module with comprehensive tests
 3. 0455dcf - Add UDP Listener gen_statem with comprehensive tests
 4. a4cdcae - Add public API with DynamicSupervisor integration
 5. 9352629 - Add TCP Connection gen_statem with Content-Length framing
+6. 97409c6 - Clean up tests - remove old UDP tests, reduce logging noise
+7. 39273cc - Add implementation summary - 71 tests passing
+8. 3ed45d4 - Add TCP Listener gen_statem with acceptor pool
+9. b43e9d5 - Add TCP support to public API
 
 All commits are small, focused, and easy to review.
 
 ## Next Steps
 
-1. Implement TCP Listener gen_statem (similar to UDP Listener but accepts connections)
-2. Add TLS support (wrap TCP with :ssl)
-3. Integration tests combining UDP + TCP + Connection
-4. Update public API to support all transports
-5. Performance testing and optimization
+1. Add TLS support (wrap TCP with :ssl module)
+2. Integration tests combining UDP + TCP
+3. Performance testing and optimization
+4. Load testing (1000+ simultaneous connections)
 
 ## Key Design Decisions
 
