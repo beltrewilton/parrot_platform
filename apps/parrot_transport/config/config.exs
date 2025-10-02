@@ -9,3 +9,8 @@ config :parrot_transport,
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: [:file, :line]
+
+# Reduce logging noise during tests
+if Mix.env() == :test do
+  config :logger, level: :warning
+end
