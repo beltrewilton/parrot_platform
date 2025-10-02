@@ -58,12 +58,22 @@ defmodule ParrotTransport.Connection do
   # ============================================================================
 
   @doc """
-  Starts a TCP connection to the specified remote endpoint.
+  Starts a TCP connection to the specified remote endpoint (outbound).
   """
   @spec start_link(ListenerConfig.t(), pid()) :: GenStateMachine.on_start()
   def start_link(%ListenerConfig{transport: :tcp} = config, handler_pid) do
     opts = if config.name, do: [name: config.name], else: []
-    GenStateMachine.start_link(__MODULE__, {config, handler_pid}, opts)
+    GenStateMachine.start_link(__MODULE__, {:outbound, config, handler_pid}, opts)
+  end
+
+  @doc """
+  Starts a Connection with an already-connected socket (inbound).
+  Used by TcpListener when accepting connections.
+  """
+  @spec start_link_with_socket(ListenerConfig.t(), pid(), :gen_tcp.socket()) ::
+          GenStateMachine.on_start()
+  def start_link_with_socket(%ListenerConfig{transport: :tcp} = config, handler_pid, socket) do
+    GenStateMachine.start_link(__MODULE__, {:inbound, config, handler_pid, socket}, [])
   end
 
   @doc """
@@ -87,7 +97,8 @@ defmodule ParrotTransport.Connection do
   # ============================================================================
 
   @impl GenStateMachine
-  def init({config, handler_pid}) do
+  def init({:outbound, config, handler_pid}) do
+    # Outbound connection - will attempt to connect
     data = %Data{
       config: config,
       handler: handler_pid,
@@ -95,6 +106,24 @@ defmodule ParrotTransport.Connection do
     }
 
     {:ok, :connecting, data}
+  end
+
+  def init({:inbound, config, handler_pid, socket}) do
+    # Inbound connection - socket already connected
+    {:ok, {local_ip, local_port}} = :inet.sockname(socket)
+
+    data = %Data{
+      config: config,
+      handler: handler_pid,
+      socket: socket,
+      local_ip: local_ip,
+      local_port: local_port,
+      framing: %ContentLength{}
+    }
+
+    Logger.info("[Connection] Accepted connection from #{format_addr(config.ip)}:#{config.port}")
+
+    {:ok, :connected, data}
   end
 
   # ============================================================================
