@@ -25,6 +25,8 @@ parrot_platform-*.tar
 # sipp
 test/sipp/logs/*
 !test/sipp/logs/.gitkeep
+test/sipp/fixtures/certs/*.pem
+test/sipp/fixtures/certs/*.srl
 
 .elixir_ls/
 

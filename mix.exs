@@ -60,8 +60,32 @@ defmodule ParrotPlatform.MixProject do
 
       _path ->
         Mix.shell().info("Running SIPp integration tests...")
-        # Run the SIPp test file directly with sipp tag included
-        Mix.Task.run("test", ["test/sipp/test_scenarios.exs", "--include", "sipp" | args])
+
+        # For umbrella projects, compile first, then run tests at root with elixir
+        # This ensures all apps are compiled and available
+        Mix.Task.run("compile")
+
+        # Build path to compiled beam files
+        code_paths =
+          Path.wildcard("_build/test/lib/*/ebin")
+          |> Enum.flat_map(fn path -> ["-pa", path] end)
+
+        # Run tests directly with elixir
+        test_files = Path.wildcard("test/sipp/*.exs")
+
+        elixir_args = code_paths ++
+          ["-r", "test/test_helper.exs"] ++
+          Enum.flat_map(test_files, fn file -> ["-r", file] end) ++
+          ["-e", "ExUnit.configure(include: [:sipp]); System.at_exit(fn _ -> :ok end)"]
+
+        {_output, status} = System.cmd(
+          "elixir",
+          elixir_args ++ args,
+          stderr_to_stdout: true,
+          into: IO.stream(:stdio, :line)
+        )
+
+        if status != 0, do: exit({:shutdown, 1})
     end
   end
 

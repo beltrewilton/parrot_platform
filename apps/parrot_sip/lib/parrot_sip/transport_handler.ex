@@ -31,15 +31,17 @@ defmodule ParrotSip.TransportHandler do
   alias ParrotSip.Source
 
   defstruct [
-    :transport_ref,
+    :transport_ref,  # Deprecated - kept for backward compatibility
     :name,
-    handlers: []
+    handlers: [],
+    transports: %{}  # New: Map of transport refs by {transport, local_ip, local_port}
   ]
 
   @type t :: %__MODULE__{
-          transport_ref: pid() | atom() | nil,
+          transport_ref: pid() | atom() | nil,  # Deprecated
           name: atom() | nil,
-          handlers: list(pid())
+          handlers: list(pid()),
+          transports: map()  # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
         }
 
   # API
@@ -101,9 +103,33 @@ defmodule ParrotSip.TransportHandler do
 
   ## Options
   - `timeout` - GenServer call timeout in milliseconds (default: 5000)
+
+  DEPRECATED: Use register_transport/5 for multi-transport support
   """
   def set_transport(handler, transport_ref, timeout \\ 5000) do
     GenServer.call(handler, {:set_transport, transport_ref}, timeout)
+  end
+
+  @doc """
+  Registers a transport listener for a specific transport/address combination.
+
+  This allows TransportHandler to manage multiple listeners (e.g., UDP:5060, TCP:5060, TLS:5061).
+  Responses will be sent back through the same transport/address where the request was received.
+
+  ## Parameters
+  - `handler` - TransportHandler process
+  - `transport_ref` - PID or name of the transport listener
+  - `transport_type` - :udp | :tcp | :tls | :websocket
+  - `local_ip` - Local IP address tuple, e.g., {127, 0, 0, 1}
+  - `local_port` - Local port number
+
+  ## Examples
+      register_transport(handler, udp_listener, :udp, {0, 0, 0, 0}, 5060)
+      register_transport(handler, tcp_listener, :tcp, {0, 0, 0, 0}, 5060)
+      register_transport(handler, tls_listener, :tls, {0, 0, 0, 0}, 5061)
+  """
+  def register_transport(handler, transport_ref, transport_type, local_ip, local_port, timeout \\ 5000) do
+    GenServer.call(handler, {:register_transport, transport_ref, transport_type, local_ip, local_port}, timeout)
   end
 
   # GenServer Callbacks
@@ -126,7 +152,8 @@ defmodule ParrotSip.TransportHandler do
     state = %__MODULE__{
       transport_ref: transport_ref,
       name: name,
-      handlers: []
+      handlers: [],
+      transports: %{}
     }
 
     # Logger.info("TransportHandler started#{if name, do: " as #{name}", else: ""}")
@@ -142,9 +169,19 @@ defmodule ParrotSip.TransportHandler do
   end
 
   def handle_call({:set_transport, transport_ref}, _from, state) do
-    # Register with the new transport
+    # Register with the new transport (deprecated single-transport mode)
     register_with_transport(transport_ref, self())
     {:reply, :ok, %{state | transport_ref: transport_ref}}
+  end
+
+  def handle_call({:register_transport, transport_ref, transport_type, local_ip, local_port}, _from, state) do
+    # Register a new transport listener
+    key = {transport_type, local_ip, local_port}
+    new_transports = Map.put(state.transports, key, transport_ref)
+
+    Logger.debug("[TransportHandler] Registered transport #{transport_type}://#{inspect(local_ip)}:#{local_port}")
+
+    {:reply, :ok, %{state | transports: new_transports}}
   end
 
   @impl true
@@ -154,22 +191,26 @@ defmodule ParrotSip.TransportHandler do
   end
 
   def handle_cast({:send_sip_response, response, source}, state) do
-    # Extract destination from source
-    destination =
+    # Extract destination and transport info from source
+    {destination, transport_ref} =
       case source do
-        %Source{remote: remote} ->
-          remote
+        %Source{remote: remote, transport: transport_type, local: {local_ip, local_port}} ->
+          # Look up the correct transport based on where the request came from
+          key = {transport_type, local_ip, local_port}
+          transport = Map.get(state.transports, key) || state.transport_ref
+          {remote, transport}
 
         {host, port} ->
-          {host, port}
+          # Fallback to old single-transport mode
+          {{host, port}, state.transport_ref}
 
         _ ->
           Logger.error("Invalid source for response: #{inspect(source)}")
-          nil
+          {nil, nil}
       end
 
-    if destination do
-      send_to_transport(response, destination, state.transport_ref)
+    if destination && transport_ref do
+      send_to_transport(response, destination, transport_ref)
     end
 
     {:noreply, state}
@@ -231,8 +272,8 @@ defmodule ParrotSip.TransportHandler do
         # Monitor the transport process
         Process.monitor(pid)
 
-        # Register as a handler with the transport
-        GenServer.call(pid, {:register_handler, handler_pid, []}, 5000)
+        # Register as a handler with the transport (using gen_statem call)
+        :gen_statem.call(pid, {:register_handler, handler_pid}, 5000)
 
       {:error, reason} ->
         Logger.error("Failed to register with transport: #{reason}")
@@ -269,7 +310,8 @@ defmodule ParrotSip.TransportHandler do
     # Send to transport
     case resolve_transport(transport_ref) do
       {:ok, pid} ->
-        GenServer.cast(pid, {:send_packet, raw_data, {dest_ip, dest_port}})
+        # Send to transport with correct message format: {:send_data, data, dest_ip, dest_port}
+        :gen_statem.cast(pid, {:send_data, raw_data, dest_ip, dest_port})
 
       {:error, reason} ->
         Logger.error("Failed to send to transport: #{reason}")

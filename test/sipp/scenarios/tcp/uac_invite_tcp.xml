@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC INVITE over TCP
+  Basic INVITE call flow over TCP transport
+-->
+<scenario name="UAC INVITE TCP">
+  <!-- Send INVITE over TCP -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=tcp>
+      Max-Forwards: 70
+      Subject: TCP Test Call
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123456 IN IP4 [local_ip]
+      s=SIPp TCP Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio 6000 RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 100 Trying (optional) -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Expect 180 Ringing (optional) -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:alice@[local_ip]:[local_port];transport=tcp>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Pause before sending BYE -->
+  <pause milliseconds="100"/>
+
+  <!-- Send BYE -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/TCP [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=tcp>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>
