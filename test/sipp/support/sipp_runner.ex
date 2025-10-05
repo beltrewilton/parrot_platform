@@ -332,7 +332,7 @@ defmodule SippTest.SippRunner do
       end)
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
-      {:ok, {output, 0}} ->
+      {:ok, {_output, 0}} ->
         Logger.debug("SIPp completed successfully")
         :ok
 

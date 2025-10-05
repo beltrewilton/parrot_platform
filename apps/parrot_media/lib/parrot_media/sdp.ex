@@ -13,13 +13,17 @@ defmodule ParrotMedia.Sdp do
     local_ip = opts[:local_ip] || "127.0.0.1"
     local_port = opts[:local_port] || 10000
     codecs = opts[:codecs] || [opus: 111, pcma: 8, pcmu: 0]
-    
-    # Build SDP using ex_sdp
-    {:ok, sdp} = ExSDP.new(local_ip)
-    |> ExSDP.add_media(:audio, local_port, :RTP_AVP, Enum.map(codecs, fn {_, pt} -> pt end))
-    |> ExSDP.to_string()
-    
-    sdp
+
+    # Build SDP using ExSDP library
+    payload_types = Enum.map(codecs, fn {_, pt} -> pt end)
+
+    # Create media description
+    media = ExSDP.Media.new(:audio, local_port, "RTP/AVP", payload_types)
+
+    # Build complete SDP
+    ExSDP.new(local_ip)
+    |> ExSDP.add_media(media)
+    |> to_string()
   end
   
   @doc """
@@ -76,7 +80,7 @@ defmodule ParrotMedia.Sdp do
     end
   end
   
-  defp extract_codecs(parsed_sdp) do
+  defp extract_codecs(_parsed_sdp) do
     # Simplified codec extraction
     # In real implementation, this would parse rtpmap attributes
     [:opus, :pcma, :pcmu]
