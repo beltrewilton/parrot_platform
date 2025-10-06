@@ -1295,8 +1295,18 @@ source = extract_source(data, last_response)
     )
   end
 
+  # RFC 3261 Section 9.2: CANCEL for INVITE - respond with 487 Request Terminated
+  def trying(:cast, :cancel, %{data: %{handler: handler, transaction: %{request: %{method: :invite}} = transaction}} = state) do
+    Logger.debug("trans: canceling INVITE server transaction. state: #{inspect(state, @inspect_opts)}")
+    UAS.process_cancel(transaction, handler)
+    resp = UAS.make_reply(487, "Request Terminated", transaction, transaction.request)
+    server_response(resp, transaction)
+    {:keep_state, state}
+  end
+
+  # CANCEL for non-INVITE transactions
   def trying(:cast, :cancel, %{data: %{handler: handler, transaction: transaction}} = state) do
-    Logger.debug("trans: canceling server transaction. state: #{inspect(state, @inspect_opts)}")
+    Logger.debug("trans: canceling non-INVITE server transaction. state: #{inspect(state, @inspect_opts)}")
     UAS.process_cancel(transaction, handler)
     {:keep_state, state}
   end
@@ -1390,6 +1400,22 @@ source = extract_source(data, last_response)
   - RFC 3261 Section 17.1.1: INVITE Client Transaction (proceeding state)
   - RFC 3261 Section 17.2.1: INVITE Server Transaction (proceeding state)
   """
+  # RFC 3261 Section 9.2: CANCEL for INVITE in proceeding - respond with 487 Request Terminated
+  def proceeding(:cast, :cancel, %{data: %{handler: handler, transaction: %{request: %{method: :invite}} = transaction}} = state) do
+    Logger.debug("trans: canceling INVITE server transaction in proceeding state. state: #{inspect(state, @inspect_opts)}")
+    UAS.process_cancel(transaction, handler)
+    resp = UAS.make_reply(487, "Request Terminated", transaction, transaction.request)
+    server_response(resp, transaction)
+    {:keep_state, state}
+  end
+
+  # CANCEL for non-INVITE transactions in proceeding
+  def proceeding(:cast, :cancel, %{data: %{handler: handler, transaction: transaction}} = state) do
+    Logger.debug("trans: canceling non-INVITE server transaction in proceeding state. state: #{inspect(state, @inspect_opts)}")
+    UAS.process_cancel(transaction, handler)
+    {:keep_state, state}
+  end
+
   def proceeding(:cast, event, state), do: handle_common_event(event, state)
 
   def proceeding(:info, event, state), do: handle_event(:info, event, :proceeding, state)
