@@ -12,13 +12,13 @@ defmodule ParrotSip.TransactionStatemTest do
   # Tests use the global ParrotSip.Registry but with unique transaction IDs per test.
   # This provides isolation while using the real application infrastructure.
   # Tests run sequentially (async: false) to avoid overwhelming the supervisor.
-  
+
   setup do
     # Generate unique test ID for this test's transactions
     test_id = :erlang.unique_integer([:positive])
     {:ok, test_id: test_id}
   end
-  
+
   # Helper to create unique branch parameters per test
   defp unique_branch(base, test_id) do
     "#{base}_#{test_id}"
@@ -476,17 +476,48 @@ defmodule ParrotSip.TransactionStatemTest do
       Application.delete_env(:parrot_sip, :cancel_timeout)
     end
 
-    test "server transaction processes CANCEL", %{test_id: test_id} do
+    test "server transaction processes CANCEL and sends 487 to INVITE in proceeding state", %{
+      test_id: test_id
+    } do
       invite = build_invite(unique_branch("z9hG4bKcancelServer", test_id))
       {:ok, transaction} = Transaction.create_invite_server(invite)
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
 
-      :gen_statem.cast(pid, :cancel)
-
       # INVITE server transactions automatically send 100 Trying and move to proceeding
       assert_state(pid, :proceeding)
+
+      # Send CANCEL while in proceeding state
+      :gen_statem.cast(pid, :cancel)
+      Process.sleep(50)
+
+      # RFC 3261 Section 9.2: Should send 487 Request Terminated to INVITE
+      # Transaction moves to completed when final response (487) is sent
+      assert_state(pid, :completed)
+      dbg(get_last_response(pid))
+      assert_last_response(pid, 487)
+      assert Process.alive?(pid)
+    end
+
+    test "non-INVITE server transaction does NOT send 487 when cancelled", %{test_id: test_id} do
+      # CANCEL should only trigger 487 for INVITE transactions
+      register = build_register(unique_branch("z9hG4bKcancelNonInvite", test_id))
+      {:ok, transaction} = Transaction.create_non_invite_server(register)
+      handler = TestHandler.new()
+
+      {:ok, pid} = start_transaction(transaction, handler)
+      assert_state(pid, :trying)
+
+      # Send CANCEL
+      :gen_statem.cast(pid, :cancel)
+      Process.sleep(50)
+
+      # Should NOT send 487 for non-INVITE
+      # Transaction should still be in trying with no last_response
+      assert_state(pid, :trying)
+      last_response = get_last_response(pid)
+      assert last_response == nil
       assert Process.alive?(pid)
     end
 
@@ -500,25 +531,27 @@ defmodule ParrotSip.TransactionStatemTest do
 
       :ok = TransactionStatem.client_cancel({:trans, pid})
       Process.sleep(50)
-      
+
       # Check if still alive before getting state
-      first_check = if Process.alive?(pid) do
-        get_cancelled_flag(pid)
-      else
-        true  # Already terminated, test passes
-      end
-      
+      first_check =
+        if Process.alive?(pid) do
+          get_cancelled_flag(pid)
+        else
+          # Already terminated, test passes
+          true
+        end
+
       assert first_check
 
       # Second cancel should also work (idempotent)
       :ok = TransactionStatem.client_cancel({:trans, pid})
       Process.sleep(50)
-      
+
       if Process.alive?(pid) do
         second_check = get_cancelled_flag(pid)
         assert second_check
       end
-      
+
       # Cancel the monitor
       Process.demonitor(ref, [:flush])
 
@@ -535,20 +568,20 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Set owner
       owner = spawn(fn -> Process.sleep(1000) end)
       :gen_statem.cast(pid, {:set_owner, 500, owner})
       Process.sleep(10)
-      
+
       # Send final response
       final = Message.reply(request, 200, "OK")
       :ok = TransactionStatem.server_response(final, transaction)
-      
+
       # Kill owner - should NOT send auto-response since final already sent
       Process.exit(owner, :kill)
       Process.sleep(10)
-      
+
       # Transaction should keep state
       assert Process.alive?(pid)
     end
@@ -560,18 +593,18 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Create an unrelated process and monitor it ourselves
       other_pid = spawn(fn -> Process.sleep(100) end)
       other_ref = Process.monitor(other_pid)
-      
+
       # Kill the other process - its DOWN won't match transaction's owner_mon
       Process.exit(other_pid, :kill)
-      
+
       # Send the DOWN message to the transaction
       send(pid, {:DOWN, other_ref, :process, other_pid, :killed})
       Process.sleep(10)
-      
+
       # Transaction should ignore it and remain alive
       assert Process.alive?(pid)
     end
@@ -643,7 +676,12 @@ defmodule ParrotSip.TransactionStatemTest do
 
       {:ok, pid} = start_transaction(transaction, handler)
 
-      owner = spawn(fn -> receive do end end)
+      owner =
+        spawn(fn ->
+          receive do
+          end
+        end)
+
       :ok = TransactionStatem.server_set_owner(503, owner, transaction)
 
       Process.exit(owner, :kill)
@@ -665,7 +703,12 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :terminated)
       assert_last_response(pid, 200)
 
-      owner = spawn(fn -> receive do end end)
+      owner =
+        spawn(fn ->
+          receive do
+          end
+        end)
+
       :ok = TransactionStatem.server_set_owner(503, owner, transaction)
 
       last_response_before = get_last_response(pid)
@@ -686,7 +729,11 @@ defmodule ParrotSip.TransactionStatemTest do
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
       ref = Process.monitor(pid)
 
-      owner = spawn(fn -> receive do end end)
+      owner =
+        spawn(fn ->
+          receive do
+          end
+        end)
 
       # Use proper API to set owner
       :ok = TransactionStatem.client_set_owner(owner, transaction)
@@ -694,9 +741,9 @@ defmodule ParrotSip.TransactionStatemTest do
       refute get_cancelled_flag(pid)
 
       assert Process.alive?(pid), "Transaction process should be alive before owner death"
-      
+
       Process.exit(owner, :kill)
-      
+
       # Give time for DOWN message to be processed
       Process.sleep(50)
 
@@ -711,7 +758,7 @@ defmodule ParrotSip.TransactionStatemTest do
         assert_received {:DOWN, ^ref, :process, ^pid, reason}
         assert reason == :normal or match?({:shutdown, _}, reason)
       end
-      
+
       Process.demonitor(ref, [:flush])
     end
   end
@@ -910,9 +957,9 @@ defmodule ParrotSip.TransactionStatemTest do
   defp assert_state(pid, expected_state) do
     state = :sys.get_state(pid)
     actual_state = elem(state, 0)
-    
+
     assert actual_state == expected_state,
-      "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
   end
 
   defp assert_process_terminates(pid) do
@@ -930,14 +977,16 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      via: [%Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "pc33.atlanta.com",
-        port: 5060,
-        parameters: %{"branch" => branch}
-      }],
+      via: [
+        %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
       from: %From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -969,14 +1018,16 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :register,
       request_uri: "sip:registrar.biloxi.com",
       version: "SIP/2.0",
-      via: [%Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "pc33.atlanta.com",
-        port: 5060,
-        parameters: %{"branch" => branch}
-      }],
+      via: [
+        %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
       from: %From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -1012,14 +1063,16 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :cancel,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      via: [%Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "pc33.atlanta.com",
-        port: 5060,
-        parameters: %{"branch" => branch}
-      }],
+      via: [
+        %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
       from: %From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -1054,14 +1107,16 @@ defmodule ParrotSip.TransactionStatemTest do
       method: :bye,
       request_uri: "sip:alice@pc33.atlanta.com",
       version: "SIP/2.0",
-      via: [%Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "biloxi.com",
-        port: 5060,
-        parameters: %{"branch" => branch}
-      }],
+      via: [
+        %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "biloxi.com",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
       from: %From{
         display_name: "Bob",
         uri: "sip:bob@biloxi.com",
@@ -1090,11 +1145,11 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Force an error termination
       Process.exit(pid, :test_error)
       Process.sleep(10)
-      
+
       # Process should be dead
       refute Process.alive?(pid)
     end
@@ -1106,15 +1161,15 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send final response and let it complete naturally
       final = Message.reply(request, 200, "OK")
       :ok = TransactionStatem.server_response(final, transaction)
-      
+
       # Trigger timer J to terminate
       send(pid, {:event, :j})
       Process.sleep(20)
-      
+
       refute Process.alive?(pid)
     end
   end
@@ -1210,18 +1265,18 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send final response to move to completed
       final = Message.reply(request, 404, "Not Found")
       :ok = TransactionStatem.server_response(final, transaction)
       assert_state(pid, :completed)
-      
+
       # Timer J will eventually fire and terminate the transaction
       # Once process is dead, we can verify the terminated state was reached
       # by checking that the process is no longer alive
       send(pid, {:event, :j})
       Process.sleep(20)
-      
+
       # Process should have terminated
       refute Process.alive?(pid)
     end
@@ -1233,16 +1288,16 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Move to completed
       final = Message.reply(request, 404, "Not Found")
       :ok = TransactionStatem.server_response(final, transaction)
       assert_state(pid, :completed)
-      
+
       # Send same request again (retransmission)
       :gen_statem.cast(pid, {:received, request})
       Process.sleep(10)
-      
+
       # Should retransmit final response and stay in completed
       assert_state(pid, :completed)
     end
@@ -1250,14 +1305,14 @@ defmodule ParrotSip.TransactionStatemTest do
     test "handles client transaction termination with error reason", %{test_id: test_id} do
       request = build_register(unique_branch("z9hG4bKclient_term", test_id))
       {:ok, transaction} = Transaction.create_non_invite_client(request)
-      
+
       callback = fn _result -> :ok end
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
-      
+
       # Force termination with error
       Process.exit(pid, :test_error)
       Process.sleep(10)
-      
+
       # Should be terminated
       refute Process.alive?(pid)
     end
@@ -1266,15 +1321,15 @@ defmodule ParrotSip.TransactionStatemTest do
       # Create client transaction and verify it starts correctly
       request = build_invite(unique_branch("z9hG4bKtimer_client", test_id))
       {:ok, transaction} = Transaction.create_invite_client(request)
-      
+
       callback = fn _result -> :ok end
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
-      
+
       # Verify transaction started in calling state
       assert_state(pid, :calling)
       # Verify process is alive and managing state
       assert Process.alive?(pid)
-      
+
       # Clean up
       Process.exit(pid, :normal)
     end
@@ -1287,11 +1342,11 @@ defmodule ParrotSip.TransactionStatemTest do
 
       {:ok, pid} = start_transaction(transaction, handler)
       assert_state(pid, :trying)
-      
+
       # Send unknown event - should be ignored (keep_state)
       :gen_statem.cast(pid, {:unknown_event, "some data"})
       Process.sleep(10)
-      
+
       # Should still be in trying state
       assert_state(pid, :trying)
       assert Process.alive?(pid)
@@ -1304,17 +1359,17 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send a non-ACK request (e.g., OPTIONS)
       options_msg = %Message{
         type: :request,
         method: :options,
         request_uri: "sip:bob@example.com"
       }
-      
+
       :gen_statem.cast(pid, {:received, options_msg})
       Process.sleep(10)
-      
+
       # Should stay in current state, ignoring the message
       assert Process.alive?(pid)
     end
@@ -1326,14 +1381,14 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Set owner for the first time (owner_mon is nil)
       owner_pid = spawn(fn -> Process.sleep(1000) end)
       :gen_statem.cast(pid, {:set_owner, 404, owner_pid})
       Process.sleep(10)
-      
+
       assert Process.alive?(pid)
-      
+
       # Clean up
       Process.exit(owner_pid, :kill)
     end
@@ -1346,11 +1401,11 @@ defmodule ParrotSip.TransactionStatemTest do
 
       {:ok, pid} = start_transaction(transaction, handler)
       assert_state(pid, :trying)
-      
+
       # Try to cancel server transaction - should be ignored
       :gen_statem.cast(pid, :cancel)
       Process.sleep(10)
-      
+
       # Should remain in trying state
       assert_state(pid, :trying)
       assert Process.alive?(pid)
@@ -1399,16 +1454,16 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Manually force into completed state without last_response
       # (This is edge case testing - normally wouldn't happen)
       # We can test by trying to send in trying state
       some_response = Message.reply(request, 100, "Trying")
-      
+
       # Send the response
       :gen_statem.cast(pid, {:send, some_response})
       Process.sleep(10)
-      
+
       assert Process.alive?(pid)
     end
 
@@ -1420,11 +1475,11 @@ defmodule ParrotSip.TransactionStatemTest do
 
       {:ok, pid} = start_transaction(transaction, handler)
       assert_state(pid, :trying)
-      
+
       # Send 500 error (final response)
       final = Message.reply(request, 500, "Internal Server Error")
       :ok = TransactionStatem.server_response(final, transaction)
-      
+
       # Should transition to completed
       assert_state(pid, :completed)
       assert_last_response(pid, 500)
@@ -1449,27 +1504,30 @@ defmodule ParrotSip.TransactionStatemTest do
       # Wait for cancel timeout to fire
       # Either process terminates with timeout or with final response
       receive do
-        {:callback, {:stop, :timeout}} -> 
+        {:callback, {:stop, :timeout}} ->
           # No final response, timeout callback fired
           :ok
+
         {:callback, {:ok, _}} ->
           # Got response before timeout - that's fine too
           :ok
+
         {:DOWN, ^ref, :process, ^pid, _} ->
           # Process terminated - acceptable
           :ok
       after
-        200 -> 
+        200 ->
           # Timeout - process might still be alive, that's ok
           :ok
       end
-      
+
       # Clean up
       if Process.alive?(pid) do
         Process.exit(pid, :kill)
       end
+
       Process.demonitor(ref, [:flush])
-      
+
       Application.delete_env(:parrot_sip, :cancel_timeout)
     end
 
@@ -1480,10 +1538,10 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send unexpected info message
       send(pid, {:some_random_info, "test"})
-      
+
       Process.sleep(10)
       assert Process.alive?(pid)
       assert_state(pid, :trying)
@@ -1496,10 +1554,10 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send unexpected cast
       :gen_statem.cast(pid, {:some_unknown_cast, "data"})
-      
+
       Process.sleep(10)
       assert Process.alive?(pid)
       assert_state(pid, :trying)
@@ -1514,18 +1572,19 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send unexpected call - it will timeout but the handle_event code runs
-      task = Task.async(fn -> 
-        catch_exit do
-          :gen_statem.call(pid, {:some_unknown_call, "request"}, 100)
-        end
-      end)
-      
+      task =
+        Task.async(fn ->
+          catch_exit do
+            :gen_statem.call(pid, {:some_unknown_call, "request"}, 100)
+          end
+        end)
+
       result = Task.await(task)
       # Will be {:timeout, ...} because handle_event doesn't reply
       assert match?({:timeout, _}, result)
-      
+
       # Process should still be alive
       Process.sleep(10)
       assert Process.alive?(pid)
@@ -1539,15 +1598,15 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send provisional to get to proceeding
       provisional = Message.reply(invite, 180, "Ringing")
       :ok = TransactionStatem.server_response(provisional, transaction)
       assert_state(pid, :proceeding)
-      
+
       # Send unexpected event type (internal event)
       send(pid, {:some_internal_event, "data"})
-      
+
       Process.sleep(10)
       assert Process.alive?(pid)
       assert_state(pid, :proceeding)
@@ -1560,12 +1619,12 @@ defmodule ParrotSip.TransactionStatemTest do
 
       callback = fn _ -> :ok end
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, callback)
-      
+
       assert_state(pid, :calling)
-      
+
       # Send unexpected event
       send(pid, {:unexpected_event, "test"})
-      
+
       Process.sleep(10)
       assert Process.alive?(pid)
     end
@@ -1577,15 +1636,15 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send final response to get to completed
       final = Message.reply(request, 200, "OK")
       :ok = TransactionStatem.server_response(final, transaction)
       assert_state(pid, :completed)
-      
+
       # Send unexpected event
       send(pid, {:unexpected_event, "data"})
-      
+
       Process.sleep(10)
       assert Process.alive?(pid)
       assert_state(pid, :completed)
@@ -1599,12 +1658,12 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send 4xx error response (non-2xx INVITE stays in completed longer)
       final = Message.reply(invite, 404, "Not Found")
       :ok = TransactionStatem.server_response(final, transaction)
       assert_state(pid, :completed)
-      
+
       # Send ACK for error response - goes to confirmed
       ack = %Message{
         type: :request,
@@ -1617,19 +1676,19 @@ defmodule ParrotSip.TransactionStatemTest do
         cseq: %{number: invite.cseq.number, method: :ack},
         other_headers: %{}
       }
-      
+
       :ok = TransactionStatem.server_process(ack, handler)
-      
+
       # Should be in confirmed now  
       Process.sleep(20)
-      
+
       if Process.alive?(pid) do
         assert_state(pid, :confirmed)
-        
+
         # Send unexpected event
         send(pid, {:unexpected_event, "test"})
         Process.sleep(10)
-        
+
         # Should still be alive
         assert Process.alive?(pid)
       end
@@ -1638,53 +1697,55 @@ defmodule ParrotSip.TransactionStatemTest do
     test "timer G exponential backoff works correctly", %{test_id: test_id} do
       # RFC 3261 requires: 500ms, 1000ms, 2000ms, 4000ms, 4000ms...
       # This test verifies the fix for the Timer G exponential backoff bug
-      
+
       request = build_invite(unique_branch("z9hG4bKtimerG", test_id))
       {:ok, transaction} = Transaction.create_invite_server(request)
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send error response to get to completed state with Timer G
       error_resp = Message.reply(request, 404, "Not Found")
       :ok = TransactionStatem.server_response(error_resp, transaction)
       assert_state(pid, :completed)
-      
+
       # Timer G should be running at 500ms initially
       assert timer_active?(pid, :g)
-      
+
       # Get initial timer G
       initial_ref = get_timer_ref(pid, :g)
       initial_time = Process.read_timer(initial_ref)
-      
+
       # Should be approximately 500ms
-      assert initial_time > 400 and initial_time < 600, 
-        "Initial Timer G should be ~500ms, got #{initial_time}ms"
-      
+      assert initial_time > 400 and initial_time < 600,
+             "Initial Timer G should be ~500ms, got #{initial_time}ms"
+
       # Wait for Timer G to fire and reschedule
       Process.sleep(600)
-      
+
       # Should have rescheduled with doubled interval (1000ms)
       new_ref = get_timer_ref(pid, :g)
-      
+
       # The timer should exist (proving it was rescheduled)
       assert new_ref != nil
       assert new_ref != initial_ref
-      
+
       # Should be approximately 1000ms (doubled from 500ms)
       new_time = Process.read_timer(new_ref)
-      assert new_time >= 850 and new_time <= 1100, 
-        "Second Timer G should be ~1000ms (doubled), got #{new_time}ms"
-      
+
+      assert new_time >= 850 and new_time <= 1100,
+             "Second Timer G should be ~1000ms (doubled), got #{new_time}ms"
+
       # Wait for it to fire again
       Process.sleep(1100)
-      
+
       # Should now be at 2000ms (doubled again)
       third_ref = get_timer_ref(pid, :g)
       assert third_ref != new_ref
       third_time = Process.read_timer(third_ref)
+
       assert third_time >= 1700 and third_time <= 2100,
-        "Third Timer G should be ~2000ms, got #{third_time}ms"
+             "Third Timer G should be ~2000ms, got #{third_time}ms"
     end
   end
 
@@ -1698,13 +1759,13 @@ defmodule ParrotSip.TransactionStatemTest do
         port: 5060,
         parameters: %{"branch" => "z9hG4bKmalformed"}
       }
-      
+
       malformed_response = "GARBAGE DATA NOT A SIP MESSAGE"
-      
+
       # Should handle parse error gracefully without crashing
       assert :ok = TransactionStatem.client_response(via, malformed_response)
     end
-    
+
     test "handles response with binary CSeq header" do
       via = %Via{
         protocol: "SIP",
@@ -1714,7 +1775,7 @@ defmodule ParrotSip.TransactionStatemTest do
         port: 5060,
         parameters: %{"branch" => "z9hG4bKbinarycseq"}
       }
-      
+
       response_text = """
       SIP/2.0 200 OK
       Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKbinarycseq
@@ -1723,13 +1784,13 @@ defmodule ParrotSip.TransactionStatemTest do
       Call-ID: test@example.com
       CSeq: 1 INVITE
       Content-Length: 0
-      
+
       """
-      
+
       # This tests the binary CSeq extraction path at lines 603-605
       assert :ok = TransactionStatem.client_response(via, response_text)
     end
-    
+
     test "handles response with no branch in Via" do
       via = %Via{
         protocol: "SIP",
@@ -1739,7 +1800,7 @@ defmodule ParrotSip.TransactionStatemTest do
         port: 5060,
         parameters: %{}
       }
-      
+
       response_text = """
       SIP/2.0 200 OK
       Via: SIP/2.0/UDP 127.0.0.1:5060
@@ -1748,13 +1809,13 @@ defmodule ParrotSip.TransactionStatemTest do
       Call-ID: test@example.com
       CSeq: 1 INVITE
       Content-Length: 0
-      
+
       """
-      
+
       # Should handle missing branch gracefully (line 594, 615-616)
       assert :ok = TransactionStatem.client_response(via, response_text)
     end
-    
+
     test "handles response for non-existent transaction" do
       via = %Via{
         protocol: "SIP",
@@ -1764,7 +1825,7 @@ defmodule ParrotSip.TransactionStatemTest do
         port: 5060,
         parameters: %{"branch" => "z9hG4bKnonexistent"}
       }
-      
+
       response_text = """
       SIP/2.0 200 OK
       Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKnonexistent
@@ -1773,9 +1834,9 @@ defmodule ParrotSip.TransactionStatemTest do
       Call-ID: test@example.com
       CSeq: 1 INVITE
       Content-Length: 0
-      
+
       """
-      
+
       # Should handle transaction not found gracefully (lines 624-627)
       assert :ok = TransactionStatem.client_response(via, response_text)
     end
@@ -1784,7 +1845,7 @@ defmodule ParrotSip.TransactionStatemTest do
   describe "server_process edge cases" do
     test "handles ACK for non-existent transaction with handler lacking process_ack" do
       handler = %{module: __MODULE__, args: nil}
-      
+
       ack = %Message{
         type: :request,
         method: :ack,
@@ -1803,7 +1864,7 @@ defmodule ParrotSip.TransactionStatemTest do
         cseq: %CSeq{number: 1, method: :ack},
         other_headers: %{}
       }
-      
+
       # Should handle missing process_ack/2 gracefully (lines 235-236)
       assert :ok = TransactionStatem.server_process(ack, handler)
     end
@@ -1813,10 +1874,10 @@ defmodule ParrotSip.TransactionStatemTest do
     test "returns error when transaction not found" do
       request = build_invite("z9hG4bKnotfound")
       response = Message.reply(request, 200, "OK")
-      
+
       # Transaction doesn't exist in registry
-      assert {:error, "No transaction found"} = 
-        TransactionStatem.create_server_response(response, request)
+      assert {:error, "No transaction found"} =
+               TransactionStatem.create_server_response(response, request)
     end
   end
 
@@ -1827,21 +1888,21 @@ defmodule ParrotSip.TransactionStatemTest do
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
-      
+
       # Send error response to get to completed state
       error_resp = Message.reply(request, 404, "Not Found")
       :ok = TransactionStatem.server_response(error_resp, transaction)
       assert_state(pid, :completed)
-      
+
       # Now send a retransmitted request (lines 1441-1443)
       # Server should retransmit the response
       retransmitted_request = request
       :gen_statem.cast(pid, {:received, retransmitted_request})
-      
+
       Process.sleep(10)
       # Should still be alive in completed state
       assert Process.alive?(pid)
     end
   end
-
 end
+
