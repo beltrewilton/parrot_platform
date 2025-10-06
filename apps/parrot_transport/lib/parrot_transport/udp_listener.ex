@@ -122,6 +122,11 @@ defmodule ParrotTransport.UdpListener do
   end
 
   def bound(:info, {:udp, socket, remote_ip, remote_port, binary_data}, %{socket: socket} = data) do
+    # Log SIP trace if enabled
+    if data.config.trace do
+      Logger.info("[SIP TRACE] UDP recv from #{format_addr(remote_ip)}:#{remote_port}\n#{binary_data}")
+    end
+
     # Create packet
     packet = %IncomingPacket{
       data: binary_data,
@@ -157,6 +162,11 @@ defmodule ParrotTransport.UdpListener do
   end
 
   def bound(:cast, {:send_data, data_to_send, dest_ip, dest_port}, data) do
+    # Log SIP trace if enabled
+    if data.config.trace do
+      Logger.info("[SIP TRACE] UDP send to #{format_addr(dest_ip)}:#{dest_port}\n#{data_to_send}")
+    end
+
     case :gen_udp.send(data.socket, dest_ip, dest_port, data_to_send) do
       :ok ->
         new_data = %{data | packets_sent: data.packets_sent + 1}

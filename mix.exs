@@ -30,8 +30,8 @@ defmodule ParrotPlatform.MixProject do
   defp aliases do
     [
       test: ["test"],
-      "test.sipp": &run_sipp_tests/1,
-      "test.all": &run_all_tests/1,
+      "test.sipp": ["test --only sipp"],
+      "test.all": ["test --include sipp --include slow"],
       docs: ["docs", &copy_images/1]
     ]
   end
@@ -41,68 +41,6 @@ defmodule ParrotPlatform.MixProject do
       "test.sipp": :test,
       "test.all": :test
     ]
-  end
-
-  defp run_sipp_tests(args) do
-    # Check if SIPP is installed
-    case System.find_executable("sipp") do
-      nil ->
-        Mix.shell().error("""
-        SIPp is not installed or not in PATH.
-
-        Please install SIPp:
-          - macOS: brew install sipp
-          - Ubuntu/Debian: apt-get install sipp
-          - RHEL/CentOS: yum install sipp
-        """)
-
-        exit({:shutdown, 1})
-
-      _path ->
-        Mix.shell().info("Running SIPp integration tests...")
-
-        # For umbrella projects, compile first, then run tests at root with elixir
-        # This ensures all apps are compiled and available
-        Mix.Task.run("compile")
-
-        # Build path to compiled beam files
-        code_paths =
-          Path.wildcard("_build/test/lib/*/ebin")
-          |> Enum.flat_map(fn path -> ["-pa", path] end)
-
-        # Run tests directly with elixir
-        test_files = Path.wildcard("test/sipp/*.exs")
-
-        elixir_args = code_paths ++
-          ["-r", "test/test_helper.exs"] ++
-          Enum.flat_map(test_files, fn file -> ["-r", file] end) ++
-          ["-e", "ExUnit.configure(include: [:sipp]); System.at_exit(fn _ -> :ok end)"]
-
-        {_output, status} = System.cmd(
-          "elixir",
-          elixir_args ++ args,
-          stderr_to_stdout: true,
-          into: IO.stream(:stdio, :line)
-        )
-
-        if status != 0, do: exit({:shutdown, 1})
-    end
-  end
-
-  defp run_all_tests(args) do
-    Mix.shell().info("Running ALL tests (including SIPp and slow tests)...")
-    Mix.shell().info("This may take a while...")
-
-    # Check if SIPp is installed for those tests
-    unless System.find_executable("sipp") do
-      Mix.shell().warning("""
-      Warning: SIPp is not installed. SIPp tests may fail.
-      Install with: brew install sipp (macOS) or apt-get install sipp (Linux)
-      """)
-    end
-
-    # Run all tests with excluded tags included
-    Mix.Task.run("test", ["--include", "sipp", "--include", "slow" | args])
   end
 
   defp copy_images(_) do
