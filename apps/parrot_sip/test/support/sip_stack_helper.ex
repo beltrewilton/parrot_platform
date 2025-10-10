@@ -71,13 +71,14 @@ defmodule SippTest.SipStackHelper do
     with {:ok, bridge} <- start_bridge(handler),
          {:ok, listener, actual_ip, actual_port} <- start_udp_listener(bridge, ip, port) do
       # Register this transport with the global TransportHandler using ACTUAL bound address
-      :ok = TransportHandler.register_transport(
-        ParrotSip.TransportHandler,
-        listener,
-        :udp,
-        actual_ip,
-        actual_port
-      )
+      :ok =
+        TransportHandler.register_transport(
+          ParrotSip.TransportHandler,
+          listener,
+          :udp,
+          actual_ip,
+          actual_port
+        )
 
       stack = %__MODULE__{
         transport_listener: listener,
@@ -86,6 +87,7 @@ defmodule SippTest.SipStackHelper do
         port: actual_port,
         transport_type: :udp
       }
+
       {:ok, stack}
     end
   end
@@ -110,13 +112,14 @@ defmodule SippTest.SipStackHelper do
     with {:ok, bridge} <- start_bridge(handler),
          {:ok, listener, actual_ip, actual_port} <- start_tcp_listener(bridge, ip, port) do
       # Register this transport with the global TransportHandler using ACTUAL bound address
-      :ok = TransportHandler.register_transport(
-        ParrotSip.TransportHandler,
-        listener,
-        :tcp,
-        actual_ip,
-        actual_port
-      )
+      :ok =
+        TransportHandler.register_transport(
+          ParrotSip.TransportHandler,
+          listener,
+          :tcp,
+          actual_ip,
+          actual_port
+        )
 
       stack = %__MODULE__{
         transport_listener: listener,
@@ -125,6 +128,7 @@ defmodule SippTest.SipStackHelper do
         port: actual_port,
         transport_type: :tcp
       }
+
       {:ok, stack}
     end
   end
@@ -155,23 +159,26 @@ defmodule SippTest.SipStackHelper do
     cacertfile = Keyword.get(opts, :cacertfile)
 
     with {:ok, bridge} <- start_bridge(handler),
-         {:ok, listener, actual_ip, actual_port} <- start_tls_listener(bridge, ip, port, certfile, keyfile, cacertfile) do
+         {:ok, listener, actual_ip, actual_port} <-
+           start_tls_listener(bridge, ip, port, certfile, keyfile, cacertfile) do
       # Register this transport with the global TransportHandler using ACTUAL bound address
-      :ok = TransportHandler.register_transport(
-        ParrotSip.TransportHandler,
-        listener,
-        :tls,
-        actual_ip,
-        actual_port
-      )
+      :ok =
+        TransportHandler.register_transport(
+          ParrotSip.TransportHandler,
+          listener,
+          :tls,
+          actual_ip,
+          actual_port
+        )
 
       stack = %__MODULE__{
         transport_listener: listener,
         transport_handler: bridge,
         sip_handler: handler,
         port: actual_port,
-        transport_type: :tls
+        transport_type: :tls,
       }
+
       {:ok, stack}
     end
   end
@@ -234,7 +241,8 @@ defmodule SippTest.SipStackHelper do
         source = %Source{
           transport: packet.source.transport,
           remote: packet.source.remote_addr,
-          local: packet.source.local_addr
+          local: packet.source.local_addr,
+          connection: packet.source.connection
         }
 
         message_with_source = Map.put(sip_message, :source, source)
@@ -282,10 +290,13 @@ defmodule SippTest.SipStackHelper do
   end
 
   defp start_tcp_listener(bridge_pid, ip, port) do
+    sip_trace = System.get_env("SIP_TRACE", "false") == "true"
+    
     config = %ListenerConfig{
       transport: :tcp,
       ip: ip,
-      port: port
+      port: port,
+      trace: sip_trace
     }
 
     case ParrotTransport.start_tcp_listener(config, bridge_pid) do
@@ -299,13 +310,16 @@ defmodule SippTest.SipStackHelper do
   end
 
   defp start_tls_listener(bridge_pid, ip, port, certfile, keyfile, cacertfile) do
+    sip_trace = System.get_env("SIP_TRACE", "false") == "true"
+    
     config = %ListenerConfig{
       transport: :tls,
       ip: ip,
       port: port,
       certfile: certfile,
       keyfile: keyfile,
-      cacertfile: cacertfile
+      cacertfile: cacertfile,
+      trace: sip_trace
     }
 
     case ParrotTransport.start_tls_listener(config, bridge_pid) do

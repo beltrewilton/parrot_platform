@@ -284,8 +284,8 @@ defmodule SippTest.SippRunner do
     # Add transport
     args =
       case transport do
-        :tcp -> args ++ ["-t", "t1"]
-        :tls -> args ++ ["-t", "l1"]
+        :tcp -> args ++ ["-t", "tn", "-max_socket", "200"]
+        :tls -> args ++ ["-t", "ln", "-max_socket", "200"]
         :websocket -> args ++ ["-t", "c1"]
         :udp -> args ++ ["-t", "u1"]
       end

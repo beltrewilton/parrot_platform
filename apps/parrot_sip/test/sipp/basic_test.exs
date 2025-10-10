@@ -1,7 +1,3 @@
-Code.require_file("support/sipp_runner.ex", __DIR__)
-Code.require_file("support/test_handler.ex", __DIR__)
-Code.require_file("support/sip_stack_helper.ex", __DIR__)
-
 defmodule SippTest.BasicTest do
   use ExUnit.Case, async: false
 
