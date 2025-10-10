@@ -189,7 +189,7 @@ defmodule ParrotTransport do
       {:ok, listener} = ParrotTransport.start_listener(config)
       :ok = ParrotTransport.stop_listener(listener)
   """
-  @spec stop_listener(GenStateMachine.server_ref()) :: :ok
+  @spec stop_listener(:gen_statem.server_ref()) :: :ok
   def stop_listener(listener) do
     ParrotTransport.UdpListener.stop(listener)
   end
@@ -223,7 +223,7 @@ defmodule ParrotTransport do
           IO.puts("Received UDP from \#{inspect(source.remote_addr)}: \#{data}")
       end
   """
-  @spec register_handler(GenStateMachine.server_ref(), pid()) :: :ok
+  @spec register_handler(:gen_statem.server_ref(), pid()) :: :ok
   def register_handler(listener, handler_pid) do
     ParrotTransport.UdpListener.register_handler(listener, handler_pid)
   end
@@ -251,7 +251,7 @@ defmodule ParrotTransport do
       destination = {{127, 0, 0, 1}, 5070}
       :ok = ParrotTransport.send_data(listener, "Hello UDP", destination)
   """
-  @spec send_data(GenStateMachine.server_ref(), binary(), {tuple(), integer()}) :: :ok
+  @spec send_data(:gen_statem.server_ref(), binary(), {tuple(), integer()}) :: :ok
   def send_data(listener, data, destination) do
     ParrotTransport.UdpListener.send_data(listener, data, destination)
   end
@@ -276,7 +276,7 @@ defmodule ParrotTransport do
       {:ok, {ip, port}} = ParrotTransport.get_local_address(listener)
       IO.puts("Listening on port: \#{port}")
   """
-  @spec get_local_address(GenStateMachine.server_ref()) ::
+  @spec get_local_address(:gen_statem.server_ref()) ::
           {:ok, {:inet.ip_address(), :inet.port_number()}}
   def get_local_address(listener) do
     ParrotTransport.UdpListener.get_local_address(listener)

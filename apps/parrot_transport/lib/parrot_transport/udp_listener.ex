@@ -11,7 +11,7 @@ defmodule ParrotTransport.UdpListener do
   that need proper management.
   """
 
-  use GenStateMachine, callback_mode: [:state_functions, :state_enter]
+  @behaviour :gen_statem
   require Logger
 
   alias ParrotTransport.Types.{ListenerConfig, IncomingPacket, Source, Metadata}
@@ -48,50 +48,53 @@ defmodule ParrotTransport.UdpListener do
   @doc """
   Starts a UDP listener.
   """
-  @spec start_link(ListenerConfig.t()) :: GenStateMachine.on_start()
+  @spec start_link(ListenerConfig.t()) :: :gen_statem.start_ret()
   def start_link(%ListenerConfig{transport: :udp} = config) do
     opts = if config.name, do: [name: config.name], else: []
-    GenStateMachine.start_link(__MODULE__, config, opts)
+    :gen_statem.start_link(__MODULE__, config, opts)
   end
 
   @doc """
   Registers a handler to receive incoming packets.
   """
-  @spec register_handler(GenStateMachine.server_ref(), pid()) :: :ok
+  @spec register_handler(:gen_statem.server_ref(), pid()) :: :ok
   def register_handler(listener, handler_pid) do
-    GenStateMachine.call(listener, {:register_handler, handler_pid})
+    :gen_statem.call(listener, {:register_handler, handler_pid})
   end
 
   @doc """
   Sends data through the UDP socket.
   """
-  @spec send_data(GenStateMachine.server_ref(), binary(), tuple()) :: :ok
+  @spec send_data(:gen_statem.server_ref(), binary(), tuple()) :: :ok
   def send_data(listener, data, {dest_ip, dest_port}) do
-    GenStateMachine.cast(listener, {:send_data, data, dest_ip, dest_port})
+    :gen_statem.cast(listener, {:send_data, data, dest_ip, dest_port})
   end
 
   @doc """
   Gets the local address the listener is bound to.
   """
-  @spec get_local_address(GenStateMachine.server_ref()) ::
+  @spec get_local_address(:gen_statem.server_ref()) ::
           {:ok, {:inet.ip_address(), :inet.port_number()}}
   def get_local_address(listener) do
-    GenStateMachine.call(listener, :get_local_address)
+    :gen_statem.call(listener, :get_local_address)
   end
 
   @doc """
   Stops the listener gracefully.
   """
-  @spec stop(GenStateMachine.server_ref()) :: :ok
+  @spec stop(:gen_statem.server_ref()) :: :ok
   def stop(listener) do
-    GenStateMachine.call(listener, :stop)
+    :gen_statem.call(listener, :stop)
   end
 
   # ============================================================================
-  # gen_statem callbacks
+  # :gen_statem callbacks
   # ============================================================================
 
-  @impl GenStateMachine
+  @impl :gen_statem
+  def callback_mode, do: [:state_functions, :state_enter]
+
+  @impl :gen_statem
   def init(config) do
     # Bind socket synchronously during init to catch errors early
     case create_socket(config) do

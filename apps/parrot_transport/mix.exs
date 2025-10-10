@@ -27,7 +27,6 @@ defmodule ParrotTransport.MixProject do
     [
       # No deps on other parrot apps!
       # Transport is the bottom layer
-      {:gen_state_machine, "~> 3.0"},
       {:cowboy, "~> 2.10"},
       {:gun, "~> 2.0", only: :test}
     ]
