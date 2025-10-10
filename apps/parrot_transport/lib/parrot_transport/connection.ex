@@ -12,7 +12,7 @@ defmodule ParrotTransport.Connection do
   reconnection, message framing via Content-Length, and error handling.
   """
 
-  use GenStateMachine, callback_mode: [:state_functions, :state_enter]
+  @behaviour :gen_statem
   require Logger
 
   alias ParrotTransport.Types.{ListenerConfig, IncomingPacket, Source, Metadata}
@@ -60,10 +60,10 @@ defmodule ParrotTransport.Connection do
   @doc """
   Starts a TCP connection to the specified remote endpoint (outbound).
   """
-  @spec start_link(ListenerConfig.t(), pid()) :: GenStateMachine.on_start()
+  @spec start_link(ListenerConfig.t(), pid()) :: :gen_statem.start_ret()
   def start_link(%ListenerConfig{transport: :tcp} = config, handler_pid) do
     opts = if config.name, do: [name: config.name], else: []
-    GenStateMachine.start_link(__MODULE__, {:outbound, config, handler_pid}, opts)
+    :gen_statem.start_link(__MODULE__, {:outbound, config, handler_pid}, opts)
   end
 
   @doc """
@@ -71,25 +71,25 @@ defmodule ParrotTransport.Connection do
   Used by TcpListener when accepting connections.
   """
   @spec start_link_with_socket(ListenerConfig.t(), pid(), :gen_tcp.socket()) ::
-          GenStateMachine.on_start()
+          :gen_statem.start_ret()
   def start_link_with_socket(%ListenerConfig{transport: :tcp} = config, handler_pid, socket) do
-    GenStateMachine.start_link(__MODULE__, {:inbound, config, handler_pid, socket}, [])
+    :gen_statem.start_link(__MODULE__, {:inbound, config, handler_pid, socket}, [])
   end
 
   @doc """
   Sends data through the connection.
   """
-  @spec send_data(GenStateMachine.server_ref(), binary()) :: :ok
+  @spec send_data(:gen_statem.server_ref(), binary()) :: :ok
   def send_data(conn, data) do
-    GenStateMachine.cast(conn, {:send_data, data})
+    :gen_statem.cast(conn, {:send_data, data})
   end
 
   @doc """
   Stops the connection gracefully.
   """
-  @spec stop(GenStateMachine.server_ref()) :: :ok
+  @spec stop(:gen_statem.server_ref()) :: :ok
   def stop(conn) do
-    GenStateMachine.call(conn, :stop)
+    :gen_statem.call(conn, :stop)
   end
 
   @doc """
@@ -106,10 +106,13 @@ defmodule ParrotTransport.Connection do
   end
 
   # ============================================================================
-  # gen_statem callbacks
+  # :gen_statem callbacks
   # ============================================================================
 
-  @impl GenStateMachine
+  @impl :gen_statem
+  def callback_mode, do: [:state_functions, :state_enter]
+
+  @impl :gen_statem
   def init({:outbound, config, handler_pid}) do
     # Outbound connection - will attempt to connect
     data = %Data{
@@ -374,6 +377,25 @@ defmodule ParrotTransport.Connection do
 
           {:error, reason} ->
             Logger.error("[TlsConnection] Framing error: #{inspect(reason)}")
+            :ssl.close(ssl_socket)
+        end
+
+      {:"$gen_cast", {:send_data, data_to_send}} ->
+        # Handle send from TransportHandler (comes via :gen_statem.cast)
+        # Log trace if enabled
+        Logger.debug("[TlsConnection] Sending #{byte_size(data_to_send)} bytes, trace=#{config.trace}")
+        if config.trace do
+          {remote_ip, remote_port} = remote_addr
+          Logger.info("[SIP TRACE] TLS send to #{format_addr(remote_ip)}:#{remote_port}\n#{data_to_send}")
+        end
+
+        case :ssl.send(ssl_socket, data_to_send) do
+          :ok ->
+            # Continue loop after successful send
+            tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, config, framing)
+
+          {:error, reason} ->
+            Logger.error("[TlsConnection] Send failed: #{inspect(reason)}")
             :ssl.close(ssl_socket)
         end
 

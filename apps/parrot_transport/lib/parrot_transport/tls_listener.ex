@@ -11,7 +11,7 @@ defmodule ParrotTransport.TlsListener do
   concurrent connection acceptance with SSL/TLS encryption.
   """
 
-  use GenStateMachine, callback_mode: [:state_functions, :state_enter]
+  @behaviour :gen_statem
   require Logger
 
   alias ParrotTransport.Types.ListenerConfig
@@ -51,34 +51,37 @@ defmodule ParrotTransport.TlsListener do
   @doc """
   Starts a TLS listener.
   """
-  @spec start_link(ListenerConfig.t(), pid()) :: GenStateMachine.on_start()
+  @spec start_link(ListenerConfig.t(), pid()) :: :gen_statem.start_ret()
   def start_link(%ListenerConfig{transport: :tls} = config, handler_pid) do
     opts = if config.name, do: [name: config.name], else: []
-    GenStateMachine.start_link(__MODULE__, {config, handler_pid}, opts)
+    :gen_statem.start_link(__MODULE__, {config, handler_pid}, opts)
   end
 
   @doc """
   Gets the local address the listener is bound to.
   """
-  @spec get_local_address(GenStateMachine.server_ref()) ::
+  @spec get_local_address(:gen_statem.server_ref()) ::
           {:ok, {:inet.ip_address(), :inet.port_number()}}
   def get_local_address(listener) do
-    GenStateMachine.call(listener, :get_local_address)
+    :gen_statem.call(listener, :get_local_address)
   end
 
   @doc """
   Stops the listener gracefully.
   """
-  @spec stop(GenStateMachine.server_ref()) :: :ok
+  @spec stop(:gen_statem.server_ref()) :: :ok
   def stop(listener) do
-    GenStateMachine.call(listener, :stop)
+    :gen_statem.call(listener, :stop)
   end
 
   # ============================================================================
-  # gen_statem callbacks
+  # :gen_statem callbacks
   # ============================================================================
 
-  @impl GenStateMachine
+  @impl :gen_statem
+  def callback_mode, do: [:state_functions, :state_enter]
+
+  @impl :gen_statem
   def init({config, handler_pid}) do
     # Create listen socket synchronously for immediate error feedback
     case create_listen_socket(config) do
@@ -169,6 +172,7 @@ defmodule ParrotTransport.TlsListener do
       Process.exit(conn_pid, :shutdown)
     end
 
+    Logger.info("[TlsListener] Stopped")
     {:stop, :normal}
   end
 
@@ -236,7 +240,7 @@ defmodule ParrotTransport.TlsListener do
             {:ok, {remote_ip, remote_port}} = :ssl.peername(ssl_socket)
             {:ok, {local_ip, local_port}} = :ssl.sockname(ssl_socket)
 
-            # Start connection process
+            # Start connection process with config
             conn_pid =
               Connection.start_tls(
                 ssl_socket,
@@ -266,7 +270,7 @@ defmodule ParrotTransport.TlsListener do
     end
 
     # Continue accepting (tail recursion)
-    acceptor_loop(listen_socket, data.handler, listener_pid)
+    acceptor_loop(listen_socket, data, listener_pid)
   end
 
   defp format_addr({a, b, c, d}), do: "#{a}.#{b}.#{c}.#{d}"
