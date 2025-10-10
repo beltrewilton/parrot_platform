@@ -13,12 +13,13 @@ defmodule ParrotSip.Source do
           local: {:inet.ip_address(), :inet.port_number()},
           remote: {:inet.ip_address(), :inet.port_number()},
           transport: atom(),
-          source_id: String.t() | nil
+          source_id: String.t() | nil,
+          connection: pid() | nil
         }
 
   @type source_id :: {module(), term()}
 
-  defstruct [:local, :remote, :transport, :source_id]
+  defstruct [:local, :remote, :transport, :source_id, :connection]
 
   @doc """
   Creates a new source struct.

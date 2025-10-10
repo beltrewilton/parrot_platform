@@ -98,10 +98,10 @@ defmodule ParrotTransport.Connection do
   This spawns a dedicated process for handling a TLS socket with framing.
   Returns the PID for the connection process.
   """
-  @spec start_tls(:ssl.sslsocket(), tuple(), tuple(), pid()) :: pid()
-  def start_tls(ssl_socket, remote_addr, local_addr, handler) do
+  @spec start_tls(:ssl.sslsocket(), tuple(), tuple(), Data.t()) :: pid()
+  def start_tls(ssl_socket, remote_addr, local_addr, data) do
     spawn_link(fn ->
-      tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, %ContentLength{})
+      tls_connection_loop(ssl_socket, remote_addr, local_addr, data.handler, data.config, %ContentLength{})
     end)
   end
 
@@ -192,6 +192,10 @@ defmodule ParrotTransport.Connection do
   end
 
   def connected(:info, {:tcp, socket, binary_data}, %{socket: socket} = data) do
+    if data.config.trace do
+      Logger.info("[SIP TRACE] TCP recv from #{format_addr(data.config.ip)}:#{data.config.port}\n#{binary_data}")
+    end
+
     # Process incoming data through framing
     case ContentLength.process(data.framing, binary_data) do
       {:ok, messages, new_framing} ->
@@ -241,6 +245,10 @@ defmodule ParrotTransport.Connection do
   end
 
   def connected(:cast, {:send_data, data_to_send}, data) do
+    if data.config.trace do
+      Logger.info("[SIP TRACE] TCP send to #{format_addr(data.config.ip)}:#{data.config.port}\n#{data_to_send}")
+    end
+
     case :gen_tcp.send(data.socket, data_to_send) do
       :ok ->
         new_data = %{data | packets_sent: data.packets_sent + 1}
@@ -323,12 +331,17 @@ defmodule ParrotTransport.Connection do
   # TLS Connection Loop (Simple Process)
   # ============================================================================
 
-  defp tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, framing) do
+  defp tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, config, framing) do
     # Set socket to active mode to receive messages
     :ssl.setopts(ssl_socket, [{:active, :once}])
 
     receive do
       {:ssl, ^ssl_socket, data} ->
+        if config.trace do
+          {remote_ip, remote_port} = remote_addr
+          Logger.info("[SIP TRACE] TLS recv from #{format_addr(remote_ip)}:#{remote_port}\n#{data}")
+        end
+
         # Process received data through framing
         case ContentLength.process(framing, data) do
           {:ok, messages, new_framing} when is_list(messages) ->
@@ -357,7 +370,7 @@ defmodule ParrotTransport.Connection do
             end
 
             # Continue with updated framing state
-            tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, new_framing)
+            tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, config, new_framing)
 
           {:error, reason} ->
             Logger.error("[TlsConnection] Framing error: #{inspect(reason)}")

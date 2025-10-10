@@ -186,38 +186,38 @@ defmodule ParrotSip.TransportHandler do
 
   @impl true
   def handle_cast({:send_sip_message, message, destination}, state) do
-    send_to_transport(message, destination, state.transport_ref)
+    send_to_transport(message, destination, state.transport_ref, nil)
     {:noreply, state}
   end
 
   def handle_cast({:send_sip_response, response, source}, state) do
-    # Extract destination and transport info from source
-    {destination, transport_ref} =
+    # Extract destination, transport info, and connection PID from source
+    {destination, transport_ref, connection_pid} =
       case source do
-        %Source{remote: remote, transport: transport_type, local: {local_ip, local_port}} ->
+        %Source{remote: remote, transport: transport_type, local: {local_ip, local_port}, connection: conn} ->
           # Look up the correct transport based on where the request came from
           key = {transport_type, local_ip, local_port}
           transport = Map.get(state.transports, key) || state.transport_ref
-          {remote, transport}
+          {remote, transport, conn}
 
         {host, port} ->
           # Fallback to old single-transport mode
-          {{host, port}, state.transport_ref}
+          {{host, port}, state.transport_ref, nil}
 
         _ ->
           Logger.error("Invalid source for response: #{inspect(source)}")
-          {nil, nil}
+          {nil, nil, nil}
       end
 
     if destination && transport_ref do
-      send_to_transport(response, destination, transport_ref)
+      send_to_transport(response, destination, transport_ref, connection_pid)
     end
 
     {:noreply, state}
   end
 
   def handle_cast({:send_sip_request, request, destination}, state) do
-    send_to_transport(request, destination, state.transport_ref)
+    send_to_transport(request, destination, state.transport_ref, nil)
     {:noreply, state}
   end
 
@@ -280,41 +280,41 @@ defmodule ParrotSip.TransportHandler do
     end
   end
 
-  defp send_to_transport(_message, nil, _transport_ref) do
-    # In test environments, destination may be nil - just return :ok without sending
+  defp send_to_transport(_message, nil, _transport_ref, _connection_pid) do
     Logger.debug("[TransportHandler] Skipping send (no destination) in test environment")
     :ok
   end
-  
-  defp send_to_transport(message, destination, transport_ref) do
-    # Serialize the SIP message
+
+  defp send_to_transport(message, destination, transport_ref, connection_pid) do
     raw_data = Serializer.encode(message)
 
-    # Resolve destination
-    {dest_ip, dest_port} =
-      case destination do
-        {ip, port} when is_tuple(ip) ->
-          {ip, port}
+    # For TCP/TLS with a connection PID, send directly to the connection
+    if connection_pid && is_pid(connection_pid) do
+      ParrotTransport.Connection.send_data(connection_pid, raw_data)
+    else
+      # For UDP or when no connection PID, send via listener
+      {dest_ip, dest_port} =
+        case destination do
+          {ip, port} when is_tuple(ip) ->
+            {ip, port}
 
-        {host, port} when is_binary(host) ->
-          case resolve_host(host) do
-            {:ok, ip} -> {ip, port}
-            # Let transport handle it
-            _ -> {host, port}
-          end
+          {host, port} when is_binary(host) ->
+            case resolve_host(host) do
+              {:ok, ip} -> {ip, port}
+              _ -> {host, port}
+            end
 
-        _ ->
-          destination
+          _ ->
+            destination
+        end
+
+      case resolve_transport(transport_ref) do
+        {:ok, pid} ->
+          :gen_statem.cast(pid, {:send_data, raw_data, dest_ip, dest_port})
+
+        {:error, reason} ->
+          Logger.error("Failed to send to transport: #{reason}")
       end
-
-    # Send to transport
-    case resolve_transport(transport_ref) do
-      {:ok, pid} ->
-        # Send to transport with correct message format: {:send_data, data, dest_ip, dest_port}
-        :gen_statem.cast(pid, {:send_data, raw_data, dest_ip, dest_port})
-
-      {:error, reason} ->
-        Logger.error("Failed to send to transport: #{reason}")
     end
   end
 

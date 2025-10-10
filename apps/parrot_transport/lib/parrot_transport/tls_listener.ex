@@ -110,7 +110,7 @@ defmodule ParrotTransport.TlsListener do
     # Spawn acceptor pool
     acceptors =
       for _ <- 1..data.accept_pool_size do
-        spawn_acceptor(data.listen_socket, data.handler, self())
+        spawn_acceptor(data.listen_socket, data, self())
       end
 
     {:keep_state, %{data | acceptors: acceptors}}
@@ -222,11 +222,11 @@ defmodule ParrotTransport.TlsListener do
     end
   end
 
-  defp spawn_acceptor(listen_socket, handler, listener_pid) do
-    spawn_link(fn -> acceptor_loop(listen_socket, handler, listener_pid) end)
+  defp spawn_acceptor(listen_socket, data, listener_pid) do
+    spawn_link(fn -> acceptor_loop(listen_socket, data, listener_pid) end)
   end
 
-  defp acceptor_loop(listen_socket, handler, listener_pid) do
+  defp acceptor_loop(listen_socket, data, listener_pid) do
     case :ssl.transport_accept(listen_socket) do
       {:ok, client_socket} ->
         # Perform SSL handshake
@@ -242,7 +242,7 @@ defmodule ParrotTransport.TlsListener do
                 ssl_socket,
                 {remote_ip, remote_port},
                 {local_ip, local_port},
-                handler
+                data
               )
 
             # Transfer socket ownership to connection process
@@ -266,7 +266,7 @@ defmodule ParrotTransport.TlsListener do
     end
 
     # Continue accepting (tail recursion)
-    acceptor_loop(listen_socket, handler, listener_pid)
+    acceptor_loop(listen_socket, data.handler, listener_pid)
   end
 
   defp format_addr({a, b, c, d}), do: "#{a}.#{b}.#{c}.#{d}"
