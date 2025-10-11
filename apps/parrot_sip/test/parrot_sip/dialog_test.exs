@@ -18,7 +18,7 @@ defmodule ParrotSip.DialogTest do
         other_headers: %{}
       }
 
-      dialog_id = Dialog.from_message(request)
+      dialog_id = Message.dialog_id(request)
 
       # For incoming request to UAS: local=To (us), remote=From (them)
       assert dialog_id.call_id == "call-123@example.com"
@@ -38,7 +38,7 @@ defmodule ParrotSip.DialogTest do
         other_headers: %{}
       }
 
-      dialog_id = Dialog.from_message(request)
+      dialog_id = Message.dialog_id(request)
 
       assert dialog_id.call_id == "call-123@example.com"
       assert dialog_id.local_tag == "from-tag-123"
@@ -57,7 +57,7 @@ defmodule ParrotSip.DialogTest do
         other_headers: %{}
       }
 
-      dialog_id = Dialog.from_message(response)
+      dialog_id = Message.dialog_id(response)
 
       # For responses, tags are swapped
       assert dialog_id.call_id == "call-123@example.com"
@@ -77,7 +77,7 @@ defmodule ParrotSip.DialogTest do
         other_headers: %{}
       }
 
-      dialog_id = Dialog.from_message(request)
+      dialog_id = Message.dialog_id(request)
 
       # For incoming request to UAS: local=To (no tag yet), remote=From
       assert dialog_id.call_id == "call-123@example.com"
@@ -1231,7 +1231,7 @@ defmodule ParrotSip.DialogTest do
         other_headers: %{}
       }
 
-      dialog_id = Dialog.from_message(message)
+      dialog_id = Message.dialog_id(message)
 
       assert dialog_id.local_tag == nil
       assert dialog_id.remote_tag == nil
@@ -1247,7 +1247,7 @@ defmodule ParrotSip.DialogTest do
         other_headers: %{}
       }
 
-      dialog_id = Dialog.from_message(message)
+      dialog_id = Message.dialog_id(message)
 
       # For incoming request to UAS: local=To (nil), remote=From
       assert dialog_id.local_tag == nil
@@ -1470,7 +1470,7 @@ defmodule ParrotSip.DialogTest do
         call_id: "test@example.com"
       }
 
-      dialog_id = Dialog.from_message(message)
+      dialog_id = Message.dialog_id(message)
       assert dialog_id.call_id == "test@example.com"
     end
 
@@ -1482,7 +1482,7 @@ defmodule ParrotSip.DialogTest do
         call_id: "test@example.com"
       }
 
-      dialog_id = Dialog.from_message(message)
+      dialog_id = Message.dialog_id(message)
       assert dialog_id.call_id == "test@example.com"
       assert dialog_id.local_tag == nil || dialog_id.local_tag == ""
     end
@@ -2237,11 +2237,11 @@ defmodule ParrotSip.DialogProcessTest do
       
       # Verify registration happened by looking up the dialog
       dialog_id_str = dialog.id
-      case ParrotSip.DialogStatem.find_dialog(dialog_id_str) do
-        {:ok, pid} -> 
+      case Registry.lookup(ParrotSip.Registry, dialog_id_str) do
+        [{pid, _}] ->
           assert is_pid(pid)
           GenServer.stop(pid)
-        {:error, :no_dialog} ->
+        [] ->
           # Supervisor not running, registration didn't happen
           :ok
       end

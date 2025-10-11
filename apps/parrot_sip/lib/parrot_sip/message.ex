@@ -678,6 +678,12 @@ defmodule ParrotSip.Message do
   @doc """
   Gets a dialog ID from a message.
 
+  Returns a map with dialog identification components:
+  - call_id: The Call-ID header value
+  - local_tag: The local tag (from From header for outgoing requests, To header for incoming)
+  - remote_tag: The remote tag (from To header for outgoing requests, From header for incoming)
+  - direction: :uac (client) or :uas (server)
+
   ## Examples
 
       iex> message = ParrotSip.Message.new_request(:invite, "sip:bob@example.com")
@@ -691,9 +697,79 @@ defmodule ParrotSip.Message do
       "abc@example.com"
   """
   @spec dialog_id(t()) :: map()
-  def dialog_id(message) do
-    Logger.debug("Getting dialog_id from message")
-    ParrotSip.Dialog.from_message(message)
+  # Outgoing request - UAC perspective (with tags)
+  def dialog_id(%__MODULE__{
+        type: :request,
+        direction: :outgoing,
+        from: %From{parameters: %{"tag" => from_tag}},
+        to: %To{parameters: %{"tag" => to_tag}},
+        call_id: call_id
+      }) do
+    %{
+      call_id: call_id,
+      local_tag: from_tag,
+      remote_tag: to_tag,
+      direction: :uac
+    }
+  end
+
+  # Incoming request - UAS perspective (with tags)
+  def dialog_id(%__MODULE__{
+        type: :request,
+        direction: :incoming,
+        from: %From{parameters: %{"tag" => from_tag}},
+        to: %To{parameters: %{"tag" => to_tag}},
+        call_id: call_id
+      }) do
+    %{
+      call_id: call_id,
+      local_tag: to_tag,      # Our tag (To header)
+      remote_tag: from_tag,   # Their tag (From header)
+      direction: :uas
+    }
+  end
+
+  # Response message (with tags)
+  def dialog_id(%__MODULE__{
+        type: :response,
+        from: %From{parameters: %{"tag" => from_tag}},
+        to: %To{parameters: %{"tag" => to_tag}},
+        call_id: call_id
+      }) do
+    %{
+      call_id: call_id,
+      local_tag: to_tag,
+      remote_tag: from_tag,
+      direction: :uas
+    }
+  end
+
+  # Incoming request with from tag but no to tag (UAS perspective)
+  def dialog_id(%__MODULE__{
+        type: :request,
+        direction: :incoming,
+        from: %From{parameters: %{"tag" => from_tag}},
+        call_id: call_id
+      }) do
+    %{
+      call_id: call_id,
+      local_tag: nil,         # No to-tag yet
+      remote_tag: from_tag,   # Their tag (From header)
+      direction: :uas
+    }
+  end
+
+  # Fallback for messages missing tags or headers
+  def dialog_id(%__MODULE__{} = message) do
+    from_tag = if message.from, do: From.tag(message.from), else: nil
+    to_tag = if message.to, do: To.tag(message.to), else: nil
+
+    %{
+      call_id: message.call_id,
+      local_tag: from_tag,
+      remote_tag: to_tag,
+      direction: :uac
+    }
   end
 
   @doc """
