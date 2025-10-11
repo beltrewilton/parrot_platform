@@ -266,6 +266,15 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data}
   end
 
+
+     # Update to replace "Dialog.is_complete" by pattern matching on the Message struct below
+     # {
+     #   from: %From{parameters: %{"tag" => from_tag}},
+     #   to: %To{parameters: %{"tag" => to_tag}}
+     # }
+     #
+     # There are quite a few places to clean up like this (might be able to get rid of a lot of Dialog or all of it)
+
   @spec uas_find(Message.t()) :: {:ok, dialog_handle()} | :not_found
   def uas_find(%Message{} = req_sip_msg) do
     # Try to extract dialog ID from the message
