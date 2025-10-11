@@ -589,9 +589,9 @@ defmodule ParrotSip.Headers do
   @doc """
   Creates a dialog ID from a SIP message.
 
-  See `ParrotSip.Dialog.from_message/1`.
+  See `ParrotSip.Message.dialog_id/1`.
   """
-  defdelegate dialog_id_from_message(message), to: Dialog, as: :from_message
+  defdelegate dialog_id_from_message(message), to: ParrotSip.Message, as: :dialog_id
 
   @doc """
   Creates a dialog ID with explicit components.

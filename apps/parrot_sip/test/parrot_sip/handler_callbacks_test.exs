@@ -8,7 +8,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
 
   use ExUnit.Case, async: false
 
-  alias ParrotSip.{Handler, Message, Transaction, UAS}
+  alias ParrotSip.{Handler, Message, Transaction}
   alias ParrotSip.Headers.{Via, From, To, CSeq}
 
   describe "method-specific callbacks - handle_options/3" do
@@ -37,7 +37,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
 
           # Send 200 OK response
           response = Message.reply(sip_msg, 200, "OK")
-          UAS.response(response, uas)
+          ParrotSip.UAS.response(response, uas)
           :ok
         end
       end
@@ -111,7 +111,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
 
           # Send 180 Ringing
           ringing = Message.reply(sip_msg, 180, "Ringing")
-          UAS.response(ringing, uas)
+          ParrotSip.UAS.response(ringing, uas)
 
           :ok
         end

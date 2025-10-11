@@ -51,7 +51,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       call_id = invite.call_id
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, call_id, from_tag, to_tag)
       
-      assert {:error, :no_dialog} = DialogStatem.find_dialog(dialog_id_str)
+      assert [] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       # Step 3: Create REAL transaction with callback that bridges to dialog layer
       {:ok, transaction} = Transaction.create_invite_client(invite)
@@ -86,7 +86,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       Process.sleep(100)
       
       # Step 5: Verify dialog was created by transaction callback
-      assert {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      assert [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       assert Process.alive?(dialog_pid)
       
       # Step 6: Verify dialog is in early state
@@ -125,7 +125,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       to_tag = ringing_response.to.parameters["tag"]
       call_id = invite.call_id
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       {state_before, _} = :sys.get_state(dialog_pid)
       assert state_before == :early
@@ -196,7 +196,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       
       from_tag = invite.from.parameters["tag"]
       dialog1_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, "proxy1-tag")
-      assert {:ok, dialog1_pid} = DialogStatem.find_dialog(dialog1_id_str)
+      assert [{dialog1_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog1_id_str)
       
       # Step 4: Transaction receives 180 from proxy2 with DIFFERENT to-tag - creates SECOND early dialog
       ringing2 = build_response_message(180, "Ringing", invite)
@@ -205,7 +205,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       Process.sleep(100)
       
       dialog2_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, "proxy2-tag")
-      assert {:ok, dialog2_pid} = DialogStatem.find_dialog(dialog2_id_str)
+      assert [{dialog2_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog2_id_str)
       
       # Step 5: Verify TWO separate dialog processes exist
       assert dialog1_pid != dialog2_pid
@@ -250,10 +250,10 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       
       # Step 4: Verify dialog was created
       Process.sleep(50)
-      dialog_id = ParrotSip.Dialog.from_message(ok_response)
+      dialog_id = ParrotSip.Message.dialog_id(ok_response)
       dialog_id_str = ParrotSip.Dialog.to_string(dialog_id)
       
-      assert {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      assert [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       {state, data} = :sys.get_state(dialog_pid)
       assert state == :confirmed
       assert data.dialog.call_id == invite.call_id
@@ -540,7 +540,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ringing.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       # Trigger transaction timeout
       # Manually call the callback (simulating what transaction does on timeout)
@@ -577,7 +577,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ringing.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
 
       {state_before, _} = :sys.get_state(dialog_pid)
       assert state_before == :early
@@ -652,7 +652,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ringing.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       # Then send 486 Busy
       busy = build_response_message(486, "Busy Here", invite)
@@ -748,7 +748,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ok_response.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       {state, _} = :sys.get_state(dialog_pid)
       assert state == :confirmed
@@ -820,7 +820,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ok_response.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       # Set owner
       DialogStatem.set_owner(owner_pid, dialog_id_str)
@@ -892,7 +892,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ok_response.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       {state, _} = :sys.get_state(dialog_pid)
       assert state == :confirmed
@@ -924,7 +924,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ok_response.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       # Generate re-INVITE from dialog
       {:ok, reinvite} = :gen_statem.call(dialog_pid, {:uac_request, %Message{method: :invite}})
@@ -1023,7 +1023,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       from_tag = invite.from.parameters["tag"]
       to_tag = ok_with_routes.to.parameters["tag"]
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
-      {:ok, dialog_pid} = DialogStatem.find_dialog(dialog_id_str)
+      [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
       
       {_state, data} = :sys.get_state(dialog_pid)
       

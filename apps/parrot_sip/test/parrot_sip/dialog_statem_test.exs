@@ -337,11 +337,11 @@ defmodule ParrotSip.DialogStatemTest do
     test "finds existing dialogs by ID" do
       dialog_id = "test-dialog-id-123"
 
-      # This should return the dialog if it exists, or appropriate error
-      result = DialogStatem.find_dialog(dialog_id)
+      # This should return the dialog if it exists via Registry lookup
+      result = Registry.lookup(ParrotSip.Registry, dialog_id)
 
-      # Could be {:ok, pid}, {:error, :not_found}, etc.
-      assert is_tuple(result)
+      # Should return a list (empty if not found, or [{pid, _}] if found)
+      assert is_list(result)
     end
 
     test "validates UAS requests properly" do
@@ -945,11 +945,12 @@ defmodule ParrotSip.DialogStatemTest do
 
       # Verify dialog was created
       :timer.sleep(50)
-      dialog_id = ParrotSip.Dialog.from_message(response)
+      dialog_id = ParrotSip.Message.dialog_id(response)
       assert ParrotSip.Dialog.is_complete?(dialog_id)
-      
+
       dialog_id_str = ParrotSip.Dialog.to_string(dialog_id)
-      assert {:ok, _pid} = DialogStatem.find_dialog(dialog_id_str)
+      result = Registry.lookup(ParrotSip.Registry, dialog_id_str)
+      assert [{_pid, _}] = result
     end
 
     test "creates new dialog for 2xx SUBSCRIBE response" do

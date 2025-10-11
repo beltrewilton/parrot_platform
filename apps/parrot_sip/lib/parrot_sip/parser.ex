@@ -235,15 +235,7 @@ defmodule ParrotSip.Parser do
     # RFC 3261 Section 17.1.3: Transaction ID is the branch parameter from the top Via header
     transaction_id = extract_transaction_id(base_message.via)
 
-    # RFC 3261 Section 12.1.1: Dialog ID is Call-ID + tags
-    dialog_id =
-      try do
-        ParrotSip.Dialog.from_message(base_message)
-      rescue
-        _ -> nil
-      end
-
-    message = %Message{base_message | transaction_id: transaction_id, dialog_id: dialog_id}
+    message = %Message{base_message | transaction_id: transaction_id}
 
     # Validate required headers and content length
     with :ok <- validate_message(message),

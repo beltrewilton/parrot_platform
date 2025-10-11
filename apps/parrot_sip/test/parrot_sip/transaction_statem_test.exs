@@ -495,7 +495,6 @@ defmodule ParrotSip.TransactionStatemTest do
       # RFC 3261 Section 9.2: Should send 487 Request Terminated to INVITE
       # Transaction moves to completed when final response (487) is sent
       assert_state(pid, :completed)
-      dbg(get_last_response(pid))
       assert_last_response(pid, 487)
       assert Process.alive?(pid)
     end
@@ -1905,4 +1904,3 @@ defmodule ParrotSip.TransactionStatemTest do
     end
   end
 end
-
