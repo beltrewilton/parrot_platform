@@ -31,17 +31,21 @@ defmodule ParrotSip.TransportHandler do
   alias ParrotSip.Source
 
   defstruct [
-    :transport_ref,  # Deprecated - kept for backward compatibility
+    # Deprecated - kept for backward compatibility
+    :transport_ref,
     :name,
     handlers: [],
-    transports: %{}  # New: Map of transport refs by {transport, local_ip, local_port}
+    # New: Map of transport refs by {transport, local_ip, local_port}
+    transports: %{}
   ]
 
   @type t :: %__MODULE__{
-          transport_ref: pid() | atom() | nil,  # Deprecated
+          # Deprecated
+          transport_ref: pid() | atom() | nil,
           name: atom() | nil,
           handlers: list(pid()),
-          transports: map()  # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
+          # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
+          transports: map()
         }
 
   # API
@@ -128,8 +132,19 @@ defmodule ParrotSip.TransportHandler do
       register_transport(handler, tcp_listener, :tcp, {0, 0, 0, 0}, 5060)
       register_transport(handler, tls_listener, :tls, {0, 0, 0, 0}, 5061)
   """
-  def register_transport(handler, transport_ref, transport_type, local_ip, local_port, timeout \\ 5000) do
-    GenServer.call(handler, {:register_transport, transport_ref, transport_type, local_ip, local_port}, timeout)
+  def register_transport(
+        handler,
+        transport_ref,
+        transport_type,
+        local_ip,
+        local_port,
+        timeout \\ 5000
+      ) do
+    GenServer.call(
+      handler,
+      {:register_transport, transport_ref, transport_type, local_ip, local_port},
+      timeout
+    )
   end
 
   # GenServer Callbacks
@@ -174,12 +189,18 @@ defmodule ParrotSip.TransportHandler do
     {:reply, :ok, %{state | transport_ref: transport_ref}}
   end
 
-  def handle_call({:register_transport, transport_ref, transport_type, local_ip, local_port}, _from, state) do
+  def handle_call(
+        {:register_transport, transport_ref, transport_type, local_ip, local_port},
+        _from,
+        state
+      ) do
     # Register a new transport listener
     key = {transport_type, local_ip, local_port}
     new_transports = Map.put(state.transports, key, transport_ref)
 
-    Logger.debug("[TransportHandler] Registered transport #{transport_type}://#{inspect(local_ip)}:#{local_port}")
+    Logger.debug(
+      "[TransportHandler] Registered transport #{transport_type}://#{inspect(local_ip)}:#{local_port}"
+    )
 
     {:reply, :ok, %{state | transports: new_transports}}
   end
@@ -194,7 +215,12 @@ defmodule ParrotSip.TransportHandler do
     # Extract destination, transport info, and connection PID from source
     {destination, transport_ref, connection_pid} =
       case source do
-        %Source{remote: remote, transport: transport_type, local: {local_ip, local_port}, connection: conn} ->
+        %Source{
+          remote: remote,
+          transport: transport_type,
+          local: {local_ip, local_port},
+          connection: conn
+        } ->
           # Look up the correct transport based on where the request came from
           key = {transport_type, local_ip, local_port}
           transport = Map.get(state.transports, key) || state.transport_ref
@@ -322,19 +348,19 @@ defmodule ParrotSip.TransportHandler do
   defp route_message(%{type: :request, method: method} = message, state) do
     # Always route to handlers for visibility
     route_to_handlers(message, state)
-    
+
     # Also try to route to transaction layer
     case ParrotSip.TransactionStatem.server_process(message, %{}) do
       :ok ->
         Logger.debug("Request forwarded to existing transaction: #{method}")
-        
+
       {:ok, _pid} ->
         Logger.debug("New transaction created for request: #{method}")
 
       {:error, reason} ->
         Logger.debug("Transaction layer routing failed: #{inspect(reason)}")
     end
-    
+
     :ok
   end
 

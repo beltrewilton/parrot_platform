@@ -33,7 +33,7 @@ defmodule ParrotSip.DialogStatemTest do
       assert {:ok, pid} = DialogStatem.start_link({:uac, out_req, provisional_response})
       assert is_pid(pid)
       assert Process.alive?(pid)
-      
+
       # Verify early branch was set
       {_state, data} = :sys.get_state(pid)
       assert data.early_branch != nil
@@ -74,7 +74,7 @@ defmodule ParrotSip.DialogStatemTest do
       # Set owner while in early state
       owner_pid = self()
       :gen_statem.cast(pid, {:set_owner, owner_pid})
-      
+
       # Give it time to process
       Process.sleep(10)
       assert Process.alive?(pid)
@@ -201,10 +201,10 @@ defmodule ParrotSip.DialogStatemTest do
       owner = spawn(fn -> Process.sleep(5000) end)
       :gen_statem.cast(pid, {:set_owner, owner})
       Process.sleep(10)
-      
+
       Process.exit(owner, :kill)
       Process.sleep(10)
-      
+
       # Dialog should stop when owner dies
       refute Process.alive?(pid)
     end
@@ -236,7 +236,7 @@ defmodule ParrotSip.DialogStatemTest do
       response = build_response_message(200, "OK")
       invite = build_invite_message()
       :gen_statem.cast(pid, {:uas_response, response, invite})
-      
+
       # Give it time to process
       Process.sleep(10)
       assert Process.alive?(pid)
@@ -246,7 +246,7 @@ defmodule ParrotSip.DialogStatemTest do
       # Set owner while in confirmed state
       owner_pid = self()
       :gen_statem.cast(pid, {:set_owner, owner_pid})
-      
+
       # Give it time to process
       Process.sleep(10)
       assert Process.alive?(pid)
@@ -257,11 +257,11 @@ defmodule ParrotSip.DialogStatemTest do
       owner_pid = spawn(fn -> Process.sleep(1000) end)
       :gen_statem.cast(pid, {:set_owner, owner_pid})
       Process.sleep(10)
-      
+
       # Kill the owner process
       Process.exit(owner_pid, :kill)
       Process.sleep(10)
-      
+
       # Dialog should have stopped
       refute Process.alive?(pid)
     end
@@ -443,7 +443,7 @@ defmodule ParrotSip.DialogStatemTest do
     test "creates multiple early dialogs for forked responses" do
       # Alice sends INVITE to Bob
       invite = build_invite_message()
-      
+
       # Proxy forks to Bob's desk phone (180 response with to-tag-desk)
       response_desk = %Message{
         type: :response,
@@ -454,7 +454,8 @@ defmodule ParrotSip.DialogStatemTest do
         to: %To{
           display_name: "Bob Desk",
           uri: "sip:bob-desk@example.com",
-          parameters: %{"tag" => "to-tag-desk"}  # Different to-tag!
+          # Different to-tag!
+          parameters: %{"tag" => "to-tag-desk"}
         },
         call_id: invite.call_id,
         cseq: %CSeq{number: 1, method: :invite},
@@ -464,7 +465,7 @@ defmodule ParrotSip.DialogStatemTest do
         },
         other_headers: %{}
       }
-      
+
       # Proxy forks to Bob's mobile (180 response with to-tag-mobile)
       response_mobile = %Message{
         type: :response,
@@ -475,7 +476,8 @@ defmodule ParrotSip.DialogStatemTest do
         to: %To{
           display_name: "Bob Mobile",
           uri: "sip:bob-mobile@example.com",
-          parameters: %{"tag" => "to-tag-mobile"}  # Different to-tag!
+          # Different to-tag!
+          parameters: %{"tag" => "to-tag-mobile"}
         },
         call_id: invite.call_id,
         cseq: %CSeq{number: 1, method: :invite},
@@ -485,79 +487,83 @@ defmodule ParrotSip.DialogStatemTest do
         },
         other_headers: %{}
       }
-      
+
       # Create first early dialog (desk phone)
       {:ok, dialog_desk_pid} = DialogStatem.start_link({:uac, invite, response_desk})
       assert Process.alive?(dialog_desk_pid)
-      
+
       # Create second early dialog (mobile)
       {:ok, dialog_mobile_pid} = DialogStatem.start_link({:uac, invite, response_mobile})
       assert Process.alive?(dialog_mobile_pid)
-      
+
       # Both should be separate processes
       assert dialog_desk_pid != dialog_mobile_pid
-      
+
       # Both should be in early state
       {state_desk, _data_desk} = :sys.get_state(dialog_desk_pid)
       {state_mobile, _data_mobile} = :sys.get_state(dialog_mobile_pid)
       assert state_desk == :early
       assert state_mobile == :early
-      
+
       # Now desk phone answers with 200 OK
       ok_response_desk = %{response_desk | status_code: 200, reason_phrase: "OK"}
       :gen_statem.cast(dialog_desk_pid, {:uac_trans_result, {:message, ok_response_desk}})
-      
+
       Process.sleep(50)
-      
+
       # Desk dialog should transition to confirmed
       {final_state_desk, _} = :sys.get_state(dialog_desk_pid)
       assert final_state_desk == :confirmed
-      
+
       # Mobile dialog should still be early (or terminated by application)
       assert Process.alive?(dialog_mobile_pid)
     end
-    
+
     test "each forked dialog has unique dialog ID based on to-tag" do
       invite = build_invite_message()
-      
+
       response1 = build_response_message(180, "Ringing")
       response1 = %{response1 | to: %{response1.to | parameters: %{"tag" => "fork-1"}}}
-      
+
       response2 = build_response_message(180, "Ringing")
       response2 = %{response2 | to: %{response2.to | parameters: %{"tag" => "fork-2"}}}
-      
+
       {:ok, pid1} = DialogStatem.start_link({:uac, invite, response1})
       {:ok, pid2} = DialogStatem.start_link({:uac, invite, response2})
-      
+
       {_state1, data1} = :sys.get_state(pid1)
       {_state2, data2} = :sys.get_state(pid2)
-      
+
       # Dialog IDs should be different because to-tags differ
       assert data1.dialog.id != data2.dialog.id
-      
+
       # But call-id should be the same
       assert data1.dialog.call_id == data2.dialog.call_id
     end
-    
+
     test "confirmed dialog wins over early dialogs with same call-id" do
       invite = build_invite_message()
-      
+
       # First fork sends 180
       response_early = build_response_message(180, "Ringing")
-      response_early = %{response_early | to: %{response_early.to | parameters: %{"tag" => "early-tag"}}}
-      
+
+      response_early = %{
+        response_early
+        | to: %{response_early.to | parameters: %{"tag" => "early-tag"}}
+      }
+
       {:ok, early_pid} = DialogStatem.start_link({:uac, invite, response_early})
       {state, _} = :sys.get_state(early_pid)
       assert state == :early
-      
+
       # Second fork sends 200 OK
       response_ok = build_response_message(200, "OK")
       response_ok = %{response_ok | to: %{response_ok.to | parameters: %{"tag" => "winner-tag"}}}
-      
+
       {:ok, confirmed_pid} = DialogStatem.start_link({:uac, invite, response_ok})
       {state, _} = :sys.get_state(confirmed_pid)
       assert state == :confirmed
-      
+
       # Both dialogs exist independently
       assert Process.alive?(early_pid)
       assert Process.alive?(confirmed_pid)
@@ -599,7 +605,11 @@ defmodule ParrotSip.DialogStatemTest do
     end
 
     test "handles SUBSCRIBE with integer expires header" do
-      subscribe_msg = %{build_subscribe_message() | other_headers: %{"event" => "presence", "expires" => 1800}}
+      subscribe_msg = %{
+        build_subscribe_message()
+        | other_headers: %{"event" => "presence", "expires" => 1800}
+      }
+
       response_msg = build_response_message(200, "OK")
       {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
 
@@ -607,7 +617,11 @@ defmodule ParrotSip.DialogStatemTest do
     end
 
     test "handles SUBSCRIBE with string expires header" do
-      subscribe_msg = %{build_subscribe_message() | other_headers: %{"event" => "presence", "expires" => "7200"}}
+      subscribe_msg = %{
+        build_subscribe_message()
+        | other_headers: %{"event" => "presence", "expires" => "7200"}
+      }
+
       response_msg = build_response_message(200, "OK")
       {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
 
@@ -615,7 +629,11 @@ defmodule ParrotSip.DialogStatemTest do
     end
 
     test "handles SUBSCRIBE with invalid expires header" do
-      subscribe_msg = %{build_subscribe_message() | other_headers: %{"event" => "presence", "expires" => "invalid"}}
+      subscribe_msg = %{
+        build_subscribe_message()
+        | other_headers: %{"event" => "presence", "expires" => "invalid"}
+      }
+
       response_msg = build_response_message(200, "OK")
       {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
 
@@ -829,7 +847,7 @@ defmodule ParrotSip.DialogStatemTest do
       response = build_response_message(200, "OK")
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
       {_state, data} = :sys.get_state(pid)
-      
+
       # Create a request with the same dialog ID
       # For incoming request to UAS: From=remote (their tag), To=local (our tag)
       in_dialog_request = %Message{
@@ -839,20 +857,22 @@ defmodule ParrotSip.DialogStatemTest do
         call_id: data.dialog.call_id,
         from: %From{
           uri: "sip:test@example.com",
-          parameters: %{"tag" => data.dialog.remote_tag}  # Their tag in From
+          # Their tag in From
+          parameters: %{"tag" => data.dialog.remote_tag}
         },
         to: %To{
           uri: "sip:target@example.com",
-          parameters: %{"tag" => data.dialog.local_tag}  # Our tag in To
+          # Our tag in To
+          parameters: %{"tag" => data.dialog.local_tag}
         },
         cseq: %CSeq{number: 2, method: :options},
         other_headers: %{}
       }
-      
+
       result = DialogStatem.uas_find(in_dialog_request)
       assert {:ok, found_pid} = result
       assert found_pid == pid
-      
+
       GenServer.stop(pid)
     end
 
@@ -1070,9 +1090,10 @@ defmodule ParrotSip.DialogStatemTest do
       response = build_response_with_call_id(200, "OK", call_id)
 
       # Add dialog identifiers to make it look like in-dialog request
-      request_with_tags = %{request | 
-        from: %{request.from | parameters: %{"tag" => "from-tag"}},
-        to: %{request.to | parameters: %{"tag" => "to-tag"}}
+      request_with_tags = %{
+        request
+        | from: %{request.from | parameters: %{"tag" => "from-tag"}},
+          to: %{request.to | parameters: %{"tag" => "to-tag"}}
       }
 
       # Should handle gracefully without crashing
@@ -1132,7 +1153,7 @@ defmodule ParrotSip.DialogStatemTest do
   end
 
   # Helper functions for building test messages
-  
+
   defp unique_call_id do
     "test-call-#{:erlang.unique_integer([:positive])}@example.com"
   end
@@ -1168,7 +1189,8 @@ defmodule ParrotSip.DialogStatemTest do
         parameters: %{}
       },
       other_headers: %{},
-      body: "v=0\r\no=test 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
+      body:
+        "v=0\r\no=test 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
     }
   end
 
@@ -1534,30 +1556,31 @@ defmodule ParrotSip.DialogStatemTest do
       # Create a confirmed dialog
       req = build_invite_message()
       resp = build_response_message(200, "OK")
-      
+
       {:ok, dialog} = Dialog.uas_create(req, resp)
-      
+
       # Start dialog statem
       {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
-      
+
       # Manually transition to confirmed by sending 200 OK
       :gen_statem.cast(pid, {:uas_response, resp, req})
       Process.sleep(10)
-      
+
       # Now send a request with invalid CSeq to trigger error
       invalid_req = %Message{
         type: :request,
         method: :info,
         call_id: dialog.call_id,
-        cseq: %{method: :info}  # Missing 'number' field - invalid!
+        # Missing 'number' field - invalid!
+        cseq: %{method: :info}
       }
-      
+
       # This should return error response from Dialog.uas_process
       result = :gen_statem.call(pid, {:uas_request, invalid_req})
-      
+
       # Should return an error response message
       assert {:reply, %Message{status_code: 500}} = result
-      
+
       # Dialog should still be alive
       assert Process.alive?(pid)
     end
@@ -1566,20 +1589,21 @@ defmodule ParrotSip.DialogStatemTest do
       # Test line 501-504: Another error path
       req = build_invite_message()
       resp = build_response_message(200, "OK")
-      
+
       {:ok, dialog} = Dialog.uas_create(req, resp)
       {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
-      
+
       :gen_statem.cast(pid, {:uas_response, resp, req})
       Process.sleep(10)
-      
+
       invalid_req = %Message{
         type: :request,
         method: :info,
         call_id: dialog.call_id,
-        cseq: nil  # Missing CSeq entirely
+        # Missing CSeq entirely
+        cseq: nil
       }
-      
+
       result = :gen_statem.call(pid, {:uas_request, invalid_req})
       # Should return an error response message
       assert {:reply, %Message{status_code: 500}} = result
@@ -1590,17 +1614,17 @@ defmodule ParrotSip.DialogStatemTest do
       # Test line 566-572: unexpected event handler
       req = build_invite_message()
       resp = build_response_message(200, "OK")
-      
+
       {:ok, _dialog} = Dialog.uas_create(req, resp)
       {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
-      
+
       :gen_statem.cast(pid, {:uas_response, resp, req})
       Process.sleep(10)
-      
+
       # Send unexpected cast
       :gen_statem.cast(pid, {:some_unexpected_event, "data"})
       Process.sleep(10)
-      
+
       # Should still be alive and in confirmed state
       assert Process.alive?(pid)
     end
@@ -1612,18 +1636,18 @@ defmodule ParrotSip.DialogStatemTest do
       # For now, this test just documents the code path exists
       req = build_invite_message()
       resp = build_response_message(200, "OK")
-      
+
       {:ok, _dialog} = Dialog.uas_create(req, resp)
       {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
-      
+
       :gen_statem.cast(pid, {:uas_response, resp, req})
       Process.sleep(10)
-      
+
       # The subscription_expired path exists at line 469-472
       # but requires state_timeout to be set during init
       # For now, just verify the dialog is alive
       assert Process.alive?(pid)
-      
+
       # Clean up
       GenServer.stop(pid)
     end
@@ -1632,18 +1656,18 @@ defmodule ParrotSip.DialogStatemTest do
       # Test line 474-477: owner process death
       req = build_invite_message()
       resp = build_response_message(200, "OK")
-      
+
       {:ok, _dialog} = Dialog.uas_create(req, resp)
       {:ok, pid} = DialogStatem.start_link({:uas, resp, req})
-      
+
       :gen_statem.cast(pid, {:uas_response, resp, req})
       Process.sleep(10)
-      
+
       ref = Process.monitor(pid)
-      
+
       # Send DOWN message (simulating owner death)
       send(pid, {:DOWN, make_ref(), :process, self(), :killed})
-      
+
       # Should terminate
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
     end

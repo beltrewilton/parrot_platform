@@ -176,7 +176,7 @@ defmodule SippTest.SipStackHelper do
         transport_handler: bridge,
         sip_handler: handler,
         port: actual_port,
-        transport_type: :tls,
+        transport_type: :tls
       }
 
       {:ok, stack}
@@ -291,7 +291,7 @@ defmodule SippTest.SipStackHelper do
 
   defp start_tcp_listener(bridge_pid, ip, port) do
     sip_trace = System.get_env("SIP_TRACE", "false") == "true"
-    
+
     config = %ListenerConfig{
       transport: :tcp,
       ip: ip,
@@ -311,7 +311,7 @@ defmodule SippTest.SipStackHelper do
 
   defp start_tls_listener(bridge_pid, ip, port, certfile, keyfile, cacertfile) do
     sip_trace = System.get_env("SIP_TRACE", "false") == "true"
-    
+
     config = %ListenerConfig{
       transport: :tls,
       ip: ip,

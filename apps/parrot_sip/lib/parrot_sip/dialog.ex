@@ -473,7 +473,7 @@ defmodule ParrotSip.Dialog do
   ## RFC 3261 Section 12.1.1 - UAS Behavior
 
   When a UAS responds to a request with a response that establishes a dialog:
-  
+
   1. Dialog ID is constructed from Call-ID, local tag (To tag), and remote tag (From tag)
   2. Local URI is from the To header
   3. Remote URI is from the From header
@@ -514,22 +514,28 @@ defmodule ParrotSip.Dialog do
          %_{parameters: to_params} when is_map(to_params) <- response.to,
          %{number: _} <- request.cseq,
          call_id when is_binary(call_id) <- request.call_id do
-      {:ok, %{
-        call_id: call_id,
-        remote_tag: from_params["tag"],
-        local_tag: to_params["tag"],
-        remote_seq: request.cseq.number
-      }}
+      {:ok,
+       %{
+         call_id: call_id,
+         remote_tag: from_params["tag"],
+         local_tag: to_params["tag"],
+         remote_seq: request.cseq.number
+       }}
     else
-      nil when not is_map_key(request, :from) or request.from == nil -> 
+      nil when not is_map_key(request, :from) or request.from == nil ->
         {:error, :invalid_from_header}
-      nil when not is_map_key(response, :to) or response.to == nil -> 
+
+      nil when not is_map_key(response, :to) or response.to == nil ->
         {:error, :invalid_to_header}
-      nil when not is_map_key(request, :cseq) or request.cseq == nil -> 
+
+      nil when not is_map_key(request, :cseq) or request.cseq == nil ->
         {:error, :invalid_cseq_header}
-      nil when not is_map_key(request, :call_id) or request.call_id == nil -> 
+
+      nil when not is_map_key(request, :call_id) or request.call_id == nil ->
         {:error, :invalid_call_id}
-      _ -> {:error, :invalid_headers}
+
+      _ ->
+        {:error, :invalid_headers}
     end
   end
 
@@ -538,34 +544,38 @@ defmodule ParrotSip.Dialog do
     local_uri = extract_uri(request.to.uri)
     remote_uri = extract_uri(request.from.uri)
     remote_target = extract_remote_target(request.contact, remote_uri)
-    
-    {:ok, %{
-      local_uri: local_uri,
-      remote_uri: remote_uri,
-      remote_target: remote_target
-    }}
+
+    {:ok,
+     %{
+       local_uri: local_uri,
+       remote_uri: remote_uri,
+       remote_target: remote_target
+     }}
   end
 
   # Build complete dialog parameters for UAS
   defp build_uas_dialog_params(request, response, headers, uris) do
-    state = if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
+    state =
+      if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
+
     secure = String.starts_with?(request.request_uri, "sips:")
     route_set = extract_route_set(response)
 
-    {:ok, %{
-      id: generate_id(:uas, headers.call_id, headers.local_tag, headers.remote_tag),
-      state: state,
-      call_id: headers.call_id,
-      local_tag: headers.local_tag,
-      remote_tag: headers.remote_tag,
-      local_uri: uris.local_uri,
-      remote_uri: uris.remote_uri,
-      remote_target: uris.remote_target,
-      local_seq: 0,
-      remote_seq: headers.remote_seq,
-      route_set: route_set,
-      secure: secure
-    }}
+    {:ok,
+     %{
+       id: generate_id(:uas, headers.call_id, headers.local_tag, headers.remote_tag),
+       state: state,
+       call_id: headers.call_id,
+       local_tag: headers.local_tag,
+       remote_tag: headers.remote_tag,
+       local_uri: uris.local_uri,
+       remote_uri: uris.remote_uri,
+       remote_target: uris.remote_target,
+       local_seq: 0,
+       remote_seq: headers.remote_seq,
+       route_set: route_set,
+       secure: secure
+     }}
   end
 
   @doc """
@@ -576,7 +586,7 @@ defmodule ParrotSip.Dialog do
   ## RFC 3261 Section 12.1.2 - UAC Behavior
 
   When a UAC receives a response that establishes a dialog:
-  
+
   1. Dialog ID is constructed from Call-ID, local tag (From tag), and remote tag (To tag)
   2. Local URI is from the From header
   3. Remote URI is from the To header
@@ -618,22 +628,28 @@ defmodule ParrotSip.Dialog do
          %_{parameters: to_params} when is_map(to_params) <- response.to,
          %{number: _} <- request.cseq,
          call_id when is_binary(call_id) <- request.call_id do
-      {:ok, %{
-        call_id: call_id,
-        local_tag: from_params["tag"],
-        remote_tag: to_params["tag"],
-        local_seq: request.cseq.number
-      }}
+      {:ok,
+       %{
+         call_id: call_id,
+         local_tag: from_params["tag"],
+         remote_tag: to_params["tag"],
+         local_seq: request.cseq.number
+       }}
     else
-      nil when not is_map_key(request, :from) or request.from == nil -> 
+      nil when not is_map_key(request, :from) or request.from == nil ->
         {:error, :invalid_from_header}
-      nil when not is_map_key(response, :to) or response.to == nil -> 
+
+      nil when not is_map_key(response, :to) or response.to == nil ->
         {:error, :invalid_to_header}
-      nil when not is_map_key(request, :cseq) or request.cseq == nil -> 
+
+      nil when not is_map_key(request, :cseq) or request.cseq == nil ->
         {:error, :invalid_cseq_header}
-      nil when not is_map_key(request, :call_id) or request.call_id == nil -> 
+
+      nil when not is_map_key(request, :call_id) or request.call_id == nil ->
         {:error, :invalid_call_id}
-      _ -> {:error, :invalid_headers}
+
+      _ ->
+        {:error, :invalid_headers}
     end
   end
 
@@ -642,34 +658,38 @@ defmodule ParrotSip.Dialog do
     local_uri = extract_uri(request.from.uri)
     remote_uri = extract_uri(request.to.uri)
     remote_target = extract_remote_target(response.contact, remote_uri)
-    
-    {:ok, %{
-      local_uri: local_uri,
-      remote_uri: remote_uri,
-      remote_target: remote_target
-    }}
+
+    {:ok,
+     %{
+       local_uri: local_uri,
+       remote_uri: remote_uri,
+       remote_target: remote_target
+     }}
   end
 
   # Build complete dialog parameters for UAC
   defp build_uac_dialog_params(request, response, headers, uris) do
-    state = if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
+    state =
+      if response.status_code >= 200 and response.status_code < 300, do: :confirmed, else: :early
+
     secure = String.starts_with?(request.request_uri, "sips:")
     route_set = extract_route_set(response)
 
-    {:ok, %{
-      id: generate_id(:uac, headers.call_id, headers.local_tag, headers.remote_tag),
-      state: state,
-      call_id: headers.call_id,
-      local_tag: headers.local_tag,
-      remote_tag: headers.remote_tag,
-      local_uri: uris.local_uri,
-      remote_uri: uris.remote_uri,
-      remote_target: uris.remote_target,
-      local_seq: headers.local_seq,
-      remote_seq: 0,
-      route_set: route_set,
-      secure: secure
-    }}
+    {:ok,
+     %{
+       id: generate_id(:uac, headers.call_id, headers.local_tag, headers.remote_tag),
+       state: state,
+       call_id: headers.call_id,
+       local_tag: headers.local_tag,
+       remote_tag: headers.remote_tag,
+       local_uri: uris.local_uri,
+       remote_uri: uris.remote_uri,
+       remote_target: uris.remote_target,
+       local_seq: headers.local_seq,
+       remote_seq: 0,
+       route_set: route_set,
+       secure: secure
+     }}
   end
 
   @doc """
@@ -707,7 +727,7 @@ defmodule ParrotSip.Dialog do
   ## RFC 3261 Section 12.2.2 - UAS Processing of In-Dialog Requests
 
   When a UAS receives an in-dialog request:
-  
+
   1. Update the remote sequence number from the CSeq header
   2. Check for target refresh requests (INVITE, UPDATE) that may update remote target
   3. Process the request method (BYE terminates the dialog)
@@ -736,36 +756,36 @@ defmodule ParrotSip.Dialog do
     case request.cseq do
       %{number: remote_seq} when is_integer(remote_seq) ->
         process_request_with_cseq(request, dialog, remote_seq)
-      
+
       nil ->
         {:error, :missing_cseq}
-      
+
       _ ->
         {:error, :invalid_cseq}
     end
   end
-  
+
   # RFC 3261 Section 13.2.2.4: ACK uses same CSeq as INVITE
   defp process_request_with_cseq(%Message{method: :ack}, dialog, _remote_seq) do
     {:ok, dialog}
   end
-  
+
   # RFC 3262: PRACK is allowed in early dialogs and uses incremented CSeq
-  defp process_request_with_cseq(%Message{method: :prack}, %{state: :early} = dialog, remote_seq) 
+  defp process_request_with_cseq(%Message{method: :prack}, %{state: :early} = dialog, remote_seq)
        when remote_seq > dialog.remote_seq do
     updated_dialog = %{dialog | remote_seq: remote_seq}
     {:ok, updated_dialog}
   end
-  
+
   # Normal request processing - CSeq must be greater than previous
-  defp process_request_with_cseq(request, dialog, remote_seq) 
+  defp process_request_with_cseq(request, dialog, remote_seq)
        when dialog.remote_seq == 0 or remote_seq > dialog.remote_seq do
     # Handle BYE request (terminates the dialog)
     state = if request.method == :bye, do: :terminated, else: dialog.state
 
     # RFC 3261 Section 12.2.2: Handle target refresh requests
     # Target refresh requests (INVITE, UPDATE, SUBSCRIBE) can update the remote target
-    updated_dialog = 
+    updated_dialog =
       dialog
       |> Map.put(:remote_seq, remote_seq)
       |> Map.put(:state, state)
@@ -773,19 +793,19 @@ defmodule ParrotSip.Dialog do
 
     {:ok, updated_dialog}
   end
-  
+
   # Out of order CSeq - reject per RFC 3261 Section 12.2.2
   defp process_request_with_cseq(_request, _dialog, _remote_seq) do
     {:error, :cseq_out_of_order}
   end
-  
+
   # RFC 3261 Section 12.2.2: Target refresh requests update the remote target
   # Target refresh requests: INVITE, UPDATE, SUBSCRIBE, REFER
   defp maybe_update_remote_target(dialog, %Message{method: method, contact: %Contact{uri: uri}})
        when method in [:invite, :update, :subscribe, :refer] and not is_nil(uri) do
     %{dialog | remote_target: uri}
   end
-  
+
   defp maybe_update_remote_target(dialog, _request), do: dialog
 
   @doc """
@@ -796,7 +816,7 @@ defmodule ParrotSip.Dialog do
   ## RFC 3261 Section 12.2.1.1 - Generating the Request
 
   To construct an in-dialog request:
-  
+
   1. Request-URI is set to the remote target URI (from Contact)
   2. Route header is set from the dialog's route set
   3. From header URI and tag are from the dialog's local URI and local tag
@@ -827,17 +847,17 @@ defmodule ParrotSip.Dialog do
   def uac_request(method, dialog) when is_atom(method) do
     uac_request(%Message{method: method}, dialog)
   end
-  
+
   # RFC 3261 Section 13.2.2.4: ACK uses same CSeq as INVITE
   def uac_request(%Message{method: :ack} = template, dialog) do
     build_uac_request(template, dialog, dialog.local_seq, false)
   end
-  
+
   # All other methods increment the CSeq
   def uac_request(%Message{method: _method} = template, dialog) do
     build_uac_request(template, dialog, dialog.local_seq + 1, true)
   end
-  
+
   defp build_uac_request(template, dialog, cseq_number, update_dialog_seq) do
     # Create basic headers
     from = %Headers.From{
@@ -883,11 +903,12 @@ defmodule ParrotSip.Dialog do
     }
 
     # Update the dialog's local sequence number if needed
-    updated_dialog = if update_dialog_seq do
-      %{dialog | local_seq: cseq_number}
-    else
-      dialog
-    end
+    updated_dialog =
+      if update_dialog_seq do
+        %{dialog | local_seq: cseq_number}
+      else
+        dialog
+      end
 
     {:ok, request, updated_dialog}
   end
@@ -914,22 +935,29 @@ defmodule ParrotSip.Dialog do
   end
 
   # Dialog becomes confirmed on 2xx to INVITE
-  defp determine_dialog_state(%Message{status_code: code, cseq: %{method: :invite}} = _response, 
-                               %{state: :early} = _dialog) 
+  defp determine_dialog_state(
+         %Message{status_code: code, cseq: %{method: :invite}} = _response,
+         %{state: :early} = _dialog
+       )
        when code >= 200 and code < 300 do
     :confirmed
   end
 
   # Dialog becomes terminated on error response to INVITE (4xx, 5xx, 6xx)
   # RFC 3261 Section 12.1: Error responses terminate early dialogs
-  defp determine_dialog_state(%Message{status_code: code, cseq: %{method: :invite}} = _response,
-                               %{state: :early} = _dialog)
+  defp determine_dialog_state(
+         %Message{status_code: code, cseq: %{method: :invite}} = _response,
+         %{state: :early} = _dialog
+       )
        when code >= 300 do
     :terminated
   end
 
   # Dialog becomes terminated on successful BYE response
-  defp determine_dialog_state(%Message{status_code: code, cseq: %{method: :bye}} = _response, _dialog)
+  defp determine_dialog_state(
+         %Message{status_code: code, cseq: %{method: :bye}} = _response,
+         _dialog
+       )
        when code >= 200 and code < 300 do
     :terminated
   end
@@ -1012,6 +1040,7 @@ defmodule ParrotSip.Dialog do
   defp extract_route_set(%Message{record_route: record_route}) when is_list(record_route) do
     Enum.reverse(record_route)
   end
+
   defp extract_route_set(_response), do: []
 
   # For UAC, local URI is From
@@ -1079,6 +1108,7 @@ defmodule ParrotSip.Dialog do
   defp extract_remote_target(%Contact{uri: contact_uri}, _fallback) do
     extract_uri(contact_uri)
   end
+
   defp extract_remote_target(nil, fallback), do: fallback
   defp extract_remote_target(_, fallback), do: fallback
 end

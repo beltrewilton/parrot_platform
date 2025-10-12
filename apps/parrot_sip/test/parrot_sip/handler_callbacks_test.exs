@@ -214,10 +214,16 @@ defmodule ParrotSip.HandlerCallbacksTest do
         msg = build_message_for_method(method)
         handler = Handler.new(TestAllMethodsHandler, self())
 
-        transaction = case method do
-          :invite -> {:ok, t} = Transaction.create_invite_server(msg); t
-          _ -> {:ok, t} = Transaction.create_non_invite_server(msg); t
-        end
+        transaction =
+          case method do
+            :invite ->
+              {:ok, t} = Transaction.create_invite_server(msg)
+              t
+
+            _ ->
+              {:ok, t} = Transaction.create_non_invite_server(msg)
+              t
+          end
 
         Handler.uas_request(transaction, msg, handler)
         assert_receive {:called, ^method}, 1000

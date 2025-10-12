@@ -53,23 +53,23 @@ defmodule ParrotSip do
 
   @doc """
   Gets the current state of a transaction by its ID.
-  
+
   This function looks up the transaction process in the registry and retrieves
   its current state from the gen_statem state machine.
-  
+
   ## Parameters
   - `transaction_id` - The unique transaction identifier
-  
+
   ## Returns
   - `{:ok, state_name}` - The current state (e.g., :calling, :proceeding, :completed)
   - `{:error, :not_found}` - Transaction doesn't exist or has terminated
-  
+
   ## Examples
-  
+
       iex> # Transaction doesn't exist
       iex> ParrotSip.get_transaction_state("z9hG4bK776:invite:client")
       {:error, :not_found}
-  
+
   """
   def get_transaction_state(transaction_id) do
     # Look up the transaction process via Registry

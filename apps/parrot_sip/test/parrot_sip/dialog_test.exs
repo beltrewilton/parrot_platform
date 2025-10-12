@@ -1003,13 +1003,13 @@ defmodule ParrotSip.DialogTest do
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com"
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}},
         contact: nil
       }
-      
+
       assert {:error, :invalid_from_header} = Dialog.uas_create(request, response)
     end
 
@@ -1023,12 +1023,12 @@ defmodule ParrotSip.DialogTest do
         request_uri: "sip:bob@biloxi.com",
         contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
       }
-      
+
       response = %Message{
         status_code: 200,
         to: nil
       }
-      
+
       assert {:error, :invalid_to_header} = Dialog.uas_create(request, response)
     end
 
@@ -1042,12 +1042,12 @@ defmodule ParrotSip.DialogTest do
         request_uri: "sip:bob@biloxi.com",
         contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
       }
-      
+
       assert {:error, :invalid_cseq_header} = Dialog.uas_create(request, response)
     end
 
@@ -1060,13 +1060,13 @@ defmodule ParrotSip.DialogTest do
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com"
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "remote-tag"}},
         contact: nil
       }
-      
+
       assert {:error, :invalid_from_header} = Dialog.uac_create(request, response)
     end
 
@@ -1080,12 +1080,12 @@ defmodule ParrotSip.DialogTest do
         request_uri: "sip:bob@biloxi.com",
         contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
       }
-      
+
       response = %Message{
         status_code: 200,
         to: nil
       }
-      
+
       assert {:error, :invalid_to_header} = Dialog.uac_create(request, response)
     end
   end
@@ -1107,12 +1107,13 @@ defmodule ParrotSip.DialogTest do
         route_set: [],
         secure: false
       }
-      
+
       malformed_request = %Message{
         method: :options,
-        cseq: nil  # Missing CSeq!
+        # Missing CSeq!
+        cseq: nil
       }
-      
+
       # After fix: should return error instead of crashing
       result = Dialog.uas_process(malformed_request, dialog)
       assert {:error, :missing_cseq} = result
@@ -1133,12 +1134,13 @@ defmodule ParrotSip.DialogTest do
         route_set: [],
         secure: false
       }
-      
+
       malformed_request = %Message{
         method: :options,
-        cseq: "invalid"  # Not a CSeq struct!
+        # Not a CSeq struct!
+        cseq: "invalid"
       }
-      
+
       result = Dialog.uas_process(malformed_request, dialog)
       assert {:error, :invalid_cseq} = result
     end
@@ -1158,19 +1160,18 @@ defmodule ParrotSip.DialogTest do
         route_set: [],
         secure: false
       }
-      
+
       valid_request = %Message{
         method: :options,
         cseq: %CSeq{number: 2, method: :options}
       }
-      
+
       result = Dialog.uas_process(valid_request, dialog)
       assert {:ok, updated} = result
       assert updated.remote_seq == 2
       assert updated.state == :confirmed
     end
   end
-
 
   describe "error handling" do
     test "create_from_invite returns error for missing Call-ID" do
@@ -1371,7 +1372,6 @@ defmodule ParrotSip.DialogTest do
     end
   end
 
-
   describe "uac_result/2" do
     test "processes response and updates dialog state" do
       # Create a dialog first
@@ -1529,7 +1529,8 @@ defmodule ParrotSip.DialogTest do
         call_id: "test@example.com"
       }
 
-      assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite(message, :uac)
+      assert {:error, "Message must be an INVITE request"} =
+               Dialog.create_from_invite(message, :uac)
     end
 
     test "returns error for invalid role" do
@@ -1544,7 +1545,8 @@ defmodule ParrotSip.DialogTest do
     end
 
     test "returns error for invalid message type" do
-      assert {:error, "Message must be an INVITE request"} = Dialog.create_from_invite("not a message", :uac)
+      assert {:error, "Message must be an INVITE request"} =
+               Dialog.create_from_invite("not a message", :uac)
     end
 
     test "returns error for UAC INVITE without call_id" do
@@ -1712,8 +1714,8 @@ defmodule ParrotSip.DialogTest do
 
       # All should succeed
       assert Enum.all?(results, fn result ->
-        match?({:ok, %Dialog{}}, result)
-      end)
+               match?({:ok, %Dialog{}}, result)
+             end)
 
       # All should have unique IDs
       dialog_ids = Enum.map(results, fn {:ok, dialog} -> dialog.id end)
@@ -1765,8 +1767,8 @@ defmodule ParrotSip.DialogTest do
 
       # All should succeed
       assert Enum.all?(results, fn result ->
-        match?({:ok, %Dialog{}}, result)
-      end)
+               match?({:ok, %Dialog{}}, result)
+             end)
     end
 
     @tag :concurrent
@@ -1819,20 +1821,19 @@ defmodule ParrotSip.DialogTest do
 
       # All should succeed
       assert Enum.all?(results, fn result ->
-        match?({:ok, %Message{method: :bye}, %Dialog{}}, result)
-      end)
+               match?({:ok, %Message{method: :bye}, %Dialog{}}, result)
+             end)
 
       # All should have different CSeq numbers (NOTE: This test shows a race condition bug!)
       # In a real implementation, we'd need to serialize CSeq generation
       cseq_numbers = Enum.map(results, fn {:ok, req, _dialog} -> req.cseq.number end)
-      
+
       # Currently this will show all have same CSeq because the initial_dialog
       # is the same for all tasks - this is a known limitation of the functional approach
       # The stateful DialogStatem handles this correctly by serializing requests
       assert length(cseq_numbers) == 20
     end
   end
-
 
   describe "uas_create/2 - edge cases" do
     test "creates dialog with missing contact header" do
@@ -1871,7 +1872,7 @@ defmodule ParrotSip.DialogTest do
       # Without contact, remote_target falls back to From URI
       assert dialog.remote_target == "sip:alice@example.com"
     end
-    
+
     test "returns error for nil call_id in request" do
       # Test line 625-626: invalid_call_id error path
       request = %Message{
@@ -1885,7 +1886,8 @@ defmodule ParrotSip.DialogTest do
           uri: Uri.parse!("sip:bob@example.com"),
           parameters: %{}
         },
-        call_id: nil,  # Missing Call-ID!
+        # Missing Call-ID!
+        call_id: nil,
         cseq: %CSeq{number: 1, method: :invite},
         other_headers: %{}
       }
@@ -2028,9 +2030,11 @@ defmodule ParrotSip.DialogTest do
         request_uri: "sip:bob@example.com",
         from: %From{uri: Uri.parse!("sip:alice@example.com"), parameters: %{"tag" => "alice-tag"}},
         to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
-        call_id: nil,  # Missing Call-ID!
+        # Missing Call-ID!
+        call_id: nil,
         cseq: %CSeq{number: 1, method: :invite}
       }
+
       response = %Message{
         status_code: 200,
         from: request.from,
@@ -2038,6 +2042,7 @@ defmodule ParrotSip.DialogTest do
         call_id: "test@example.com",
         cseq: %CSeq{number: 1, method: :invite}
       }
+
       assert {:error, :invalid_call_id} = Dialog.uac_create(request, response)
     end
 
@@ -2046,16 +2051,19 @@ defmodule ParrotSip.DialogTest do
       request = %Message{
         method: :invite,
         request_uri: "sip:bob@example.com",
-        from: nil,  # Missing From!
+        # Missing From!
+        from: nil,
         to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
         call_id: "test@example.com",
         cseq: %CSeq{number: 1, method: :invite}
       }
+
       response = %Message{
         status_code: 200,
         to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{"tag" => "bob-tag"}},
         call_id: "test@example.com"
       }
+
       assert {:error, :invalid_from_header} = Dialog.uac_create(request, response)
     end
 
@@ -2069,11 +2077,14 @@ defmodule ParrotSip.DialogTest do
         call_id: "test@example.com",
         cseq: %CSeq{number: 1, method: :invite}
       }
+
       response = %Message{
         status_code: 200,
-        to: nil,  # Missing To!
+        # Missing To!
+        to: nil,
         call_id: "test@example.com"
       }
+
       assert {:error, :invalid_to_header} = Dialog.uac_create(request, response)
     end
 
@@ -2085,18 +2096,19 @@ defmodule ParrotSip.DialogTest do
         from: %From{uri: Uri.parse!("sip:alice@example.com"), parameters: %{"tag" => "alice-tag"}},
         to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{}},
         call_id: "test@example.com",
-        cseq: nil  # Missing CSeq!
+        # Missing CSeq!
+        cseq: nil
       }
+
       response = %Message{
         status_code: 200,
         to: %To{uri: Uri.parse!("sip:bob@example.com"), parameters: %{"tag" => "bob-tag"}},
         call_id: "test@example.com"
       }
+
       assert {:error, :invalid_cseq_header} = Dialog.uac_create(request, response)
     end
-
   end
-
 end
 
 defmodule ParrotSip.DialogProcessTest do
@@ -2170,7 +2182,7 @@ defmodule ParrotSip.DialogProcessTest do
       {:ok, dialog} = Dialog.uac_create(invite, response)
 
       {:ok, updated_request, updated_dialog} = Dialog.uac_request(:options, dialog)
-      
+
       assert updated_request.method == :options
       assert updated_dialog.local_seq == 2
     end
@@ -2231,16 +2243,18 @@ defmodule ParrotSip.DialogProcessTest do
       }
 
       {:ok, dialog} = Dialog.uac_create(request, response)
-      
+
       assert dialog.state == :confirmed
       assert dialog.call_id == "reg-call-id@example.com"
-      
+
       # Verify registration happened by looking up the dialog
       dialog_id_str = dialog.id
+
       case Registry.lookup(ParrotSip.Registry, dialog_id_str) do
         [{pid, _}] ->
           assert is_pid(pid)
           GenServer.stop(pid)
+
         [] ->
           # Supervisor not running, registration didn't happen
           :ok
@@ -2254,17 +2268,18 @@ defmodule ParrotSip.DialogProcessTest do
       request = %Message{
         method: :invite,
         call_id: "test-call",
-        from: %{uri: "sip:alice@atlanta.com"},  # Missing parameters field
+        # Missing parameters field
+        from: %{uri: "sip:alice@atlanta.com"},
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com"
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
       }
-      
+
       result = Dialog.uas_create(request, response)
       assert {:error, _reason} = result
     end
@@ -2279,14 +2294,15 @@ defmodule ParrotSip.DialogProcessTest do
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com"
       }
-      
+
       response = %Message{
         status_code: 200,
         from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
-        to: %{uri: "sip:bob@biloxi.com"},  # Missing parameters field  
+        # Missing parameters field  
+        to: %{uri: "sip:bob@biloxi.com"},
         contact: %Contact{uri: "sip:bob@192.168.1.1:5060", parameters: %{}}
       }
-      
+
       result = Dialog.uac_create(request, response)
       assert {:error, _reason} = result
     end
@@ -2301,7 +2317,7 @@ defmodule ParrotSip.DialogProcessTest do
         parameters: %{},
         headers: %{}
       }
-      
+
       request = %Message{
         method: :invite,
         call_id: "test-call",
@@ -2314,12 +2330,12 @@ defmodule ParrotSip.DialogProcessTest do
         request_uri: "sip:bob@biloxi.com",
         contact: %Contact{uri: "sip:alice@127.0.0.1:5060", parameters: %{}}
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
       }
-      
+
       # Should handle Uri struct and convert to string
       result = Dialog.uas_create(request, response)
       assert {:ok, dialog} = result
@@ -2331,18 +2347,19 @@ defmodule ParrotSip.DialogProcessTest do
       request = %Message{
         method: :invite,
         call_id: "test-call",
-        from: %From{uri: nil, parameters: %{"tag" => "remote-tag"}},  # nil URI
+        # nil URI
+        from: %From{uri: nil, parameters: %{"tag" => "remote-tag"}},
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com",
         contact: nil
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
       }
-      
+
       # Should handle nil URI by converting to empty string
       result = Dialog.uas_create(request, response)
       assert {:ok, dialog} = result
@@ -2358,14 +2375,15 @@ defmodule ParrotSip.DialogProcessTest do
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{}},
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com",
-        contact: nil  # No contact header
+        # No contact header
+        contact: nil
       }
-      
+
       response = %Message{
         status_code: 200,
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "local-tag"}}
       }
-      
+
       # Should use fallback when contact is nil
       result = Dialog.uas_create(request, response)
       assert {:ok, dialog} = result
@@ -2383,14 +2401,15 @@ defmodule ParrotSip.DialogProcessTest do
         cseq: %CSeq{number: 1, method: :invite},
         request_uri: "sip:bob@biloxi.com"
       }
-      
+
       response = %Message{
         status_code: 200,
         from: %From{uri: "sip:alice@atlanta.com", parameters: %{"tag" => "local-tag"}},
         to: %To{uri: "sip:bob@biloxi.com", parameters: %{"tag" => "remote-tag"}},
-        contact: :invalid_contact_type  # Invalid type, not Contact struct or nil
+        # Invalid type, not Contact struct or nil
+        contact: :invalid_contact_type
       }
-      
+
       # Should use fallback when contact is invalid type
       result = Dialog.uac_create(request, response)
       assert {:ok, dialog} = result
@@ -2414,12 +2433,13 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       request = %Message{
         method: :info,
-        cseq: nil  # Missing CSeq
+        # Missing CSeq
+        cseq: nil
       }
-      
+
       assert {:error, :missing_cseq} = Dialog.uas_process(request, dialog)
     end
 
@@ -2439,12 +2459,13 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       request = %Message{
         method: :info,
-        cseq: %{method: :info}  # Missing number field
+        # Missing number field
+        cseq: %{method: :info}
       }
-      
+
       assert {:error, :invalid_cseq} = Dialog.uas_process(request, dialog)
     end
 
@@ -2464,12 +2485,12 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       bye_request = %Message{
         method: :bye,
         cseq: %CSeq{number: 10, method: :bye}
       }
-      
+
       assert {:ok, updated_dialog} = Dialog.uas_process(bye_request, dialog)
       assert updated_dialog.state == :terminated
       assert updated_dialog.remote_seq == 10
@@ -2487,31 +2508,33 @@ defmodule ParrotSip.DialogProcessTest do
         remote_tag: "remote",
         local_uri: "sip:alice@example.com",
         remote_uri: "sip:bob@example.com",
-        remote_target: "sip:bob@192.168.1.10:5060",  # Original target
+        # Original target
+        remote_target: "sip:bob@192.168.1.10:5060",
         local_seq: 1,
         remote_seq: 1,
         route_set: [],
         secure: false
       }
-      
+
       # Bob sends re-INVITE with NEW contact (moved to different IP)
       reinvite = %Message{
         method: :invite,
         request_uri: "sip:alice@example.com",
         cseq: %CSeq{number: 2, method: :invite},
         contact: %Contact{
-          uri: "sip:bob@10.0.0.5:5060"  # NEW target!
+          # NEW target!
+          uri: "sip:bob@10.0.0.5:5060"
         }
       }
-      
+
       {:ok, updated_dialog} = Dialog.uas_process(reinvite, dialog)
-      
+
       # Remote target should be updated
       assert updated_dialog.remote_target == "sip:bob@10.0.0.5:5060"
       assert updated_dialog.remote_seq == 2
       assert updated_dialog.state == :confirmed
     end
-    
+
     test "UPDATE method updates remote_target" do
       dialog = %Dialog{
         id: "test-dialog",
@@ -2527,7 +2550,7 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       update_request = %Message{
         method: :update,
         cseq: %CSeq{number: 2, method: :update},
@@ -2535,11 +2558,11 @@ defmodule ParrotSip.DialogProcessTest do
           uri: "sip:bob@new-location.com:5060"
         }
       }
-      
+
       {:ok, updated_dialog} = Dialog.uas_process(update_request, dialog)
       assert updated_dialog.remote_target == "sip:bob@new-location.com:5060"
     end
-    
+
     test "SUBSCRIBE refresh updates remote_target" do
       dialog = %Dialog{
         id: "test-dialog",
@@ -2555,7 +2578,7 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       subscribe_refresh = %Message{
         method: :subscribe,
         cseq: %CSeq{number: 2, method: :subscribe},
@@ -2564,11 +2587,11 @@ defmodule ParrotSip.DialogProcessTest do
         },
         other_headers: %{"event" => "presence", "expires" => "3600"}
       }
-      
+
       {:ok, updated_dialog} = Dialog.uas_process(subscribe_refresh, dialog)
       assert updated_dialog.remote_target == "sip:bob@mobile.example.com:5060"
     end
-    
+
     test "non-target-refresh request does NOT update remote_target" do
       dialog = %Dialog{
         id: "test-dialog",
@@ -2584,22 +2607,23 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       # OPTIONS request with Contact header
       options_request = %Message{
         method: :options,
         cseq: %CSeq{number: 2, method: :options},
         contact: %Contact{
-          uri: "sip:bob@different.com:5060"  # Should be ignored!
+          # Should be ignored!
+          uri: "sip:bob@different.com:5060"
         }
       }
-      
+
       {:ok, updated_dialog} = Dialog.uas_process(options_request, dialog)
-      
+
       # Remote target should NOT change
       assert updated_dialog.remote_target == "sip:bob@192.168.1.10:5060"
     end
-    
+
     test "target refresh without Contact header does not update" do
       dialog = %Dialog{
         id: "test-dialog",
@@ -2615,16 +2639,16 @@ defmodule ParrotSip.DialogProcessTest do
         route_set: [],
         secure: false
       }
-      
+
       # re-INVITE without Contact header (malformed but we handle it)
       reinvite = %Message{
         method: :invite,
         cseq: %CSeq{number: 2, method: :invite},
         contact: nil
       }
-      
+
       {:ok, updated_dialog} = Dialog.uas_process(reinvite, dialog)
-      
+
       # Remote target should NOT change
       assert updated_dialog.remote_target == "sip:bob@192.168.1.10:5060"
     end
@@ -2635,7 +2659,7 @@ defmodule ParrotSip.DialogProcessTest do
     @tag :concurrent
     test "handles 500 concurrent dialog creations" do
       alias ParrotSip.Uri
-      
+
       tasks =
         for i <- 1..500 do
           Task.async(fn ->
@@ -2688,7 +2712,7 @@ defmodule ParrotSip.DialogProcessTest do
     @tag :concurrent
     test "handles rapid dialog state transitions" do
       alias ParrotSip.Uri
-      
+
       # Create base dialog
       request = %Message{
         method: :invite,
@@ -2735,7 +2759,7 @@ defmodule ParrotSip.DialogProcessTest do
 
       # Generate many in-dialog requests rapidly
       {:ok, _bye, final_dialog} = Dialog.uac_request(:bye, confirmed_dialog)
-      
+
       # Terminate
       bye_response = %Message{
         type: :response,
@@ -2752,7 +2776,7 @@ defmodule ParrotSip.DialogProcessTest do
     @tag :concurrent
     test "handles dialog operations under memory pressure" do
       alias ParrotSip.Uri
-      
+
       # Create many dialogs and ensure they don't leak memory
       dialogs =
         for i <- 1..100 do
@@ -2797,7 +2821,7 @@ defmodule ParrotSip.DialogProcessTest do
 
       # Verify all were created
       assert length(dialogs) == 100
-      
+
       # Verify all have unique IDs
       assert length(Enum.uniq_by(dialogs, & &1.id)) == 100
     end

@@ -723,8 +723,10 @@ defmodule ParrotSip.Message do
       }) do
     %{
       call_id: call_id,
-      local_tag: to_tag,      # Our tag (To header)
-      remote_tag: from_tag,   # Their tag (From header)
+      # Our tag (To header)
+      local_tag: to_tag,
+      # Their tag (From header)
+      remote_tag: from_tag,
       direction: :uas
     }
   end
@@ -753,8 +755,10 @@ defmodule ParrotSip.Message do
       }) do
     %{
       call_id: call_id,
-      local_tag: nil,         # No to-tag yet
-      remote_tag: from_tag,   # Their tag (From header)
+      # No to-tag yet
+      local_tag: nil,
+      # Their tag (From header)
+      remote_tag: from_tag,
       direction: :uas
     }
   end

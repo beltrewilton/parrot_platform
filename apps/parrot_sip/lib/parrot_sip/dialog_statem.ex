@@ -210,19 +210,20 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data, actions}
   end
 
-  def init({:uac, out_req, %Message{status_code: code} = resp_sip_msg}) 
+  def init({:uac, out_req, %Message{status_code: code} = resp_sip_msg})
       when code >= 100 and code < 200 do
     {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
-    
+
     branch = get_branch_from_request(out_req)
     branch_key = "branch:" <> branch
     Logger.debug("dialog: early branch #{inspect(branch_key)}")
     Registry.register(ParrotSip.Registry, branch_key, nil)
-    
+
     # Register with dialog ID (may already be registered via start_link)
     case Registry.register(ParrotSip.Registry, dialog.id, nil) do
       {:ok, _} ->
         Logger.debug("dialog: registered with ID #{inspect(dialog.id)}")
+
       {:error, {:already_registered, _}} ->
         Logger.debug("dialog: already registered with ID #{inspect(dialog.id)}")
     end
@@ -243,11 +244,12 @@ defmodule ParrotSip.DialogStatem do
 
   def init({:uac, out_req, resp_sip_msg}) do
     {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
-    
+
     # Register with dialog ID (may already be registered via start_link)
     case Registry.register(ParrotSip.Registry, dialog.id, nil) do
       {:ok, _} ->
         Logger.debug("dialog: registered with ID #{inspect(dialog.id)}")
+
       {:error, {:already_registered, _}} ->
         Logger.debug("dialog: already registered with ID #{inspect(dialog.id)}")
     end
@@ -266,14 +268,13 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data}
   end
 
-
-     # Update to replace "Dialog.is_complete" by pattern matching on the Message struct below
-     # {
-     #   from: %From{parameters: %{"tag" => from_tag}},
-     #   to: %To{parameters: %{"tag" => to_tag}}
-     # }
-     #
-     # There are quite a few places to clean up like this (might be able to get rid of a lot of Dialog or all of it)
+  # Update to replace "Dialog.is_complete" by pattern matching on the Message struct below
+  # {
+  #   from: %From{parameters: %{"tag" => from_tag}},
+  #   to: %To{parameters: %{"tag" => to_tag}}
+  # }
+  #
+  # There are quite a few places to clean up like this (might be able to get rid of a lot of Dialog or all of it)
 
   @spec uas_find(Message.t()) :: {:ok, dialog_handle()} | :not_found
   def uas_find(%Message{
@@ -302,11 +303,13 @@ defmodule ParrotSip.DialogStatem do
   end
 
   @spec uas_request(Message.t()) :: :process | {:reply, Message.t()}
-  def uas_request(%Message{
-        from: %{parameters: %{"tag" => from_tag}},
-        to: %{parameters: %{"tag" => to_tag}},
-        call_id: call_id
-      } = sip_msg) do
+  def uas_request(
+        %Message{
+          from: %{parameters: %{"tag" => from_tag}},
+          to: %{parameters: %{"tag" => to_tag}},
+          call_id: call_id
+        } = sip_msg
+      ) do
     Logger.debug("dialog: uas_request #{inspect(sip_msg)}")
 
     # For UAS: local=to_tag, remote=from_tag
@@ -318,6 +321,7 @@ defmodule ParrotSip.DialogStatem do
         Logger.debug(
           "dialog #{uas_log_id(sip_msg)}: dialog not found (dialog tracking not yet implemented)"
         )
+
         resp = Message.reply(sip_msg, 481, "Call/Transaction Does Not Exist")
         {:reply, resp}
 
@@ -359,6 +363,7 @@ defmodule ParrotSip.DialogStatem do
         Logger.debug(
           "dialog #{uas_log_id(resp_sip_msg)}: dialog not found (dialog tracking not yet implemented)"
         )
+
         uas_maybe_create_dialog(resp_sip_msg, req_sip_msg)
 
       [{dialog_pid, _}] ->
@@ -420,9 +425,7 @@ defmodule ParrotSip.DialogStatem do
 
   # Dialog not found - log warning
   defp handle_complete_dialog_lookup({:error, :no_dialog}, out_req, _trans_result) do
-    Logger.warning(
-      "dialog: #{uac_log_id(out_req)} is not found for request #{out_req.method}"
-    )
+    Logger.warning("dialog: #{uac_log_id(out_req)} is not found for request #{out_req.method}")
     :ok
   end
 
@@ -438,12 +441,12 @@ defmodule ParrotSip.DialogStatem do
 
   # Response has complete dialog info (both tags present)
   defp handle_message_result(
-      %Message{
-        from: %{parameters: %{"tag" => from_tag}},
-        call_id: call_id
-      } = out_req,
-      %Message{to: %{parameters: %{"tag" => to_tag}}} = response
-    ) do
+         %Message{
+           from: %{parameters: %{"tag" => from_tag}},
+           call_id: call_id
+         } = out_req,
+         %Message{to: %{parameters: %{"tag" => to_tag}}} = response
+       ) do
     # For UAC: local=from_tag, remote=to_tag
     dialog_id_str = "#{call_id};local=#{from_tag};remote=#{to_tag};uac"
 
@@ -595,15 +598,18 @@ defmodule ParrotSip.DialogStatem do
         new_state = if updated_dialog.state == :terminated, do: :terminated, else: state
 
         {:next_state, new_state, updated_data, [{:reply, from, :process}]}
-      
+
       {:error, :cseq_out_of_order} ->
         Logger.warning("dialog #{inspect(data.id)}: rejecting out-of-order CSeq")
         # Send 500 response for out-of-order CSeq per RFC 3261
         error_response = Message.reply(req_sip_msg, 500, "Server Internal Error")
         {:keep_state_and_data, [{:reply, from, {:reply, error_response}}]}
-        
+
       {:error, reason} ->
-        Logger.error("dialog #{inspect(data.id)}: failed to process UAS request: #{inspect(reason)}")
+        Logger.error(
+          "dialog #{inspect(data.id)}: failed to process UAS request: #{inspect(reason)}"
+        )
+
         # Send generic error response
         error_response = Message.reply(req_sip_msg, 500, "Server Internal Error")
         {:keep_state_and_data, [{:reply, from, {:reply, error_response}}]}
@@ -680,23 +686,25 @@ defmodule ParrotSip.DialogStatem do
 
   # Helper functions
 
-  defp dialog_registry_key({:uas,
-      %Message{to: %{parameters: %{"tag" => to_tag}}},
-      %Message{
-        from: %{parameters: %{"tag" => from_tag}},
-        call_id: call_id
-      }}) do
+  defp dialog_registry_key(
+         {:uas, %Message{to: %{parameters: %{"tag" => to_tag}}},
+          %Message{
+            from: %{parameters: %{"tag" => from_tag}},
+            call_id: call_id
+          }}
+       ) do
     # For UAS: local=to_tag, remote=from_tag
     dialog_id_str = "#{call_id};local=#{to_tag};remote=#{from_tag};uas"
     {:dialog, dialog_id_str}
   end
 
-  defp dialog_registry_key({:uac,
-      %Message{
-        from: %{parameters: %{"tag" => from_tag}},
-        call_id: call_id
-      },
-      %Message{to: %{parameters: %{"tag" => to_tag}}}}) do
+  defp dialog_registry_key(
+         {:uac,
+          %Message{
+            from: %{parameters: %{"tag" => from_tag}},
+            call_id: call_id
+          }, %Message{to: %{parameters: %{"tag" => to_tag}}}}
+       ) do
     # For UAC: local=from_tag, remote=to_tag
     dialog_id_str = "#{call_id};local=#{from_tag};remote=#{to_tag};uac"
     {:dialog, dialog_id_str}
@@ -753,28 +761,28 @@ defmodule ParrotSip.DialogStatem do
   defp uas_validate_request(%Message{to: nil} = sip_msg) do
     {:reply, Message.reply(sip_msg, 400, "Missing To header")}
   end
-  
+
   defp uas_validate_request(%Message{from: nil} = sip_msg) do
     {:reply, Message.reply(sip_msg, 400, "Missing From header")}
   end
-  
+
   defp uas_validate_request(%Message{call_id: nil} = sip_msg) do
     {:reply, Message.reply(sip_msg, 400, "Missing Call-ID header")}
   end
-  
+
   defp uas_validate_request(%Message{cseq: nil} = sip_msg) do
     {:reply, Message.reply(sip_msg, 400, "Missing CSeq header")}
   end
-  
+
   defp uas_validate_request(%Message{via: []} = sip_msg) do
     {:reply, Message.reply(sip_msg, 400, "Missing Via header")}
   end
-  
+
   # RFC 3261 Section 8.1.1.5: Check Max-Forwards to prevent loops
   defp uas_validate_request(%Message{max_forwards: 0} = sip_msg) do
     {:reply, Message.reply(sip_msg, 483, "Too Many Hops")}
   end
-  
+
   # All validations passed
   defp uas_validate_request(%Message{}) do
     :process
@@ -812,18 +820,20 @@ defmodule ParrotSip.DialogStatem do
 
   # Early dialog: 1xx response to INVITE with to-tag
   defp should_create_dialog?(
-      %Message{status_code: code, to: %{parameters: %{"tag" => _}}},
-      %Message{method: :invite}
-    ) when code >= 100 and code < 200 do
+         %Message{status_code: code, to: %{parameters: %{"tag" => _}}},
+         %Message{method: :invite}
+       )
+       when code >= 100 and code < 200 do
     Logger.debug("should_create_dialog? early dialog: INVITE 1xx with to-tag")
     true
   end
 
   # Confirmed dialog: 2xx response to INVITE or SUBSCRIBE
   defp should_create_dialog?(
-      %Message{status_code: code},
-      %Message{method: method}
-    ) when code >= 200 and code < 300 and method in [:invite, :subscribe] do
+         %Message{status_code: code},
+         %Message{method: method}
+       )
+       when code >= 200 and code < 300 and method in [:invite, :subscribe] do
     Logger.debug("should_create_dialog? confirmed: #{method} 2xx")
     true
   end

@@ -1,9 +1,9 @@
 defmodule ParrotSip.TimerBehaviorTest do
   @moduledoc """
   Comprehensive tests for RFC 3261 timer behaviors in TransactionStatem.
-  
+
   Tests Timer A, E, and G implementations with exponential backoff.
-  
+
   ## RFC 3261 Timer Summary
   - Timer A: INVITE client retransmission (doubles up to T2)
   - Timer B: INVITE client transaction timeout (64*T1)
@@ -14,66 +14,69 @@ defmodule ParrotSip.TimerBehaviorTest do
   - Timer I: INVITE server confirmed->terminated wait
   - Timer J: non-INVITE server completed->terminated wait
   """
-  
+
   use ExUnit.Case, async: false
-  
+
   alias ParrotSip.{Transaction, TransactionStatem, Message}
   alias ParrotSip.Headers.{Via, From, To, CSeq}
-  
+
   @moduletag :timers
-  
+
   # RFC 3261 default timer values (in milliseconds)
-  @t1 500    # RTT estimate
-  @t2 4000   # Maximum retransmit interval for non-INVITE
+  # RTT estimate
+  @t1 500
+  # Maximum retransmit interval for non-INVITE
+  @t2 4000
   # T4 = 5000ms is defined in RFC 3261 but not used in these tests
-  
+
   setup do
     # Ensure the application is started
     Application.ensure_all_started(:parrot_sip)
-    
+
     # Create a unique test ID for branch generation
     test_id = :erlang.unique_integer([:positive])
     {:ok, test_id: test_id}
   end
-  
+
   describe "Timer A - INVITE client retransmission" do
     test "starts at T1 (500ms) on initial INVITE", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_client(invite)
-      
+
       # Start transaction
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
-      
+
       # Get state to check timers
       {_state_name, state_data} = :sys.get_state(pid)
-      
+
       # Timer A should be active
       assert Map.has_key?(state_data.timers, :a)
       # Initial interval is T1
       assert Map.get(state_data.data, :timer_a_interval, @t1) == @t1
-      
+
       GenServer.stop(pid)
     end
-    
+
     test "doubles on each retransmission up to T2", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_client(invite)
-      
+
       test_pid = self()
+
       callback = fn event ->
         send(test_pid, {:callback_event, event})
       end
-      
+
       # Use custom timer values for testing - very long Timer B to avoid timeout
-      options = %{timer_a: 500, timer_b: 100000}
+      options = %{timer_a: 500, timer_b: 100_000}
       {:trans, pid} = TransactionStatem.client_new(transaction, options, callback)
-      
+
       # Monitor the process to see if it crashes
       ref = Process.monitor(pid)
-      
+
       # Wait for first retransmission (T1 = 500ms)
       Process.sleep(550)
-      
+
       # Check if process is still alive
       receive do
         {:DOWN, ^ref, :process, ^pid, reason} ->
@@ -81,299 +84,301 @@ defmodule ParrotSip.TimerBehaviorTest do
       after
         0 -> :ok
       end
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should have doubled to 1000ms
       assert Map.get(state_data.data, :timer_a_interval, @t1) == @t1 * 2
-      
+
       # Wait for second retransmission
       Process.sleep(1050)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should have doubled to 2000ms
       assert Map.get(state_data.data, :timer_a_interval) == @t1 * 4
-      
+
       # Wait for third retransmission
       Process.sleep(2050)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should be at T2 (4000ms) - capped
       assert Map.get(state_data.data, :timer_a_interval) <= @t2
-      
+
       GenServer.stop(pid)
     end
-    
+
     test "stops on provisional response", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_client(invite)
-      
+
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
-      
+
       # Send 100 Trying response
       trying = Message.reply(invite, 100, "Trying")
       :gen_statem.cast(pid, {:received, trying})
-      
+
       Process.sleep(50)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should be cancelled
       refute Map.has_key?(state_data.timers, :a)
-      
+
       GenServer.stop(pid)
     end
-    
+
     test "stops on final response", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_client(invite)
-      
+
       # Use long Timer B to avoid timeout during test
-      options = %{timer_b: 100000}
+      options = %{timer_b: 100_000}
       {:trans, pid} = TransactionStatem.client_new(transaction, options, fn _ -> :ok end)
-      
+
       # Send 200 OK response
       ok_resp = Message.reply(invite, 200, "OK")
       :gen_statem.cast(pid, {:received, ok_resp})
-      
+
       Process.sleep(50)
-      
+
       {state_name, state_data} = :sys.get_state(pid)
       # Timer A should be cancelled
       refute Map.has_key?(state_data.timers, :a)
-      
+
       # Transaction should be in terminated state for 2xx
       assert state_name == :terminated
-      
+
       # Process stays alive but in terminated state
       assert Process.alive?(pid)
     end
   end
-  
+
   describe "Timer E - non-INVITE client retransmission" do
     test "starts at T1 (500ms) on initial non-INVITE request", %{test_id: test_id} do
       register = build_register_request(test_id)
       {:ok, transaction} = Transaction.create_non_invite_client(register)
-      
+
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
-      
+
       # Timer E should be active
       assert Map.has_key?(state_data.timers, :e)
       # Initial interval is T1
       assert Map.get(state_data.data, :timer_e_interval, @t1) == @t1
-      
+
       GenServer.stop(pid)
     end
-    
+
     test "doubles on each retransmission up to T2", %{test_id: test_id} do
       register = build_register_request(test_id)
       {:ok, transaction} = Transaction.create_non_invite_client(register)
-      
+
       # Use custom timer values for testing - very long Timer F to avoid timeout
-      options = %{timer_e: 500, timer_f: 100000}
+      options = %{timer_e: 500, timer_f: 100_000}
       {:trans, pid} = TransactionStatem.client_new(transaction, options, fn _ -> :ok end)
-      
+
       # Wait for first retransmission (T1 = 500ms)
       Process.sleep(550)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should have doubled to 1000ms
       assert Map.get(state_data.data, :timer_e_interval, @t1) == @t1 * 2
-      
+
       # Wait for second retransmission
       Process.sleep(1050)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should have doubled to 2000ms  
       assert Map.get(state_data.data, :timer_e_interval) == @t1 * 4
-      
+
       # Wait for third retransmission
       Process.sleep(2050)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should be at T2 (4000ms) - capped
       assert Map.get(state_data.data, :timer_e_interval) <= @t2
-      
+
       GenServer.stop(pid)
     end
-    
+
     test "stops on final response", %{test_id: test_id} do
       options = build_options_request(test_id)
       {:ok, transaction} = Transaction.create_non_invite_client(options)
-      
+
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
-      
+
       # Send 200 OK response
       ok_resp = Message.reply(options, 200, "OK")
       :gen_statem.cast(pid, {:received, ok_resp})
-      
+
       Process.sleep(50)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should be cancelled
       refute Map.has_key?(state_data.timers, :e)
-      
+
       GenServer.stop(pid)
     end
   end
-  
+
   describe "Timer G - INVITE server response retransmission" do
     test "starts when entering completed state", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_server(invite)
-      
+
       handler = ParrotSip.Handler.new(ParrotSip.Test.TestTransactionHandler, nil)
-      
+
       {:ok, pid} = TransactionStatem.start_link([transaction, handler])
-      
+
       # Send provisional response first to move to proceeding
       trying = Message.reply(invite, 100, "Trying")
       :ok = TransactionStatem.server_response(trying, transaction)
-      
+
       Process.sleep(50)
-      
+
       # Send final response to trigger completed state and Timer G
       ok_resp = Message.reply(invite, 200, "OK")
       :ok = TransactionStatem.server_response(ok_resp, transaction)
-      
+
       Process.sleep(50)
-      
+
       # For 2xx responses, transaction terminates immediately (no Timer G)
       # Let's use a 4xx response instead
       GenServer.stop(pid)
     end
-    
+
     test "retransmits response with exponential backoff", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_server(invite)
-      
+
       handler = ParrotSip.Handler.new(ParrotSip.Test.TestTransactionHandler, nil)
-      
+
       {:ok, pid} = TransactionStatem.start_link([transaction, handler])
-      
+
       # Send error response to trigger Timer G (not 2xx which terminates immediately)
       busy = Message.reply(invite, 486, "Busy Here")
       :ok = TransactionStatem.server_response(busy, transaction)
-      
+
       # Verify Timer G is active and intervals are correct
       Process.sleep(50)
       {_state_name, state_data} = :sys.get_state(pid)
       assert Map.has_key?(state_data.timers, :g)
-      
+
       # Initial interval should be T1 (500ms)
       assert Map.get(state_data.data, :timer_g_interval, @t1) == @t1
-      
+
       # Wait for first retransmission and check interval doubled
       Process.sleep(550)
       {_state_name, state_data} = :sys.get_state(pid)
       assert Map.get(state_data.data, :timer_g_interval) == @t1 * 2
-      
+
       # Wait for second retransmission and check interval doubled again
       Process.sleep(1050)
       {_state_name, state_data} = :sys.get_state(pid)
       assert Map.get(state_data.data, :timer_g_interval) == @t1 * 4
-      
+
       # Verify timer is still active (transaction still retransmitting)
       assert Map.has_key?(state_data.timers, :g)
-      
+
       GenServer.stop(pid)
     end
-    
+
     test "stops on ACK receipt", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_server(invite)
-      
+
       handler = ParrotSip.Handler.new(ParrotSip.Test.TestTransactionHandler, nil)
-      
+
       {:ok, pid} = TransactionStatem.start_link([transaction, handler])
-      
+
       # Send error response to enter completed state with Timer G
       busy = Message.reply(invite, 486, "Busy Here")
       :ok = TransactionStatem.server_response(busy, transaction)
-      
+
       Process.sleep(50)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer G should be active
       assert Map.has_key?(state_data.timers, :g)
-      
+
       # Send ACK
       ack = build_ack_for_invite(invite)
       :gen_statem.cast(pid, {:received, ack})
-      
+
       Process.sleep(50)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
       # Timer G should be cancelled
       refute Map.has_key?(state_data.timers, :g)
-      
+
       GenServer.stop(pid)
     end
   end
-  
+
   describe "Timer interactions and edge cases" do
     test "Timer B terminates INVITE client transaction", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_client(invite)
-      
+
       test_pid = self()
+
       callback = fn event ->
         send(test_pid, {:callback_event, event})
       end
-      
+
       # Start with very short Timer B for testing (normally 64*T1)
       {:trans, pid} = TransactionStatem.client_new(transaction, %{timer_b: 100}, callback)
-      
+
       # Wait for Timer B to fire
       Process.sleep(150)
-      
+
       # Transaction should have terminated
       refute Process.alive?(pid)
-      
+
       # Callback should have received timeout
       assert_received {:callback_event, {:stop, :timeout}}
     end
-    
+
     test "Timer F terminates non-INVITE client transaction", %{test_id: test_id} do
       register = build_register_request(test_id)
       {:ok, transaction} = Transaction.create_non_invite_client(register)
-      
+
       test_pid = self()
+
       callback = fn event ->
         send(test_pid, {:callback_event, event})
       end
-      
+
       # Start with very short Timer F for testing (normally 64*T1)
       {:trans, pid} = TransactionStatem.client_new(transaction, %{timer_f: 100}, callback)
-      
+
       # Wait for Timer F to fire
       Process.sleep(150)
-      
+
       # Transaction should have terminated
       refute Process.alive?(pid)
-      
+
       # Callback should have received timeout
       assert_received {:callback_event, {:stop, :timeout}}
     end
-    
+
     test "multiple timers can be active simultaneously", %{test_id: test_id} do
       invite = build_invite_request(test_id)
       {:ok, transaction} = Transaction.create_invite_client(invite)
-      
+
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
-      
+
       {_state_name, state_data} = :sys.get_state(pid)
-      
+
       # Both Timer A and Timer B should be active for INVITE client
       assert Map.has_key?(state_data.timers, :a)
       assert Map.has_key?(state_data.timers, :b)
-      
+
       GenServer.stop(pid)
     end
   end
-  
+
   # Helper functions
-  
+
   defp build_invite_request(test_id) do
     %Message{
       type: :request,
@@ -389,7 +394,7 @@ defmodule ParrotSip.TimerBehaviorTest do
       body: ""
     }
   end
-  
+
   defp build_register_request(test_id) do
     %Message{
       type: :request,
@@ -405,7 +410,7 @@ defmodule ParrotSip.TimerBehaviorTest do
       body: ""
     }
   end
-  
+
   defp build_options_request(test_id) do
     %Message{
       type: :request,
@@ -421,7 +426,7 @@ defmodule ParrotSip.TimerBehaviorTest do
       body: ""
     }
   end
-  
+
   defp build_ack_for_invite(invite) do
     %Message{
       type: :request,
@@ -437,7 +442,7 @@ defmodule ParrotSip.TimerBehaviorTest do
       body: ""
     }
   end
-  
+
   defp build_via(branch) do
     %Via{
       protocol: "SIP",
@@ -448,7 +453,7 @@ defmodule ParrotSip.TimerBehaviorTest do
       parameters: %{"branch" => branch}
     }
   end
-  
+
   defp build_from(tag) do
     %From{
       display_name: "Alice",
@@ -456,7 +461,7 @@ defmodule ParrotSip.TimerBehaviorTest do
       parameters: %{"tag" => tag}
     }
   end
-  
+
   defp build_to do
     %To{
       display_name: "Bob",

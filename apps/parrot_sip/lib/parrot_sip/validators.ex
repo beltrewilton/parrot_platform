@@ -78,6 +78,7 @@ defmodule ParrotSip.Validators do
   """
   @spec validate_method(atom()) :: :ok | {:error, atom()}
   def validate_method(nil), do: {:error, :invalid_method_type}
+
   def validate_method(method) when is_atom(method) do
     allowed_methods = [:invite, :ack, :bye, :cancel, :options, :register, :info, :prack, :update]
 
@@ -141,7 +142,7 @@ defmodule ParrotSip.Validators do
     # Validate SDP line format per RFC 4566
     # Valid SDP line prefixes are limited to specific letters
     valid_prefixes = ["v", "o", "s", "i", "u", "e", "p", "c", "b", "t", "r", "z", "k", "a", "m"]
-    
+
     valid_format =
       Enum.all?(lines, fn line ->
         case String.split(line, "=", parts: 2) do

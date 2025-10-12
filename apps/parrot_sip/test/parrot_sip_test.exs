@@ -103,7 +103,7 @@ defmodule ParrotSipTest do
           parameters: %{}
         },
         call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %Headers.CSeq{number: 314159, method: :invite},
+        cseq: %Headers.CSeq{number: 314_159, method: :invite},
         max_forwards: 70,
         content_length: 0,
         body: "",
@@ -146,7 +146,7 @@ defmodule ParrotSipTest do
           parameters: %{"tag" => "a6c85cf"}
         },
         call_id: "a84b4c76e66710@pc33.atlanta.com",
-        cseq: %Headers.CSeq{number: 314159, method: :invite},
+        cseq: %Headers.CSeq{number: 314_159, method: :invite},
         content_length: 0,
         body: "",
         other_headers: %{}

@@ -60,7 +60,7 @@ defmodule SippTest.TransportsTest do
       handler = TestHandler.new()
 
       {:ok, stack} =
-        SipStackHelper.start_tls(handler, 
+        SipStackHelper.start_tls(handler,
           port: 0,
           certfile: "test/sipp/fixtures/certs/server-cert.pem",
           keyfile: "test/sipp/fixtures/certs/server-key.pem",
@@ -94,7 +94,7 @@ defmodule SippTest.TransportsTest do
       handler = TestHandler.new()
 
       {:ok, stack} =
-        SipStackHelper.start_tls(handler, 
+        SipStackHelper.start_tls(handler,
           port: 0,
           certfile: "test/sipp/fixtures/certs/server-cert.pem",
           keyfile: "test/sipp/fixtures/certs/server-key.pem",

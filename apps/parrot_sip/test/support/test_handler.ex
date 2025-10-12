@@ -90,33 +90,36 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:invite_response] || {200, "OK"}
 
     # Build SDP if needed for 200 OK
-    body = if status == 200 do
-      config[:sdp_body] || """
-      v=0
-      o=- 123456 123456 IN IP4 127.0.0.1
-      s=Parrot SIP Test
-      c=IN IP4 127.0.0.1
-      t=0 0
-      m=audio 10000 RTP/AVP 0 8 101
-      a=rtpmap:0 PCMU/8000
-      a=rtpmap:8 PCMA/8000
-      a=rtpmap:101 telephone-event/8000
-      a=fmtp:101 0-16
-      a=sendrecv
-      """
-    else
-      ""
-    end
+    body =
+      if status == 200 do
+        config[:sdp_body] ||
+          """
+          v=0
+          o=- 123456 123456 IN IP4 127.0.0.1
+          s=Parrot SIP Test
+          c=IN IP4 127.0.0.1
+          t=0 0
+          m=audio 10000 RTP/AVP 0 8 101
+          a=rtpmap:0 PCMU/8000
+          a=rtpmap:8 PCMA/8000
+          a=rtpmap:101 telephone-event/8000
+          a=fmtp:101 0-16
+          a=sendrecv
+          """
+      else
+        ""
+      end
 
     response = Message.reply(sip_msg, status, reason)
     response = %{response | body: body}
 
     # Add Contact header if configured
-    response = if config[:contact_uri] do
-      %{response | contact: config[:contact_uri]}
-    else
-      response
-    end
+    response =
+      if config[:contact_uri] do
+        %{response | contact: config[:contact_uri]}
+      else
+        response
+      end
 
     UAS.response(response, uas)
     :ok
@@ -131,10 +134,12 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:options_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    response = %{response |
-      allow: ["INVITE", "ACK", "CANCEL", "OPTIONS", "BYE"],
-      accept: "application/sdp",
-      supported: ["replaces"]
+
+    response = %{
+      response
+      | allow: ["INVITE", "ACK", "CANCEL", "OPTIONS", "BYE"],
+        accept: "application/sdp",
+        supported: ["replaces"]
     }
 
     UAS.response(response, uas)
@@ -264,19 +269,22 @@ defmodule SippTest.TestHandler do
   """
   def new(opts \\ []) do
     # Start a stats tracking process
-    stats_pid = spawn(fn -> stats_loop(%{
-      invites: 0,
-      acks: 0,
-      byes: 0,
-      cancels: 0,
-      options: 0,
-      registers: 0,
-      subscribes: 0,
-      notifies: 0,
-      messages: 0,
-      infos: 0,
-      other: 0
-    }) end)
+    stats_pid =
+      spawn(fn ->
+        stats_loop(%{
+          invites: 0,
+          acks: 0,
+          byes: 0,
+          cancels: 0,
+          options: 0,
+          registers: 0,
+          subscribes: 0,
+          notifies: 0,
+          messages: 0,
+          infos: 0,
+          other: 0
+        })
+      end)
 
     args = %{
       stats_pid: stats_pid,
@@ -299,6 +307,7 @@ defmodule SippTest.TestHandler do
   """
   def get_stats(%ParrotSip.Handler{args: %{stats_pid: pid}}) do
     send(pid, {:get_stats, self()})
+
     receive do
       {:stats, stats} -> stats
     after
@@ -324,6 +333,7 @@ defmodule SippTest.TestHandler do
   defp update_stats(%{stats_pid: pid}, key) when is_pid(pid) do
     send(pid, {:update_stat, key})
   end
+
   defp update_stats(_, _), do: :ok
 
   defp stats_loop(stats) do
@@ -352,7 +362,6 @@ defmodule SippTest.TestHandler do
         stats_loop(new_stats)
     end
   end
-
 end
 
 # Simple test handler for unit tests - doesn't auto-respond

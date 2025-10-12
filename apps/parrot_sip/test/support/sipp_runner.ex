@@ -294,7 +294,8 @@ defmodule SippTest.SippRunner do
     # SiPP's -timeout is the maximum time for test execution in seconds
     # Set it to 80% of the Task timeout so SiPP can exit cleanly with a proper error code
     # rather than being killed by Task.shutdown. Minimum 10 seconds for basic scenarios.
-    sipp_timeout_secs = max(10, div(timeout * 80, 100_000))  # 80% of Task timeout, in seconds, min 10
+    # 80% of Task timeout, in seconds, min 10
+    sipp_timeout_secs = max(10, div(timeout * 80, 100_000))
     args = args ++ ["-timeout", to_string(sipp_timeout_secs), "-timeout_error"]
 
     # Add TLS options if specified
