@@ -112,10 +112,41 @@ defmodule ParrotSip.UAS do
     Handler.uas_cancel(id, handler)
   end
 
+  # RFC 3261 Section 12.1.1: Dialog-creating response with tag already present
   @spec response(Message.t(), Transaction.t()) :: :ok
-  def response(resp_sip_msg0, %Transaction{request: req_sip_msg} = transaction) do
-    Logger.debug("UAS: response #{inspect(resp_sip_msg0.method)}")
-    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg0, req_sip_msg)
+  def response(
+        %Message{status_code: status_code, to: %{parameters: %{"tag" => _tag}}} = resp_sip_msg,
+        %Transaction{request: %Message{method: method} = req_sip_msg} = transaction
+      )
+      when status_code >= 200 and status_code < 300 and method in [:invite, :subscribe] do
+    Logger.debug("UAS: response #{inspect(resp_sip_msg.method)} - tag present")
+
+    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg, req_sip_msg)
+    TransactionStatem.server_response(resp_sip_msg, transaction)
+  end
+
+  # RFC 3261 Section 12.1.1: Dialog-creating response without tag - generate and add one
+  def response(
+        %Message{status_code: status_code, to: %{parameters: params} = to_header} = resp_sip_msg,
+        %Transaction{request: %Message{method: method} = req_sip_msg} = transaction
+      )
+      when status_code >= 200 and status_code < 300 and method in [:invite, :subscribe] do
+    Logger.debug("UAS: response #{inspect(resp_sip_msg.method)} - adding tag")
+
+    # Generate and add To tag for dialog-creating responses
+    tag = generate_tag()
+    updated_to = %{to_header | parameters: Map.put(params, "tag", tag)}
+    resp_sip_msg_with_tag = %{resp_sip_msg | to: updated_to}
+
+    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg_with_tag, req_sip_msg)
+    TransactionStatem.server_response(resp_sip_msg, transaction)
+  end
+
+  # Non-dialog-creating response - process as-is
+  def response(resp_sip_msg, %Transaction{request: req_sip_msg} = transaction) do
+    Logger.debug("UAS: response #{inspect(resp_sip_msg.method)}")
+
+    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg, req_sip_msg)
     TransactionStatem.server_response(resp_sip_msg, transaction)
   end
 

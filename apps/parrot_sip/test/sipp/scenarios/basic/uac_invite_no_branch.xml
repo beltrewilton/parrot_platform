@@ -1,9 +1,20 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<scenario name="Basic UAC scenario">
+<!--
+  UAC scenario with missing branch parameters (RFC 2543 legacy mode)
+
+  This scenario deliberately omits branch parameters from Via headers
+  to test RFC 3261 Section 17.2.3 fallback behavior where transaction
+  IDs must be computed from Request-URI, To tag, From tag, Call-ID,
+  CSeq number, and top Via.
+
+  Modern RFC 3261-compliant implementations should handle this gracefully
+  for backwards compatibility with RFC 2543 devices.
+-->
+<scenario name="UAC scenario without branch parameters (RFC 2543 legacy)">
  <send>
   <![CDATA[
   INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
-  Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+  Via: SIP/2.0/[transport] [local_ip]:[local_port]
   From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[call_number]
   To: sut <sip:[service]@[remote_ip]:[remote_port]>
   Call-ID: [call_id]
@@ -34,7 +45,7 @@
  <send>
   <![CDATA[
   ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
-  Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+  Via: SIP/2.0/[transport] [local_ip]:[local_port]
   From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[call_number]
   To: sut <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
   Call-ID: [call_id]
@@ -44,12 +55,12 @@
   ]]>
  </send>
 
- <pause milliseconds="5000"/>
+ <pause milliseconds="1000"/>
 
  <send retrans="500">
   <![CDATA[
   BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
-  Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+  Via: SIP/2.0/[transport] [local_ip]:[local_port]
   From: sipp  <sip:sipp@[local_ip]:[local_port]>;tag=[call_number]
   To: sut  <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
   Call-ID: [call_id]
