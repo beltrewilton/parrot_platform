@@ -702,6 +702,38 @@ defmodule ParrotSip.Transaction do
 
   """
   @spec generate_transaction_id(transaction_type(), String.t(), Message.t()) :: String.t()
+  def generate_transaction_id(
+        type,
+        branch,
+        %Message{
+          request_uri: request_uri,
+          from: %Headers.From{parameters: %{"tag" => from_tag}},
+          to: %Headers.To{parameters: %{"tag" => to_tag}},
+          call_id: call_id,
+          cseq: %Headers.CSeq{number: cseq_number},
+          via: %Headers.Via{host: via_host, port: via_port}
+        } = request
+      )
+      when is_nil(branch) do
+    # RFC 3261 Section 17.2.3: When branch parameter is missing (RFC 2543 compatibility),
+    # compute transaction ID from Request-URI, To tag, From tag, Call-ID, CSeq, and top Via
+    branch =
+      [
+        request_uri,
+        from_tag,
+        to_tag,
+        call_id,
+        cseq_number,
+        "#{via_host}:#{via_port || "5060"}"
+      ]
+      |> Enum.join("|")
+      |> then(&:crypto.hash(:md5, &1))
+      |> Base.encode16(case: :lower)
+      |> String.slice(0, 16)
+
+    generate_transaction_id(type, branch, request)
+  end
+
   def generate_transaction_id(type, branch, request) do
     # Transaction ID is determined by branch parameter, method, and direction
     # For client transactions, use "branch:method:client"

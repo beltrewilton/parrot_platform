@@ -33,6 +33,7 @@ defmodule ParrotSip.UAC do
     {:ok, transaction} = create_client_transaction(sip_msg, branch)
 
     callback_fun = make_transaction_handler(transaction, uac_callback)
+
     case TransactionStatem.client_new(transaction, %{}, callback_fun) do
       {:trans, _pid} = trans -> {:uac_id, trans}
       {:error, reason} -> {:error, reason}
@@ -51,6 +52,7 @@ defmodule ParrotSip.UAC do
     {:ok, transaction} = create_client_transaction(sip_msg, branch)
 
     callback_fun = make_transaction_handler(transaction, uac_callback)
+
     case TransactionStatem.client_new(transaction, %{}, callback_fun) do
       {:trans, _pid} = trans -> {:uac_id, trans}
       {:error, reason} -> {:error, reason}
@@ -69,6 +71,7 @@ defmodule ParrotSip.UAC do
     {:ok, transaction} = create_client_transaction(sip_msg, branch)
 
     callback_fun = make_transaction_handler(transaction, uac_callback)
+
     case TransactionStatem.client_new(transaction, uac_options, callback_fun) do
       {:trans, _pid} = trans -> {:uac_id, trans}
       {:error, reason} -> {:error, reason}
@@ -118,7 +121,8 @@ defmodule ParrotSip.UAC do
   end
 
   @spec add_branch_to_via(Message.t(), String.t()) :: Message.t()
-  defp add_branch_to_via(%Message{via: []}, _branch), do: raise("Cannot add branch to empty Via list")
+  defp add_branch_to_via(%Message{via: []}, _branch),
+    do: raise("Cannot add branch to empty Via list")
 
   defp add_branch_to_via(%Message{via: [first_via | rest]} = msg, branch) do
     updated_via = Via.with_parameter(first_via, "branch", branch)

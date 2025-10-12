@@ -9,13 +9,14 @@ defmodule ParrotSip.TransactionTest do
     test "creates transaction struct with correct initial values in calling state" do
       request = build_invite_request("z9hG4bKtest123")
 
-      assert {:ok, %Transaction{
-        type: :invite_client,
-        state: :calling,
-        method: :invite,
-        branch: "z9hG4bKtest123",
-        role: :uac
-      } = transaction} = Transaction.create_invite_client(request)
+      assert {:ok,
+              %Transaction{
+                type: :invite_client,
+                state: :calling,
+                method: :invite,
+                branch: "z9hG4bKtest123",
+                role: :uac
+              } = transaction} = Transaction.create_invite_client(request)
 
       assert transaction.request == request
       assert transaction.last_response == nil
@@ -41,13 +42,14 @@ defmodule ParrotSip.TransactionTest do
     test "creates transaction struct with correct method in trying state" do
       request = build_register_request("z9hG4bKreg123")
 
-      assert {:ok, %Transaction{
-        type: :non_invite_client,
-        state: :trying,
-        method: :register,
-        branch: "z9hG4bKreg123",
-        role: :uac
-      }} = Transaction.create_non_invite_client(request)
+      assert {:ok,
+              %Transaction{
+                type: :non_invite_client,
+                state: :trying,
+                method: :register,
+                branch: "z9hG4bKreg123",
+                role: :uac
+              }} = Transaction.create_non_invite_client(request)
     end
   end
 
@@ -55,13 +57,14 @@ defmodule ParrotSip.TransactionTest do
     test "creates server transaction in trying state" do
       request = build_invite_request("z9hG4bKserver1")
 
-      assert {:ok, %Transaction{
-        type: :invite_server,
-        state: :trying,
-        method: :invite,
-        branch: "z9hG4bKserver1",
-        role: :uas
-      }} = Transaction.create_invite_server(request)
+      assert {:ok,
+              %Transaction{
+                type: :invite_server,
+                state: :trying,
+                method: :invite,
+                branch: "z9hG4bKserver1",
+                role: :uas
+              }} = Transaction.create_invite_server(request)
     end
   end
 
@@ -69,13 +72,14 @@ defmodule ParrotSip.TransactionTest do
     test "creates server transaction in trying state" do
       request = build_register_request("z9hG4bKserver2")
 
-      assert {:ok, %Transaction{
-        type: :non_invite_server,
-        state: :trying,
-        method: :register,
-        branch: "z9hG4bKserver2",
-        role: :uas
-      }} = Transaction.create_non_invite_server(request)
+      assert {:ok,
+              %Transaction{
+                type: :non_invite_server,
+                state: :trying,
+                method: :register,
+                branch: "z9hG4bKserver2",
+                role: :uas
+              }} = Transaction.create_non_invite_server(request)
     end
   end
 
@@ -108,13 +112,14 @@ defmodule ParrotSip.TransactionTest do
 
       refute invite_id == register_id
     end
-    
+
     test "BUG: crashes on message with nil Via header" do
       # This test exposes a bug: generate_id doesn't handle nil Via gracefully
       # It raises ArgumentError instead of returning error tuple
       message = %Message{
         method: :invite,
-        via: [],  # Missing Via!
+        # Missing Via!
+        via: [],
         cseq: %{method: :invite, number: 1}
       }
 
@@ -124,12 +129,13 @@ defmodule ParrotSip.TransactionTest do
         Transaction.generate_id(message)
       end
     end
-    
+
     test "BUG: crashes on message with invalid Via header (string instead of struct)" do
       # Another bug case: Via is present but not a valid struct
       message = %Message{
         method: :invite,
-        via: [],  # Invalid Via type!
+        # Invalid Via type!
+        via: [],
         cseq: %{method: :invite, number: 1}
       }
 
@@ -582,7 +588,9 @@ defmodule ParrotSip.TransactionTest do
   describe "is_client_transaction?/1" do
     test "returns true for client transactions" do
       {:ok, invite_client} = Transaction.create_invite_client(build_invite_request("z9hG4bK"))
-      {:ok, non_invite_client} = Transaction.create_non_invite_client(build_register_request("z9hG4bK"))
+
+      {:ok, non_invite_client} =
+        Transaction.create_non_invite_client(build_register_request("z9hG4bK"))
 
       assert Transaction.is_client_transaction?(invite_client)
       assert Transaction.is_client_transaction?(non_invite_client)
@@ -590,7 +598,9 @@ defmodule ParrotSip.TransactionTest do
 
     test "returns false for server transactions" do
       {:ok, invite_server} = Transaction.create_invite_server(build_invite_request("z9hG4bK"))
-      {:ok, non_invite_server} = Transaction.create_non_invite_server(build_register_request("z9hG4bK"))
+
+      {:ok, non_invite_server} =
+        Transaction.create_non_invite_server(build_register_request("z9hG4bK"))
 
       refute Transaction.is_client_transaction?(invite_server)
       refute Transaction.is_client_transaction?(non_invite_server)
@@ -600,7 +610,9 @@ defmodule ParrotSip.TransactionTest do
   describe "is_server_transaction?/1" do
     test "returns true for server transactions" do
       {:ok, invite_server} = Transaction.create_invite_server(build_invite_request("z9hG4bK"))
-      {:ok, non_invite_server} = Transaction.create_non_invite_server(build_register_request("z9hG4bK"))
+
+      {:ok, non_invite_server} =
+        Transaction.create_non_invite_server(build_register_request("z9hG4bK"))
 
       assert Transaction.is_server_transaction?(invite_server)
       assert Transaction.is_server_transaction?(non_invite_server)
@@ -608,7 +620,9 @@ defmodule ParrotSip.TransactionTest do
 
     test "returns false for client transactions" do
       {:ok, invite_client} = Transaction.create_invite_client(build_invite_request("z9hG4bK"))
-      {:ok, non_invite_client} = Transaction.create_non_invite_client(build_register_request("z9hG4bK"))
+
+      {:ok, non_invite_client} =
+        Transaction.create_non_invite_client(build_register_request("z9hG4bK"))
 
       refute Transaction.is_server_transaction?(invite_client)
       refute Transaction.is_server_transaction?(non_invite_client)
@@ -637,7 +651,8 @@ defmodule ParrotSip.TransactionTest do
         last_response: %Message{status_code: 180}
       }
 
-      assert Transaction.retransmission_action(transaction) == {:retransmit_response, transaction.last_response}
+      assert Transaction.retransmission_action(transaction) ==
+               {:retransmit_response, transaction.last_response}
     end
 
     test "returns ignore when no last_response" do
@@ -676,8 +691,9 @@ defmodule ParrotSip.TransactionTest do
         type: :non_invite_server,
         state: :proceeding
       }
-      
-      assert {:ok, :proceeding, []} = Transaction.next_state(transaction, {:send_provisional, 183})
+
+      assert {:ok, :proceeding, []} =
+               Transaction.next_state(transaction, {:send_provisional, 183})
     end
   end
 
@@ -690,14 +706,16 @@ defmodule ParrotSip.TransactionTest do
       method: :invite,
       request_uri: "sip:bob@biloxi.com",
       version: "SIP/2.0",
-      via: [%Headers.Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "pc33.atlanta.com",
-        port: 5060,
-        parameters: %{"branch" => branch}
-      }],
+      via: [
+        %Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
       from: %Headers.From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -729,14 +747,16 @@ defmodule ParrotSip.TransactionTest do
       method: :register,
       request_uri: "sip:registrar.biloxi.com",
       version: "SIP/2.0",
-      via: [%Headers.Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "pc33.atlanta.com",
-        port: 5060,
-        parameters: %{"branch" => branch}
-      }],
+      via: [
+        %Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
       from: %Headers.From{
         display_name: "Alice",
         uri: "sip:alice@atlanta.com",
@@ -774,7 +794,7 @@ defmodule ParrotSip.TransactionTest do
     test "generates a branch value" do
       request = build_invite_request("z9hG4bKtest123")
       branch = Transaction.generate_branch(request)
-      
+
       assert is_binary(branch)
       assert String.starts_with?(branch, "z9hG4bK")
     end
@@ -796,12 +816,12 @@ defmodule ParrotSip.TransactionTest do
         port: 5060,
         parameters: %{}
       }
-      
+
       message = %Message{
         method: :invite,
         via: [via_without_branch]
       }
-      
+
       assert {:error, :no_branch} = Transaction.extract_branch(message)
     end
 
@@ -826,7 +846,7 @@ defmodule ParrotSip.TransactionTest do
     test "matches_response? returns false for nil transaction" do
       request = build_invite_request("z9hG4bKnil")
       response = build_response(request, 200, "OK")
-      
+
       refute Transaction.matches_response?(nil, response)
     end
 
@@ -848,7 +868,7 @@ defmodule ParrotSip.TransactionTest do
         method: :options,
         type: :request
       }
-      
+
       result = Transaction.determine_transaction_type(request)
       assert result == :non_invite_server
     end
@@ -882,7 +902,7 @@ defmodule ParrotSip.TransactionTest do
         state: :terminated,
         method: :invite
       }
-      
+
       result = Transaction.next_state(transaction, {:send_provisional, 180})
       assert result == {:error, :invalid_transition}
     end
@@ -895,10 +915,10 @@ defmodule ParrotSip.TransactionTest do
     test "update_last_response preserves other fields" do
       request = build_invite_request("z9hG4bKupdate")
       {:ok, transaction} = Transaction.create_invite_server(request)
-      
+
       response = build_response(request, 180, "Ringing")
       updated = Transaction.update_last_response(transaction, response)
-      
+
       assert updated.last_response == response
       assert updated.branch == transaction.branch
       assert updated.method == transaction.method
@@ -907,9 +927,9 @@ defmodule ParrotSip.TransactionTest do
     test "update_state preserves other fields" do
       request = build_invite_request("z9hG4bKstate")
       {:ok, transaction} = Transaction.create_invite_server(request)
-      
+
       updated = Transaction.update_state(transaction, :proceeding)
-      
+
       assert updated.state == :proceeding
       assert updated.branch == transaction.branch
       assert updated.method == transaction.method
@@ -945,20 +965,23 @@ defmodule ParrotSip.TransactionTest do
     test "matches_request? returns false when role is not uas" do
       # Test line 861: fallback for non-UAS role
       transaction = %Transaction{
-        role: :uac,  # Client role, not server
+        # Client role, not server
+        role: :uac,
         branch: "z9hG4bK123",
         method: :invite
       }
-      
+
       request = %Message{
         method: :ack,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK123"}
-        }]
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK123"}
+          }
+        ]
       }
-      
+
       assert Transaction.matches_request?(transaction, request) == false
     end
 
@@ -969,16 +992,19 @@ defmodule ParrotSip.TransactionTest do
         branch: "z9hG4bK456",
         method: :register
       }
-      
+
       request = %Message{
-        method: :invite,  # Different method
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK456"}
-        }]
+        # Different method
+        method: :invite,
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK456"}
+          }
+        ]
       }
-      
+
       assert Transaction.matches_request?(transaction, request) == false
     end
 
@@ -989,16 +1015,19 @@ defmodule ParrotSip.TransactionTest do
         branch: "z9hG4bK789",
         method: :invite
       }
-      
+
       request = %Message{
         method: :ack,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKDIFFERENT"}  # Different branch
-        }]
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            # Different branch
+            parameters: %{"branch" => "z9hG4bKDIFFERENT"}
+          }
+        ]
       }
-      
+
       assert Transaction.matches_request?(transaction, request) == false
     end
 
@@ -1009,16 +1038,19 @@ defmodule ParrotSip.TransactionTest do
         branch: "z9hG4bK999",
         method: :invite
       }
-      
+
       request = %Message{
         method: :ack,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{}  # No branch parameter
-        }]
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            # No branch parameter
+            parameters: %{}
+          }
+        ]
       }
-      
+
       assert Transaction.matches_request?(transaction, request) == false
     end
   end
@@ -1027,22 +1059,25 @@ defmodule ParrotSip.TransactionTest do
     test "matches_response? returns false when role is not uac" do
       # Test line 767: fallback for non-UAC role
       transaction = %Transaction{
-        role: :uas,  # Server role, not client
+        # Server role, not client
+        role: :uas,
         branch: "z9hG4bK123",
         method: :invite
       }
-      
+
       response = %Message{
         type: :response,
         status_code: 200,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK123"}
-        }],
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK123"}
+          }
+        ],
         cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite}
       }
-      
+
       assert Transaction.matches_response?(transaction, response) == false
     end
 
@@ -1053,18 +1088,21 @@ defmodule ParrotSip.TransactionTest do
         branch: "z9hG4bK456",
         method: :invite
       }
-      
+
       response = %Message{
         type: :response,
         status_code: 200,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bK456"}
-        }],
-        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :register}  # Different method in CSeq
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            parameters: %{"branch" => "z9hG4bK456"}
+          }
+        ],
+        # Different method in CSeq
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :register}
       }
-      
+
       assert Transaction.matches_response?(transaction, response) == false
     end
 
@@ -1075,18 +1113,21 @@ defmodule ParrotSip.TransactionTest do
         branch: "z9hG4bK789",
         method: :invite
       }
-      
+
       response = %Message{
         type: :response,
         status_code: 200,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{"branch" => "z9hG4bKWRONG"}  # Wrong branch
-        }],
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            # Wrong branch
+            parameters: %{"branch" => "z9hG4bKWRONG"}
+          }
+        ],
         cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite}
       }
-      
+
       assert Transaction.matches_response?(transaction, response) == false
     end
 
@@ -1097,7 +1138,7 @@ defmodule ParrotSip.TransactionTest do
         branch: "z9hG4bK999",
         method: :invite
       }
-      
+
       response = %Message{
         type: :response,
         status_code: 200,
@@ -1107,7 +1148,7 @@ defmodule ParrotSip.TransactionTest do
         ],
         cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite}
       }
-      
+
       # Only checks top Via (first in list)
       assert Transaction.matches_response?(transaction, response) == false
     end
@@ -1120,7 +1161,7 @@ defmodule ParrotSip.TransactionTest do
         method: :invite,
         via: nil
       }
-      
+
       assert {:error, :no_via} = Transaction.extract_branch(message)
     end
 
@@ -1128,13 +1169,16 @@ defmodule ParrotSip.TransactionTest do
       # Test line 943: via without branch parameter
       message = %Message{
         method: :invite,
-        via: [%ParrotSip.Headers.Via{
-          host: "test.com",
-          port: 5060,
-          parameters: %{}  # No branch parameter
-        }]
+        via: [
+          %ParrotSip.Headers.Via{
+            host: "test.com",
+            port: 5060,
+            # No branch parameter
+            parameters: %{}
+          }
+        ]
       }
-      
+
       assert {:error, :no_branch} = Transaction.extract_branch(message)
     end
 
@@ -1146,11 +1190,12 @@ defmodule ParrotSip.TransactionTest do
           %ParrotSip.Headers.Via{
             host: "test.com",
             port: 5060,
-            parameters: %{}  # No branch parameter
+            # No branch parameter
+            parameters: %{}
           }
         ]
       }
-      
+
       assert {:error, :no_branch} = Transaction.extract_branch(message)
     end
 
@@ -1158,7 +1203,8 @@ defmodule ParrotSip.TransactionTest do
       # Test line 945: fallback for invalid via
       message = %Message{
         method: :invite,
-        via: []  # Empty list
+        # Empty list
+        via: []
       }
 
       assert {:error, :no_via} = Transaction.extract_branch(message)

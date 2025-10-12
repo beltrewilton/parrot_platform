@@ -157,7 +157,10 @@ defmodule ParrotSip.UASTest do
       # Add To tag to create dialog
       response_180 = %{
         response_180
-        | to: %{response_180.to | parameters: Map.put(response_180.to.parameters, "tag", "xyz123")}
+        | to: %{
+            response_180.to
+            | parameters: Map.put(response_180.to.parameters, "tag", "xyz123")
+          }
       }
 
       # Start dialog in early state
@@ -185,7 +188,10 @@ defmodule ParrotSip.UASTest do
       # Add To tag to create dialog
       response_200 = %{
         response_200
-        | to: %{response_200.to | parameters: Map.put(response_200.to.parameters, "tag", "abc789")}
+        | to: %{
+            response_200.to
+            | parameters: Map.put(response_200.to.parameters, "tag", "abc789")
+          }
       }
 
       # Start dialog in confirmed state

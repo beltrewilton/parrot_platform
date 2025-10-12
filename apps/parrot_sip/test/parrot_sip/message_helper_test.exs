@@ -11,8 +11,9 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        ]
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
@@ -27,10 +28,11 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse(
+        via: [
+          ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=10.0.0.1"
-          )]
+          )
+        ]
       }
 
       updated = MessageHelper.set_received_parameter(message, "192.168.1.1")
@@ -60,8 +62,9 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        ]
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
@@ -75,10 +78,11 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse(
+        via: [
+          ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
-          )]
+          )
+        ]
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
@@ -93,10 +97,11 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse(
+        via: [
+          ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport=9999"
-          )]
+          )
+        ]
       }
 
       updated = MessageHelper.set_rport_parameter(message, 12345)
@@ -113,7 +118,9 @@ defmodule ParrotSip.MessageHelperTest do
         status_code: 200,
         reason_phrase: "OK",
         type: :response,
-        via: [ParrotSip.Headers.Via.parse("SIP/2.0/UDP server.biloxi.com:5060;branch=z9hG4bK74bf9")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP server.biloxi.com:5060;branch=z9hG4bK74bf9")
+        ]
       }
 
       updated = MessageHelper.remove_top_via(message)
@@ -158,10 +165,11 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse(
+        via: [
+          ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;rport"
-          )]
+          )
+        ]
       }
 
       source_info = %{host: "192.168.1.100", port: 12345}
@@ -177,8 +185,9 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        ]
       }
 
       source_info = %{host: "192.168.1.100", port: 5060}
@@ -193,8 +202,9 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK74bf9;rport")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK74bf9;rport")
+        ]
       }
 
       source_info = %{host: "192.168.1.100", port: 12345}
@@ -211,10 +221,11 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse(
+        via: [
+          ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport=12345"
-          )]
+          )
+        ]
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -231,8 +242,9 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9")
+        ]
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
@@ -249,10 +261,11 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse(
+        via: [
+          ParrotSip.Headers.Via.parse(
             "SIP/2.0/UDP client.atlanta.com:5060;branch=z9hG4bK74bf9;received=192.168.1.100;rport"
-          )]
+          )
+        ]
       }
 
       response = Message.new_response(200, "OK", %{}, [])
@@ -268,8 +281,9 @@ defmodule ParrotSip.MessageHelperTest do
         method: :invite,
         request_uri: "sip:bob@example.com",
         type: :request,
-        via:
-          [ParrotSip.Headers.Via.parse("SIP/2.0/TLS client.atlanta.com:5061;branch=z9hG4bK74bf9")]
+        via: [
+          ParrotSip.Headers.Via.parse("SIP/2.0/TLS client.atlanta.com:5061;branch=z9hG4bK74bf9")
+        ]
       }
 
       response = %Message{status_code: 200, reason_phrase: "OK", type: :response}
