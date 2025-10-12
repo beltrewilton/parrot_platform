@@ -175,21 +175,21 @@ defmodule ParrotSip.Transaction do
       get_cseq_method(message)
     )
   end
-  
+
   # Request transactions - server side
   defp determine_transaction_type_impl(true, :invite, _cseq_method) do
     :invite_server
   end
-  
+
   defp determine_transaction_type_impl(true, _method, _cseq_method) do
     :non_invite_server
   end
-  
+
   # Response transactions - client side
   defp determine_transaction_type_impl(false, _method, :invite) do
     :invite_client
   end
-  
+
   defp determine_transaction_type_impl(false, _method, _cseq_method) do
     :non_invite_client
   end
@@ -253,11 +253,15 @@ defmodule ParrotSip.Transaction do
 
   # CSeq header validation (RFC 3261 Section 8.1.1.5)
   defp validate_cseq_header(%{cseq: %{number: num, method: method}})
-    when is_integer(num) and is_atom(method), do: :ok
+       when is_integer(num) and is_atom(method),
+       do: :ok
+
   defp validate_cseq_header(_), do: {:error, "Missing or invalid CSeq header"}
 
   # Call-ID header validation (RFC 3261 Section 8.1.1.4)
-  defp validate_call_id_header(%{call_id: call_id}) when is_binary(call_id) and call_id != "", do: :ok
+  defp validate_call_id_header(%{call_id: call_id}) when is_binary(call_id) and call_id != "",
+    do: :ok
+
   defp validate_call_id_header(_), do: {:error, "Missing or invalid Call-ID header"}
 
   # From header validation (RFC 3261 Section 8.1.1.3)
@@ -273,22 +277,31 @@ defmodule ParrotSip.Transaction do
     # REGISTER requests must have Contact header (RFC 3261 Section 10.2)
     validate_contact_header_present(message)
   end
+
   defp validate_request_specific(%{type: :request, method: method, request_uri: uri})
-    when is_atom(method) and is_binary(uri) and uri != "", do: :ok
+       when is_atom(method) and is_binary(uri) and uri != "",
+       do: :ok
+
   defp validate_request_specific(%{type: :request}),
     do: {:error, "Invalid request: missing method or request URI"}
+
   defp validate_request_specific(_), do: :ok
 
   # Response-specific validation (RFC 3261 Section 8.1.2)
   defp validate_response_specific(%{type: :response, status_code: code, reason_phrase: phrase})
-    when is_integer(code) and code >= 100 and code < 700 and is_binary(phrase), do: :ok
+       when is_integer(code) and code >= 100 and code < 700 and is_binary(phrase),
+       do: :ok
+
   defp validate_response_specific(%{type: :response}),
     do: {:error, "Invalid response: missing or invalid status code or reason phrase"}
+
   defp validate_response_specific(_), do: :ok
 
   # Contact header validation helper
   defp validate_contact_header_present(%{contact: contact}) when not is_nil(contact), do: :ok
-  defp validate_contact_header_present(_), do: {:error, "REGISTER request must have Contact header"}
+
+  defp validate_contact_header_present(_),
+    do: {:error, "REGISTER request must have Contact header"}
 
   defstruct [
     :id,
@@ -313,7 +326,6 @@ defmodule ParrotSip.Transaction do
           created_at: integer(),
           role: :uas | :uac | nil
         }
-
 
   @doc """
   Creates a new client transaction for an INVITE request.
@@ -696,19 +708,23 @@ defmodule ParrotSip.Transaction do
     # For server transactions, use "branch:method:cseq"
     # Special case: ACK for non-2xx responses is part of the INVITE transaction (RFC 3261 17.1.1.3)
     case type do
-      :invite_client -> "#{branch}:invite:client"
-      :non_invite_client -> "#{branch}:#{request.method}:client"
-      :invite_server -> 
+      :invite_client ->
+        "#{branch}:invite:client"
+
+      :non_invite_client ->
+        "#{branch}:#{request.method}:client"
+
+      :invite_server ->
         # ACK requests should match the INVITE transaction ID
         method = if request.method == :ack, do: :invite, else: request.method
         "#{branch}:#{method}:#{request.cseq.number}"
-      :non_invite_server -> 
+
+      :non_invite_server ->
         # ACK requests should match the INVITE transaction ID
         method = if request.method == :ack, do: :invite, else: request.method
         "#{branch}:#{method}:#{request.cseq.number}"
     end
   end
-
 
   @doc """
   Checks if a transaction matches the given response.
@@ -886,7 +902,6 @@ defmodule ParrotSip.Transaction do
   end
 
   def matches_request?(_, _), do: false
-
 
   @doc """
   Extracts the branch parameter from a SIP message's Via header.
@@ -1569,6 +1584,4 @@ defmodule ParrotSip.Transaction do
   defp extract_top_via_strict(%Headers.Via{} = via), do: via
   defp extract_top_via_strict([via | _]) when is_struct(via, Headers.Via), do: via
   defp extract_top_via_strict(_), do: raise(ArgumentError, "Request must have a Via header")
-
-
 end
