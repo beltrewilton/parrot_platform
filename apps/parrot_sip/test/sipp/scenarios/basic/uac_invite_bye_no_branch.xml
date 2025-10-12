@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<scenario name="Basic UAC scenario">
+<!--
+  UAC scenario with branch in INVITE but NOT in BYE (reproduces original bug)
+
+  This scenario has:
+  - INVITE: Has branch parameter (works correctly)
+  - ACK: NO branch parameter
+  - BYE: NO branch parameter (causes all BYEs to collide on same transaction ID)
+
+  This reproduces the exact bug from the original issue where multiple sequential
+  calls work fine for INVITE, but all BYE requests get transaction ID ":bye:2"
+  and only the first BYE gets a 200 OK response.
+-->
+<scenario name="UAC with branch in INVITE but not in BYE">
  <send>
   <![CDATA[
   INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
@@ -34,7 +46,7 @@
  <send>
   <![CDATA[
   ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
-  Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+  Via: SIP/2.0/[transport] [local_ip]:[local_port]
   From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[call_number]
   To: sut <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
   Call-ID: [call_id]
@@ -49,7 +61,7 @@
  <send retrans="500">
   <![CDATA[
   BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
-  Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+  Via: SIP/2.0/[transport] [local_ip]:[local_port]
   From: sipp  <sip:sipp@[local_ip]:[local_port]>;tag=[call_number]
   To: sut  <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
   Call-ID: [call_id]
