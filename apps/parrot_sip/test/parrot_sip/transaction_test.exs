@@ -161,7 +161,7 @@ defmodule ParrotSip.TransactionTest do
 
       id = Transaction.generate_transaction_id(:invite_server, "z9hG4bKserver", request)
 
-      assert id == "z9hG4bKserver:invite:314159"
+      assert id == "z9hG4bKserver:invite:server"
     end
 
     test "non-invite client uses method name" do
@@ -1209,5 +1209,394 @@ defmodule ParrotSip.TransactionTest do
 
       assert {:error, :no_via} = Transaction.extract_branch(message)
     end
+  end
+
+  describe "RFC 2543 compatibility - create_invite_client with no branch" do
+    test "creates transaction with nil branch when Via has no branch parameter" do
+      request = build_invite_request_no_branch()
+
+      assert {:ok,
+              %Transaction{
+                type: :invite_client,
+                state: :calling,
+                method: :invite,
+                branch: nil,
+                role: :uac
+              }} = Transaction.create_invite_client(request)
+    end
+
+    test "generates transaction ID using MD5 hash when branch is nil" do
+      request = build_invite_request_no_branch()
+
+      {:ok, transaction} = Transaction.create_invite_client(request)
+
+      # Transaction ID should be non-nil and follow the format with MD5 hash
+      assert is_binary(transaction.id)
+      assert transaction.id != ""
+      # Should have format: <hash>:invite:client
+      assert transaction.id =~ ~r/^[a-f0-9]{16}:invite:client$/
+    end
+
+    test "generates consistent ID for same request without branch" do
+      request = build_invite_request_no_branch()
+
+      {:ok, tx1} = Transaction.create_invite_client(request)
+      {:ok, tx2} = Transaction.create_invite_client(request)
+
+      # Same request should generate same ID
+      assert tx1.id == tx2.id
+    end
+  end
+
+  describe "RFC 2543 compatibility - create_non_invite_client with no branch" do
+    test "creates transaction with nil branch when Via has no branch parameter" do
+      request = build_register_request_no_branch()
+
+      assert {:ok,
+              %Transaction{
+                type: :non_invite_client,
+                state: :trying,
+                method: :register,
+                branch: nil,
+                role: :uac
+              }} = Transaction.create_non_invite_client(request)
+    end
+
+    test "generates transaction ID using MD5 hash when branch is nil" do
+      request = build_register_request_no_branch()
+
+      {:ok, transaction} = Transaction.create_non_invite_client(request)
+
+      # Transaction ID should be non-nil and follow the format with MD5 hash
+      assert is_binary(transaction.id)
+      assert transaction.id != ""
+      # Should have format: <hash>:register:client
+      assert transaction.id =~ ~r/^[a-f0-9]{16}:register:client$/
+    end
+
+    test "generates consistent ID for same request without branch" do
+      request = build_register_request_no_branch()
+
+      {:ok, tx1} = Transaction.create_non_invite_client(request)
+      {:ok, tx2} = Transaction.create_non_invite_client(request)
+
+      # Same request should generate same ID
+      assert tx1.id == tx2.id
+    end
+  end
+
+  describe "RFC 2543 compatibility - create_invite_server with no branch" do
+    test "creates transaction with nil branch when Via has no branch parameter" do
+      request = build_invite_request_no_branch()
+
+      assert {:ok,
+              %Transaction{
+                type: :invite_server,
+                state: :trying,
+                method: :invite,
+                branch: nil,
+                role: :uas
+              }} = Transaction.create_invite_server(request)
+    end
+
+    test "generates transaction ID using MD5 hash when branch is nil" do
+      request = build_invite_request_no_branch()
+
+      {:ok, transaction} = Transaction.create_invite_server(request)
+
+      # Transaction ID should be non-nil and follow the format with MD5 hash
+      assert is_binary(transaction.id)
+      assert transaction.id != ""
+      # Should have format: <hash>:invite:server
+      assert transaction.id =~ ~r/^[a-f0-9]{16}:invite:server$/
+    end
+
+    test "generates consistent ID for same request without branch" do
+      request = build_invite_request_no_branch()
+
+      {:ok, tx1} = Transaction.create_invite_server(request)
+      {:ok, tx2} = Transaction.create_invite_server(request)
+
+      # Same request should generate same ID
+      assert tx1.id == tx2.id
+    end
+  end
+
+  describe "RFC 2543 compatibility - create_non_invite_server with no branch" do
+    test "creates transaction with nil branch when Via has no branch parameter" do
+      request = build_register_request_no_branch()
+
+      assert {:ok,
+              %Transaction{
+                type: :non_invite_server,
+                state: :trying,
+                method: :register,
+                branch: nil,
+                role: :uas
+              }} = Transaction.create_non_invite_server(request)
+    end
+
+    test "generates transaction ID using MD5 hash when branch is nil" do
+      request = build_register_request_no_branch()
+
+      {:ok, transaction} = Transaction.create_non_invite_server(request)
+
+      # Transaction ID should be non-nil and follow the format with MD5 hash
+      assert is_binary(transaction.id)
+      assert transaction.id != ""
+      # Should have format: <hash>:register:server
+      assert transaction.id =~ ~r/^[a-f0-9]{16}:register:server$/
+    end
+
+    test "generates consistent ID for same request without branch" do
+      request = build_register_request_no_branch()
+
+      {:ok, tx1} = Transaction.create_non_invite_server(request)
+      {:ok, tx2} = Transaction.create_non_invite_server(request)
+
+      # Same request should generate same ID
+      assert tx1.id == tx2.id
+    end
+  end
+
+  describe "generate_transaction_id/3 with nil branch (RFC 2543)" do
+    test "invite_client generates MD5-based ID when branch is nil" do
+      request = build_invite_request_no_branch()
+
+      id = Transaction.generate_transaction_id(:invite_client, nil, request)
+
+      # Should have format: <hash>:invite:client
+      assert id =~ ~r/^[a-f0-9]{16}:invite:client$/
+    end
+
+    test "non_invite_client generates MD5-based ID when branch is nil" do
+      request = build_register_request_no_branch()
+
+      id = Transaction.generate_transaction_id(:non_invite_client, nil, request)
+
+      # Should have format: <hash>:register:client
+      assert id =~ ~r/^[a-f0-9]{16}:register:client$/
+    end
+
+    test "invite_server generates MD5-based ID when branch is nil" do
+      request = build_invite_request_no_branch()
+
+      id = Transaction.generate_transaction_id(:invite_server, nil, request)
+
+      # Should have format: <hash>:invite:server
+      assert id =~ ~r/^[a-f0-9]{16}:invite:server$/
+    end
+
+    test "non_invite_server generates MD5-based ID when branch is nil" do
+      request = build_register_request_no_branch()
+
+      id = Transaction.generate_transaction_id(:non_invite_server, nil, request)
+
+      # Should have format: <hash>:register:server
+      assert id =~ ~r/^[a-f0-9]{16}:register:server$/
+    end
+
+    test "ACK request in server transaction uses invite method when branch is nil" do
+      ack_request = build_ack_request_no_branch()
+
+      id = Transaction.generate_transaction_id(:invite_server, nil, ack_request)
+
+      # ACK should be mapped to invite for INVITE server transactions
+      assert id =~ ~r/^[a-f0-9]{16}:invite:server$/
+    end
+
+    test "different requests generate different MD5-based IDs" do
+      request1 = build_invite_request_no_branch()
+
+      request2 = %{
+        request1
+        | call_id: "different-call-id@pc33.atlanta.com"
+      }
+
+      id1 = Transaction.generate_transaction_id(:invite_client, nil, request1)
+      id2 = Transaction.generate_transaction_id(:invite_client, nil, request2)
+
+      # Different requests should generate different IDs
+      assert id1 != id2
+    end
+
+    test "same request consistently generates same MD5-based ID" do
+      request = build_invite_request_no_branch()
+
+      id1 = Transaction.generate_transaction_id(:invite_client, nil, request)
+      id2 = Transaction.generate_transaction_id(:invite_client, nil, request)
+      id3 = Transaction.generate_transaction_id(:invite_client, nil, request)
+
+      # Same request should always generate same ID
+      assert id1 == id2
+      assert id2 == id3
+    end
+  end
+
+  describe "generate_id/1 with RFC 2543 (no branch)" do
+    test "generates MD5-based ID for message without branch parameter" do
+      request = build_invite_request_no_branch()
+
+      id = Transaction.generate_id(request)
+
+      # Should have format: <hash>:invite:...
+      assert id =~ ~r/^[a-f0-9]{16}:invite:/
+    end
+
+    test "consistently generates same ID for same request without branch" do
+      request = build_invite_request_no_branch()
+
+      id1 = Transaction.generate_id(request)
+      id2 = Transaction.generate_id(request)
+
+      assert id1 == id2
+    end
+
+    test "handles Via as list without branch" do
+      request = build_invite_request_no_branch()
+      # request.via is already a list
+
+      id = Transaction.generate_id(request)
+
+      assert id =~ ~r/^[a-f0-9]{16}:invite:/
+    end
+  end
+
+  describe "create functions pattern matching edge cases" do
+    test "create_invite_client matches Via struct without branch" do
+      request = build_invite_request_no_branch()
+      # Convert list to struct
+      request = %{request | via: hd(request.via)}
+
+      # Should match the third clause (catch-all)
+      assert {:ok, %Transaction{branch: nil}} = Transaction.create_invite_client(request)
+    end
+
+    test "create_invite_client matches Via list without branch" do
+      request = build_invite_request_no_branch()
+      # request.via is already a list
+
+      # Should match the second clause (Via list without branch)
+      assert {:ok, %Transaction{branch: nil}} = Transaction.create_invite_client(request)
+    end
+
+    test "create_non_invite_client matches Via struct without branch" do
+      request = build_register_request_no_branch()
+      # Convert list to struct
+      request = %{request | via: hd(request.via)}
+
+      # Should match the third clause (catch-all)
+      assert {:ok, %Transaction{branch: nil}} = Transaction.create_non_invite_client(request)
+    end
+
+    test "create_invite_server matches Via list without branch" do
+      request = build_invite_request_no_branch()
+
+      # Should match the second clause (Via list without branch)
+      assert {:ok, %Transaction{branch: nil}} = Transaction.create_invite_server(request)
+    end
+
+    test "create_non_invite_server matches Via struct without branch" do
+      request = build_register_request_no_branch()
+      # Convert list to struct
+      request = %{request | via: hd(request.via)}
+
+      # Should match the third clause (catch-all)
+      assert {:ok, %Transaction{branch: nil}} = Transaction.create_non_invite_server(request)
+    end
+  end
+
+  # Helper functions for RFC 2543 (no branch) test cases
+
+  defp build_invite_request_no_branch do
+    %Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:bob@biloxi.com",
+      version: "SIP/2.0",
+      via: [
+        %Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{}
+        }
+      ],
+      from: %Headers.From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %Headers.To{
+        display_name: "Bob",
+        uri: "sip:bob@biloxi.com",
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %Headers.CSeq{
+        number: 314_159,
+        method: :invite
+      },
+      contact: %Headers.Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      body: "",
+      other_headers: %{}
+    }
+  end
+
+  defp build_register_request_no_branch do
+    %Message{
+      type: :request,
+      method: :register,
+      request_uri: "sip:registrar.biloxi.com",
+      version: "SIP/2.0",
+      via: [
+        %Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "pc33.atlanta.com",
+          port: 5060,
+          parameters: %{}
+        }
+      ],
+      from: %Headers.From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "1928301774"}
+      },
+      to: %Headers.To{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{}
+      },
+      call_id: "a84b4c76e66710@pc33.atlanta.com",
+      cseq: %Headers.CSeq{
+        number: 314_159,
+        method: :register
+      },
+      contact: %Headers.Contact{
+        display_name: nil,
+        uri: "sip:alice@pc33.atlanta.com",
+        parameters: %{}
+      },
+      body: "",
+      other_headers: %{}
+    }
+  end
+
+  defp build_ack_request_no_branch do
+    request = build_invite_request_no_branch()
+
+    %{
+      request
+      | method: :ack,
+        cseq: %{request.cseq | method: :ack}
+    }
   end
 end
