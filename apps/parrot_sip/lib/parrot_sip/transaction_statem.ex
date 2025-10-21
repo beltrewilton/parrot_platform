@@ -1296,68 +1296,112 @@ defmodule ParrotSip.TransactionStatem do
     UAS.process_ack(sip_msg, handler)
   end
 
+  # Handle initial INVITE (no To tag) - send 100 Trying
+  def trying(
+        :cast,
+        {:handle_transaction_setup,
+         [
+           :server,
+           %{method: :invite, to: %{parameters: to_params}} = sip_msg,
+           :invite,
+           _handler
+         ]},
+        %{data: %{transaction: transaction, handler: handler}} = state
+      )
+      when not is_map_key(to_params, "tag") do
+    Logger.debug(":handle_transaction_setup -> Initial INVITE (sending 100 Trying)")
+
+    # Call transaction state callback for :trying state
+    Handler.transaction_trying(transaction, sip_msg, handler)
+
+    # Send 100 Trying for initial INVITE per RFC 3261 17.2.1
+    trying_resp =
+      ParrotSip.Message.reply(sip_msg, 100, "Trying")
+      |> Map.put(:body, "")
+
+    UAS.response(trying_resp, transaction)
+
+    # After sending 100 Trying, INVITE server transactions move to proceeding
+    # Store the provisional response we sent
+    updated_state = put_in(state, [:data, :last_response], trying_resp)
+
+    result =
+      case Handler.transaction(transaction, sip_msg, handler) do
+        :ok ->
+          Logger.debug(
+            "Handler.transaction(transaction, sip_msg, handler) -> :ok, moving to proceeding"
+          )
+
+          Handler.transaction_proceeding(transaction, sip_msg, handler)
+          {:next_state, :proceeding, updated_state}
+
+        :process_uas ->
+          Logger.debug(
+            "Handler.transaction(transaction, sip_msg, handler) -> :process_uas, moving to proceeding"
+          )
+
+          UAS.process(transaction, sip_msg, handler)
+          Handler.transaction_proceeding(transaction, sip_msg, handler)
+          {:next_state, :proceeding, updated_state}
+
+        err ->
+          Logger.error("Handler.transaction failed: #{inspect(err)}")
+          {:keep_state, state}
+      end
+
+    result
+  end
+
+  # Handle re-INVITE (has To tag) - skip 100 Trying
+  def trying(
+        :cast,
+        {:handle_transaction_setup,
+         [:server, %{method: :invite, to: %{parameters: %{"tag" => _}}} = sip_msg, :invite, _handler]},
+        %{data: %{transaction: transaction, handler: handler}} = state
+      ) do
+    Logger.debug(":handle_transaction_setup -> re-INVITE (skipping 100 Trying)")
+
+    # Call transaction state callback for :trying state
+    Handler.transaction_trying(transaction, sip_msg, handler)
+
+    # For re-INVITEs, skip 100 Trying - dialog is already established
+    # Process directly without sending provisional response
+    case Handler.transaction(transaction, sip_msg, handler) do
+      :ok ->
+        Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok")
+        :ok
+
+      :process_uas ->
+        Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
+        UAS.process(transaction, sip_msg, handler)
+    end
+
+    {:keep_state, state}
+  end
+
+  # Handle non-INVITE transactions - no 100 Trying per RFC 3261 17.2.2
   def trying(
         :cast,
         {:handle_transaction_setup, [:server, sip_msg, _method, _handler]},
         %{data: %{transaction: transaction, handler: handler}} = state
       ) do
-    Logger.debug(":handle_transaction_setup -> Trying transaction setup")
+    Logger.debug(":handle_transaction_setup -> Non-INVITE transaction (no 100 Trying)")
 
     # Call transaction state callback for :trying state
     Handler.transaction_trying(transaction, sip_msg, handler)
 
-    # Only send 100 Trying for INVITE server transactions (RFC 3261 17.2.1)
-    # Non-INVITE server transactions should not automatically send 100 Trying (RFC 3261 17.2.2)
-    if sip_msg.method == :invite do
-      trying_resp =
-        ParrotSip.Message.reply(sip_msg, 100, "Trying")
-        |> Map.put(:body, "")
+    # Non-INVITE transactions stay in trying until first response
+    case Handler.transaction(transaction, sip_msg, handler) do
+      :ok ->
+        Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok")
+        :ok
 
-      UAS.response(trying_resp, transaction)
-
-      # After sending 100 Trying, INVITE server transactions move to proceeding
-      # Store the provisional response we sent
-      updated_state = put_in(state, [:data, :last_response], trying_resp)
-
-      result =
-        case Handler.transaction(transaction, sip_msg, handler) do
-          :ok ->
-            Logger.debug(
-              "Handler.transaction(transaction, sip_msg, handler) -> :ok, moving to proceeding"
-            )
-
-            Handler.transaction_proceeding(transaction, sip_msg, handler)
-            {:next_state, :proceeding, updated_state}
-
-          :process_uas ->
-            Logger.debug(
-              "Handler.transaction(transaction, sip_msg, handler) -> :process_uas, moving to proceeding"
-            )
-
-            UAS.process(transaction, sip_msg, handler)
-            Handler.transaction_proceeding(transaction, sip_msg, handler)
-            {:next_state, :proceeding, updated_state}
-
-          err ->
-            Logger.error("Handler.transaction failed: #{inspect(err)}")
-            {:keep_state, state}
-        end
-
-      result
-    else
-      # Non-INVITE transactions stay in trying until first response
-      case Handler.transaction(transaction, sip_msg, handler) do
-        :ok ->
-          Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :ok")
-          :ok
-
-        :process_uas ->
-          Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
-          UAS.process(transaction, sip_msg, handler)
-      end
-
-      {:keep_state, state}
+      :process_uas ->
+        Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
+        UAS.process(transaction, sip_msg, handler)
     end
+
+    {:keep_state, state}
   end
 
   def trying(:cast, {:send, response}, %{data: %{transaction: transaction}} = state) do
