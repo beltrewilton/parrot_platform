@@ -236,29 +236,56 @@ defmodule SippTest.ReinviteTest do
   end
 
   describe "re-INVITE edge cases" do
-    @tag :skip
-    test "re-INVITE glare - both sides send re-INVITE simultaneously" do
-      # TODO: Implement glare scenario
-      # This requires more complex scenario with both UAC and UAS behaviors
-      # The library should handle 491 Request Pending per RFC 3261 14.1
+    test "re-INVITE with no SDP (offer/answer reversal)" do
+      handler = TestHandler.new()
+      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
+
+      # Per RFC 3264 Section 8: re-INVITE without SDP asks UAS to generate offer
+      # Flow: INVITE(SDP) -> re-INVITE(no SDP) -> 200(SDP offer) -> ACK(SDP answer)
+      assert :ok ==
+               SippRunner.run_scenario(
+                 scenario_file: "test/sipp/scenarios/reinvite/uac_reinvite_no_sdp.xml",
+                 remote_host: "127.0.0.1",
+                 remote_port: stack.port,
+                 calls: 1,
+                 timeout: 10_000
+               )
+
+      Process.sleep(100)
+      stats = TestHandler.get_stats(handler)
+
+      # Should have 2 INVITEs (initial + re-INVITE without SDP)
+      assert stats.invites == 2
+      assert stats.acks == 2
+      assert stats.byes == 1
+
+      SipStackHelper.stop(stack)
     end
 
-    @tag :skip
-    test "re-INVITE rejected with 488 Not Acceptable Here" do
-      # TODO: Implement scenario where server rejects codec change
-      # Handler should reject re-INVITE with incompatible codecs
-    end
-
-    @tag :skip
-    test "re-INVITE with no SDP (remote hold indication)" do
-      # TODO: Implement scenario where re-INVITE has no SDP body
-      # This can indicate the remote side is putting us on hold
-    end
-
-    @tag :skip
     test "re-INVITE timeout and retransmission" do
-      # TODO: Implement scenario where re-INVITE 200 OK is delayed
-      # Verify proper retransmission behavior per RFC 3261 timers
+      handler = TestHandler.new()
+      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
+
+      # Tests SIP transaction layer retransmission per RFC 3261 Section 17.1.1
+      # The library should properly handle retransmissions if response is delayed
+      assert :ok ==
+               SippRunner.run_scenario(
+                 scenario_file: "test/sipp/scenarios/reinvite/uac_reinvite_timeout.xml",
+                 remote_host: "127.0.0.1",
+                 remote_port: stack.port,
+                 calls: 1,
+                 timeout: 10_000
+               )
+
+      Process.sleep(100)
+      stats = TestHandler.get_stats(handler)
+
+      # Should have 2 INVITEs (initial + re-INVITE with timeout test)
+      assert stats.invites == 2
+      assert stats.acks == 2
+      assert stats.byes == 1
+
+      SipStackHelper.stop(stack)
     end
   end
 end

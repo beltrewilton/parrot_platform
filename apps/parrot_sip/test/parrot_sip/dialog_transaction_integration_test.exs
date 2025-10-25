@@ -1178,7 +1178,6 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
 
       # Verify most dialogs were created
       successful = Enum.count(results, & &1)
-      IO.puts("Successfully created #{successful} out of #{num_dialogs} dialogs")
       # At least 90% success rate
       assert successful >= num_dialogs * 0.90
     end
