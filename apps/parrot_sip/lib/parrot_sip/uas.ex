@@ -15,6 +15,8 @@ defmodule ParrotSip.UAS do
 
   require Logger
 
+  @allowed_methods [:invite, :ack, :bye, :cancel, :options, :register]
+
   @spec process(any(), Message.t(), Handler.handler()) ::
           :ok
   def process(trans, sip_msg0, handler) do
@@ -22,7 +24,6 @@ defmodule ParrotSip.UAS do
 
     process_list = [
       fn sip_msg ->
-        # Replace ersip_uas.process_request with pure Elixir validation
         validate_request(sip_msg)
       end,
       fn sip_msg ->
@@ -216,28 +217,15 @@ defmodule ParrotSip.UAS do
 
   # Validate incoming SIP request - replaces ersip_uas.process_request
   @spec validate_request(Message.t()) :: {:process, Message.t()} | {:reply, Message.t()}
-  defp validate_request(%Message{method: method} = sip_msg) do
-    allowed_methods = [:invite, :ack, :bye, :cancel, :options, :register]
+  defp validate_request(%Message{method: method} = sip_msg) when method in @allowed_methods,
+    do: {:process, sip_msg}
 
-    case method in allowed_methods do
-      true ->
-        # Method is allowed, continue processing
-        {:process, sip_msg}
-
-      false ->
-        # Method not allowed, return 405 Method Not Allowed
-        response = make_method_not_allowed_response(sip_msg, allowed_methods)
-        {:reply, response}
-    end
-  end
-
-  # Create 405 Method Not Allowed response
-  @spec make_method_not_allowed_response(Message.t(), [atom()]) :: Message.t()
-  defp make_method_not_allowed_response(req_msg, allowed_methods) do
-    allow_header = Enum.map(allowed_methods, &to_string/1)
-
-    response = Message.reply(req_msg, 405, "Method Not Allowed")
-    %{response | allow: allow_header}
+  defp validate_request(%Message{} = sip_msg) do
+    # Method not allowed, return 405 Method Not Allowed
+    {:reply,
+     sip_msg
+     |> Message.reply(405, "Method Not Allowed")
+     |> Map.put(:allow, Enum.map(@allowed_methods, &to_string/1))}
   end
 
   @spec do_process(
