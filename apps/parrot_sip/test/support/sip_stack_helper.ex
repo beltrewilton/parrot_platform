@@ -247,8 +247,18 @@ defmodule SippTest.SipStackHelper do
 
         message_with_source = Map.put(sip_message, :source, source)
 
-        # Process through transaction layer with our handler
-        TransactionStatem.server_process(message_with_source, state.sip_handler)
+        # Route to appropriate transaction layer handler
+        case message_with_source.type do
+          :request ->
+            # Process requests through server transaction layer
+            TransactionStatem.server_process(message_with_source, state.sip_handler)
+
+          :response ->
+            # Process responses through client transaction layer
+            # Extract Via header and pass raw binary message
+            via = List.first(message_with_source.via)
+            TransactionStatem.client_response(via, packet.data)
+        end
 
       {:error, reason} ->
         Logger.error("[SipStackHelper] Failed to parse SIP message: #{inspect(reason)}")
