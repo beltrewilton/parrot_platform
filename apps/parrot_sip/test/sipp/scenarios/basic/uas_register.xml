@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAS scenario: Receive REGISTER from ParrotSip UAC
+
+  Flow:
+  1. Receive REGISTER from ParrotSip
+  2. Send 200 OK with Contact header
+-->
+
+<scenario name="UAS REGISTER">
+  <!-- Receive REGISTER -->
+  <recv request="REGISTER" crlf="true">
+    <action>
+      <ereg regexp=".*" search_in="hdr" header="Contact:" assign_to="contact_hdr"/>
+      <ereg regexp=".*" search_in="hdr" header="Expires:" assign_to="expires_hdr"/>
+    </action>
+  </recv>
+
+  <!-- Send 200 OK with registered Contact -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [$contact_hdr]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAS scenario: Receive INVITE and BYE from ParrotSip UAC
+
+  Flow:
+  1. Receive INVITE from ParrotSip
+  2. Send 200 OK
+  3. Receive ACK
+  4. Receive BYE from ParrotSip
+  5. Send 200 OK
+-->
+
+<scenario name="UAS BYE">
+  <!-- Receive initial INVITE -->
+  <recv request="INVITE" crlf="true"/>
+
+  <!-- Send 200 OK -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=- 3600 3600 IN IP4 [local_ip]
+      s=SIPp
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio 6000 RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK -->
+  <recv request="ACK" crlf="true"/>
+
+  <!-- Receive BYE -->
+  <recv request="BYE" crlf="true"/>
+
+  <!-- Send 200 OK for BYE -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>
