@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAS scenario: Receive INVITE and CANCEL from ParrotSip UAC
+
+  Flow:
+  1. Receive INVITE from ParrotSip
+  2. Send 180 Ringing (provisional response)
+  3. Receive CANCEL from ParrotSip
+  4. Send 200 OK for CANCEL
+  5. Send 487 Request Terminated for original INVITE
+  6. Receive ACK
+-->
+
+<scenario name="UAS CANCEL">
+  <!-- Receive initial INVITE -->
+  <recv request="INVITE" crlf="true"/>
+
+  <!-- Send 180 Ringing (don't answer immediately) -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Pause to give UAC time to send CANCEL -->
+  <pause milliseconds="100"/>
+
+  <!-- Receive CANCEL -->
+  <recv request="CANCEL" crlf="true"/>
+
+  <!-- Send 200 OK for CANCEL -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Send 487 Request Terminated for original INVITE -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 487 Request Terminated
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      CSeq: [last_CSeq: without_return]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK -->
+  <recv request="ACK" crlf="true"/>
+
+</scenario>
