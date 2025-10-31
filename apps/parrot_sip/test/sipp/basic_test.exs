@@ -91,5 +91,85 @@ defmodule SippTest.BasicTest do
       # Cleanup
       SipStackHelper.stop(stack)
     end
+
+    test "UAC REGISTER - registration handling" do
+      # Create SIP handler
+      handler = TestHandler.new()
+
+      # Start SIP stack
+      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
+
+      # Run SIPp UAC REGISTER scenario
+      assert :ok ==
+               SippRunner.run_scenario(
+                 scenario_file: "test/sipp/scenarios/basic/uac_register.xml",
+                 remote_host: "127.0.0.1",
+                 remote_port: stack.port,
+                 calls: 1,
+                 timeout: 5_000
+               )
+
+      # Verify stats
+      Process.sleep(100)
+      stats = TestHandler.get_stats(handler)
+      assert stats.registers == 1
+
+      # Cleanup
+      SipStackHelper.stop(stack)
+    end
+
+    test "UAC REGISTER - multiple registrations" do
+      # Create SIP handler
+      handler = TestHandler.new()
+
+      # Start SIP stack
+      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
+
+      # Run multiple REGISTER requests
+      assert :ok ==
+               SippRunner.run_scenario(
+                 scenario_file: "test/sipp/scenarios/basic/uac_register.xml",
+                 remote_host: "127.0.0.1",
+                 remote_port: stack.port,
+                 calls: 5,
+                 timeout: 10_000
+               )
+
+      # Verify stats
+      Process.sleep(100)
+      stats = TestHandler.get_stats(handler)
+      assert stats.registers == 5
+
+      # Cleanup
+      SipStackHelper.stop(stack)
+    end
+
+    test "UAC BYE - dialog termination" do
+      # Create SIP handler
+      handler = TestHandler.new()
+
+      # Start SIP stack
+      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
+
+      # Run SIPp UAC BYE scenario (INVITE + BYE)
+      assert :ok ==
+               SippRunner.run_scenario(
+                 scenario_file: "test/sipp/scenarios/basic/uac_bye_only.xml",
+                 remote_host: "127.0.0.1",
+                 remote_port: stack.port,
+                 calls: 1,
+                 timeout: 5_000
+               )
+
+      # Verify stats
+      Process.sleep(100)
+      stats = TestHandler.get_stats(handler)
+      assert stats.invites == 1
+      assert stats.acks == 1
+      assert stats.byes == 1
+
+      # Cleanup
+      SipStackHelper.stop(stack)
+    end
   end
 end
