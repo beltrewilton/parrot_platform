@@ -242,6 +242,20 @@ defmodule ParrotSip.TransportHandler do
     {:noreply, state}
   end
 
+  # Send request with source info - look up correct transport
+  def handle_cast(
+        {:send_sip_request,
+         %{source: %Source{transport: transport_type, local: {local_ip, local_port}}} = request,
+         destination},
+        state
+      ) do
+    key = {transport_type, local_ip, local_port}
+    transport_ref = Map.get(state.transports, key) || state.transport_ref
+    send_to_transport(request, destination, transport_ref, nil)
+    {:noreply, state}
+  end
+
+  # Send request without source info - use default transport
   def handle_cast({:send_sip_request, request, destination}, state) do
     send_to_transport(request, destination, state.transport_ref, nil)
     {:noreply, state}

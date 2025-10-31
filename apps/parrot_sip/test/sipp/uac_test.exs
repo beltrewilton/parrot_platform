@@ -102,7 +102,14 @@ defmodule SippTest.UacTest do
       # Verify response has expected headers
       assert Enum.member?(response.allow, "INVITE")
       assert Enum.member?(response.allow, "OPTIONS")
-      assert response.accept == "application/sdp"
+
+      assert %ParrotSip.Headers.Accept{
+               type: "application",
+               subtype: "sdp",
+               parameters: %{},
+               q_value: nil
+             } = response.accept
+
 
       # Verify SIPp completed successfully
       assert :ok = Task.await(sipp_task, 5_000)
