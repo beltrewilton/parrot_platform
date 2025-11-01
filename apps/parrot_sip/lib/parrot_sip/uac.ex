@@ -92,8 +92,6 @@ defmodule ParrotSip.UAC do
            request: %ParrotSip.Message{
              request_uri: request_uri,
              via: via,
-             from: from,
-             to: to,
              source: source
            }
          } = transaction,
@@ -103,7 +101,9 @@ defmodule ParrotSip.UAC do
       {:stop, :normal} ->
         :ok
 
-      {:response, %Message{type: :response, status_code: status_code} = response} = trans_result
+      {:response,
+       %Message{type: :response, status_code: status_code, to: to, from: from} = response} =
+          trans_result
       when status_code >= 200 and status_code < 300 and transaction.method == :invite ->
         # RFC 3261 Section 13.2.2.4: UAC core MUST generate an ACK request for each 2xx
         # received from the transaction layer. The ACK for 2xx is NOT part of the INVITE
@@ -131,10 +131,6 @@ defmodule ParrotSip.UAC do
           }
           # new randon branch for this transcation
           |> add_branch_to_via(Branch.generate())
-
-        dbg(transaction)
-        dbg(sip_msg)
-        dbg(response)
 
         # Create outbound request map for Transport
         # Send ACK via transport handler

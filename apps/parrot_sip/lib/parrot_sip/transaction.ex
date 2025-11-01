@@ -1411,7 +1411,7 @@ defmodule ParrotSip.Transaction do
 
   def next_state(%{type: :invite_client, state: :calling}, {:receive_response, status})
       when status >= 300 and status <= 699 do
-    {:ok, :completed, [:cancel_timer_a, :cancel_timer_b, :start_timer_d]}
+    {:ok, :completed, [:cancel_timer_a, :cancel_timer_b, :send_ack, :start_timer_d]}
   end
 
   def next_state(%{type: :invite_client, state: :proceeding}, {:receive_response, status})
@@ -1421,7 +1421,7 @@ defmodule ParrotSip.Transaction do
 
   def next_state(%{type: :invite_client, state: :proceeding}, {:receive_response, status})
       when status >= 300 and status <= 699 do
-    {:ok, :completed, [:start_timer_d]}
+    {:ok, :completed, [:send_ack, :start_timer_d]}
   end
 
   def next_state(%{type: :invite_client, state: :calling}, {:timer, :b}) do

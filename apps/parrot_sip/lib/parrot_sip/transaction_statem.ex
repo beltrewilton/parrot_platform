@@ -89,7 +89,7 @@ defmodule ParrotSip.TransactionStatem do
 
   @inspect_opts [pretty: false, limit: :infinity, width: 80, syntax_colors: []]
 
-  alias ParrotSip.Headers.Via
+  alias ParrotSip.Headers.{Via, CSeq}
   alias ParrotSip.Transaction
   alias ParrotSip.{Handler, UAS, Message, Parser}
 
@@ -997,6 +997,37 @@ defmodule ParrotSip.TransactionStatem do
 
         process_actions(rest, data)
 
+      :send_ack ->
+        Logger.debug("[process_actions] Action is :send_ack. Generating ACK for non-2xx response.")
+
+        # RFC 3261 Section 17.1.1.3: The client transaction MUST send an ACK request
+        # when it enters the "Completed" state
+        transaction = data.data.transaction
+        request = transaction.request
+        last_response = transaction.last_response
+
+        ack_msg =
+          %Message{
+            type: :request,
+            method: :ack,
+            request_uri: request.request_uri,
+            version: "SIP/2.0",
+            via: request.via,
+            from: request.from,
+            to: last_response.to,
+            call_id: request.call_id,
+            cseq: %CSeq{number: request.cseq.number, method: :ack},
+            source: request.source
+          }
+
+        # Send ACK via transport
+        %ParrotSip.Headers.To{uri: %ParrotSip.Uri{host: host, port: port}} = last_response.to
+        send_via_transport_handler(:send_request, ack_msg, {host, port})
+
+        Logger.debug("[process_actions] Finished :send_ack action, processing rest: #{inspect(rest)}")
+
+        process_actions(rest, data)
+
       {:start_timer, timer_name, timeout} ->
         Logger.debug(
           "[process_actions] Action is :start_timer. Timer: #{inspect(timer_name)}, Timeout: #{inspect(timeout)}"
@@ -1437,8 +1468,12 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # CANCEL for non-INVITE transactions
-  def trying(:cast, :cancel, %{data: %{handler: handler, transaction: transaction}} = state) do
+  # CANCEL for non-INVITE server transactions
+  def trying(
+        :cast,
+        :cancel,
+        %{type: :server, data: %{handler: handler, transaction: transaction}} = state
+      ) do
     Logger.debug(
       "trans: canceling non-INVITE server transaction. state: #{inspect(state, @inspect_opts)}"
     )
@@ -1447,7 +1482,7 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # Handle cancel events for client transactions
+  # Handle cancel events for client transactions - already cancelled
   def trying(:cast, :cancel, %{data: %{cancelled: true}} = state) do
     Logger.debug(
       "trans: transaction is already cancelled. state: #{inspect(state, @inspect_opts)}"
@@ -1459,6 +1494,7 @@ defmodule ParrotSip.TransactionStatem do
   def trying(:cast, :cancel, %{data: %{cancelled: false, outreq: out_req} = data} = state) do
     Logger.debug("trans: canceling client transaction. state: #{inspect(state, @inspect_opts)}")
     # Generate CANCEL request from original request
+    # RFC 3261 Section 9.1: CANCEL request is constructed using the original request
     cancel_req = %Message{
       type: :request,
       method: :cancel,
@@ -1466,8 +1502,9 @@ defmodule ParrotSip.TransactionStatem do
       call_id: out_req.call_id,
       from: out_req.from,
       to: out_req.to,
-      cseq: %{number: out_req.cseq.number, method: :cancel},
+      cseq: %CSeq{number: out_req.cseq.number, method: :cancel},
       via: out_req.via,
+      source: out_req.source,
       other_headers: %{}
     }
 
@@ -1538,12 +1575,14 @@ defmodule ParrotSip.TransactionStatem do
   - RFC 3261 Section 17.1.1: INVITE Client Transaction (proceeding state)
   - RFC 3261 Section 17.2.1: INVITE Server Transaction (proceeding state)
   """
-  # RFC 3261 Section 9.2: CANCEL for INVITE in proceeding - respond with 487 Request Terminated
+  # RFC 3261 Section 9.2: CANCEL for INVITE server transaction in proceeding - respond with 487 Request Terminated
   def proceeding(
         :cast,
         :cancel,
-        %{data: %{handler: handler, transaction: %{request: %{method: :invite}} = transaction}} =
-          state
+        %{
+          type: :server,
+          data: %{handler: handler, transaction: %{request: %{method: :invite}} = transaction}
+        } = state
       ) do
     Logger.debug(
       "trans: canceling INVITE server transaction in proceeding state. state: #{inspect(state, @inspect_opts)}"
@@ -1555,8 +1594,12 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  # CANCEL for non-INVITE transactions in proceeding
-  def proceeding(:cast, :cancel, %{data: %{handler: handler, transaction: transaction}} = state) do
+  # CANCEL for non-INVITE server transactions in proceeding
+  def proceeding(
+        :cast,
+        :cancel,
+        %{type: :server, data: %{handler: handler, transaction: transaction}} = state
+      ) do
     Logger.debug(
       "trans: canceling non-INVITE server transaction in proceeding state. state: #{inspect(state, @inspect_opts)}"
     )
@@ -1880,6 +1923,7 @@ defmodule ParrotSip.TransactionStatem do
        ) do
     Logger.debug("trans: canceling client transaction.")
     # Generate CANCEL request from original request
+    # RFC 3261 Section 9.1: CANCEL request is constructed using the original request
     cancel_req = %Message{
       type: :request,
       method: :cancel,
@@ -1887,8 +1931,9 @@ defmodule ParrotSip.TransactionStatem do
       call_id: out_req.call_id,
       from: out_req.from,
       to: out_req.to,
-      cseq: %{number: out_req.cseq.number, method: :cancel},
+      cseq: %CSeq{number: out_req.cseq.number, method: :cancel},
       via: out_req.via,
+      source: out_req.source,
       other_headers: %{}
     }
 

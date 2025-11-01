@@ -63,7 +63,7 @@
       [last_From:]
       [last_To:];tag=[pid]SIPpTag01[call_number]
       [last_Call-ID:]
-      CSeq: [last_CSeq: without_return]
+      CSeq: 1 INVITE
       Content-Length: 0
 
     ]]>
