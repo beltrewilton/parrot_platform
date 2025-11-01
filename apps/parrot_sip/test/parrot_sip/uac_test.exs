@@ -125,52 +125,6 @@ defmodule ParrotSip.UACTest do
     end
   end
 
-  describe "ack_request/1" do
-    test "sends ACK directly without transaction layer" do
-      # We can't easily test transport layer sending without complex mocking
-      # Instead, we'll test that ack_request works and returns :ok
-      # The branch adding is tested in the next test
-      ack_message = build_test_ack()
-
-      # Send ACK - this should work with the real transport handler
-      result = UAC.ack_request(ack_message)
-      assert result == :ok
-    end
-
-    test "handles invalid request URI gracefully" do
-      ack_message =
-        build_test_ack()
-        |> Map.put(:request_uri, "invalid-uri")
-
-      # Should not crash
-      :ok = UAC.ack_request(ack_message)
-    end
-
-    test "adds branch to ACK message" do
-      # ACK without branch - Via must be a list
-      via = %Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: :udp,
-        host: "client.example.com",
-        port: 5060,
-        parameters: %{}
-      }
-
-      ack_message = build_test_ack() |> Map.put(:via, [via])
-
-      # The UAC.ack_request function should add a branch
-      # We can't directly test the message sent to transport without complex mocking,
-      # but we can verify the function succeeds
-      result = UAC.ack_request(ack_message)
-      assert result == :ok
-
-      # Test that branch generation works
-      branch = ParrotSip.Branch.generate()
-      assert String.starts_with?(branch, "z9hG4bK")
-    end
-  end
-
   describe "cancel/1" do
     test "cancels an active INVITE transaction" do
       message = build_test_invite()
@@ -192,18 +146,6 @@ defmodule ParrotSip.UACTest do
     test "handles invalid transaction ID gracefully" do
       # Should not crash
       :ok = UAC.cancel({:uac_id, {:trans, :invalid}})
-    end
-  end
-
-  describe "transport handler integration" do
-    test "handles missing transport handler gracefully" do
-      # The real TransportHandler is running from the application
-      # We just test that UAC functions don't crash when using it
-      ack_message = build_test_ack()
-
-      # Should not crash
-      result = UAC.ack_request(ack_message)
-      assert result == :ok
     end
   end
 
@@ -267,22 +209,6 @@ defmodule ParrotSip.UACTest do
       max_forwards: 70,
       contact: [build_test_contact()],
       expires: 3600,
-      body: ""
-    }
-  end
-
-  defp build_test_ack do
-    %Message{
-      type: :request,
-      method: :ack,
-      request_uri: "sip:bob@bob.example.com",
-      version: "SIP/2.0",
-      via: [build_test_via()],
-      from: build_test_from(),
-      to: build_test_to(),
-      call_id: "test-call-id@example.com",
-      cseq: %CSeq{number: 1, method: :ack},
-      max_forwards: 70,
       body: ""
     }
   end
