@@ -953,224 +953,385 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # Real implementation of process_actions/2 to handle SIP actions and timers.
+  # Base case - no more actions to process
   defp process_actions([], data) do
     Logger.debug("[process_actions] No more actions to process.")
     {:keep_state, data}
   end
 
+  # Send response action
+  defp process_actions([{:send_response, response} | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: {:send_response, ...} with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :send_response. Response: #{inspect(response)}")
+
+    # Try to get the source from state, transaction, or response
+    source = extract_source(data, response)
+
+    if source do
+      Logger.debug("[process_actions] Sending response using source: #{inspect(source)}")
+      send_via_transport_handler(:send_response, response, source)
+    else
+      require Logger
+
+      Logger.error(
+        "[process_actions] No source found for send_response/2; cannot send SIP response!"
+      )
+    end
+
+    Logger.debug(
+      "[process_actions] Finished :send_response action, processing rest: #{inspect(rest)}"
+    )
+
+    process_actions(rest, data)
+  end
+
+  # Send request action
+  defp process_actions([{:send_request, request} | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: {:send_request, ...} with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :send_request. Request: #{inspect(request)}")
+    send_via_transport_handler(:send_request, request, nil)
+
+    Logger.debug(
+      "[process_actions] Finished :send_request action, processing rest: #{inspect(rest)}"
+    )
+
+    process_actions(rest, data)
+  end
+
+  # Send ACK action
+  defp process_actions([:send_ack | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :send_ack with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :send_ack. Generating ACK for non-2xx response.")
+
+    # RFC 3261 Section 17.1.1.3: The client transaction MUST send an ACK request
+    # when it enters the "Completed" state
+    transaction = data.data.transaction
+    request = transaction.request
+    last_response = transaction.last_response
+
+    ack_msg =
+      %Message{
+        type: :request,
+        method: :ack,
+        request_uri: request.request_uri,
+        version: "SIP/2.0",
+        via: request.via,
+        from: request.from,
+        to: last_response.to,
+        call_id: request.call_id,
+        cseq: %CSeq{number: request.cseq.number, method: :ack},
+        source: request.source
+      }
+
+    # Send ACK via transport - use destination from original request's source
+    if request.source do
+      destination = request.source.remote
+      send_via_transport_handler(:send_request, ack_msg, destination)
+    end
+
+    Logger.debug("[process_actions] Finished :send_ack action, processing rest: #{inspect(rest)}")
+
+    process_actions(rest, data)
+  end
+
+  # Start timer action
+  defp process_actions([{:start_timer, timer_name, timeout} | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: {:start_timer, #{inspect(timer_name)}, #{inspect(timeout)}} with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug(
+      "[process_actions] Action is :start_timer. Timer: #{inspect(timer_name)}, Timeout: #{inspect(timeout)}"
+    )
+
+    data = cancel_named_timer(timer_name, data)
+    ref = Process.send_after(self(), {:event, timer_name}, timeout)
+    timers = Map.put(data.timers || %{}, timer_name, ref)
+
+    Logger.debug("[process_actions] Timer started. Timers map: #{inspect(timers)}")
+
+    new_data = %{data | timers: timers}
+
+    case process_actions(rest, new_data) do
+      {:keep_state_and_data, _} -> {:keep_state, new_data}
+      {:keep_state, updated_data} -> {:keep_state, updated_data}
+      :stop -> {:stop, :normal, new_data}
+    end
+  end
+
+  # Cancel timer action
+  defp process_actions([{:cancel_timer, timer_name} | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: {:cancel_timer, #{inspect(timer_name)}} with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :cancel_timer. Timer: #{inspect(timer_name)}")
+    data = cancel_named_timer(timer_name, data)
+
+    Logger.debug("[process_actions] Timer cancelled. Timers map: #{inspect(data.timers)}")
+
+    process_actions(rest, data)
+  end
+
+  # Terminate transaction action
+  defp process_actions([:terminate_transaction | _rest], _data) do
+    Logger.debug("[process_actions] Action is :terminate_transaction. Stopping.")
+    :stop
+  end
+
+  # Retransmit last response action
+  defp process_actions([:retransmit_last_response | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :retransmit_last_response with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :retransmit_last_response.")
+
+    last_response =
+      get_in(data, [:transaction, :last_response]) ||
+        get_in(data, [:data, :transaction, :last_response])
+
+    if last_response do
+      Logger.debug(
+        "[process_actions] Retransmitting last response: #{inspect(last_response)}"
+      )
+
+      source = extract_source(data, last_response)
+
+      if source do
+        send_via_transport_handler(:send_response, last_response, source)
+      else
+        send_via_transport_handler(:send_response, last_response, nil)
+      end
+    else
+      Logger.debug("[process_actions] No last response to retransmit.")
+    end
+
+    process_actions(rest, data)
+  end
+
+  # Notify user action
+  defp process_actions([{:notify_user, msg} | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: {:notify_user, ...} with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :notify_user. Message: #{inspect(msg)}")
+    # Implement user notification if needed
+    process_actions(rest, data)
+  end
+
+  # Ignore action
+  defp process_actions([:ignore | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :ignore with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    Logger.debug("[process_actions] Action is :ignore. Skipping.")
+    process_actions(rest, data)
+  end
+
+  # Terminate action
+  defp process_actions([:terminate | _rest], _data) do
+    Logger.debug("[process_actions] Action is :terminate. Stopping.")
+    :stop
+  end
+
+  # Timer start actions from Transaction.next_state/2
+  defp process_actions([:start_timer_a | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_a with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :a, 500, rest, data)
+  end
+
+  defp process_actions([:start_timer_b | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_b with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :b, 32000, rest, data)
+  end
+
+  defp process_actions([:start_timer_c | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_c with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :c, 180_000, rest, data)
+  end
+
+  defp process_actions([:start_timer_d | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_d with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :d, 32000, rest, data)
+  end
+
+  defp process_actions([:start_timer_e | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_e with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :e, 500, rest, data)
+  end
+
+  defp process_actions([:start_timer_f | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_f with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :f, 32000, rest, data)
+  end
+
+  defp process_actions([:start_timer_g | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_g with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :g, 500, rest, data)
+  end
+
+  defp process_actions([:start_timer_h | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_h with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :h, 32000, rest, data)
+  end
+
+  defp process_actions([:start_timer_i | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_i with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :i, 5000, rest, data)
+  end
+
+  defp process_actions([:start_timer_j | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_j with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :j, 32000, rest, data)
+  end
+
+  defp process_actions([:start_timer_k | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :start_timer_k with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:start_timer, :k, 5000, rest, data)
+  end
+
+  # Timer cancel actions from Transaction.next_state/2
+  defp process_actions([:cancel_timer_a | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_a with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :a, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_b | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_b with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :b, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_c | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_c with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :c, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_d | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_d with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :d, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_e | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_e with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :e, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_f | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_f with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :f, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_g | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_g with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :g, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_h | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_h with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :h, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_i | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_i with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :i, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_j | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_j with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :j, nil, rest, data)
+  end
+
+  defp process_actions([:cancel_timer_k | rest], data) do
+    Logger.debug(
+      "[process_actions] Processing action: :cancel_timer_k with data: #{inspect(data, pretty: false, limit: 10)}"
+    )
+
+    process_timer_action(:cancel_timer, :k, nil, rest, data)
+  end
+
+  # Catch-all for unknown actions
   defp process_actions([action | rest], data) do
     Logger.debug(
       "[process_actions] Processing action: #{inspect(action)} with data: #{inspect(data, pretty: false, limit: 10)}"
     )
 
-    case action do
-      {:send_response, response} ->
-        Logger.debug("[process_actions] Action is :send_response. Response: #{inspect(response)}")
-
-        # Try to get the source from state, transaction, or response
-        source = extract_source(data, response)
-
-        if source do
-          Logger.debug("[process_actions] Sending response using source: #{inspect(source)}")
-          send_via_transport_handler(:send_response, response, source)
-        else
-          require Logger
-
-          Logger.error(
-            "[process_actions] No source found for send_response/2; cannot send SIP response!"
-          )
-        end
-
-        Logger.debug(
-          "[process_actions] Finished :send_response action, processing rest: #{inspect(rest)}"
-        )
-
-        process_actions(rest, data)
-
-      {:send_request, request} ->
-        Logger.debug("[process_actions] Action is :send_request. Request: #{inspect(request)}")
-        send_via_transport_handler(:send_request, request, nil)
-
-        Logger.debug(
-          "[process_actions] Finished :send_request action, processing rest: #{inspect(rest)}"
-        )
-
-        process_actions(rest, data)
-
-      :send_ack ->
-        Logger.debug("[process_actions] Action is :send_ack. Generating ACK for non-2xx response.")
-
-        # RFC 3261 Section 17.1.1.3: The client transaction MUST send an ACK request
-        # when it enters the "Completed" state
-        transaction = data.data.transaction
-        request = transaction.request
-        last_response = transaction.last_response
-
-        ack_msg =
-          %Message{
-            type: :request,
-            method: :ack,
-            request_uri: request.request_uri,
-            version: "SIP/2.0",
-            via: request.via,
-            from: request.from,
-            to: last_response.to,
-            call_id: request.call_id,
-            cseq: %CSeq{number: request.cseq.number, method: :ack},
-            source: request.source
-          }
-
-        # Send ACK via transport - use destination from original request's source
-        if request.source do
-          destination = request.source.remote
-          send_via_transport_handler(:send_request, ack_msg, destination)
-        end
-
-        Logger.debug("[process_actions] Finished :send_ack action, processing rest: #{inspect(rest)}")
-
-        process_actions(rest, data)
-
-      {:start_timer, timer_name, timeout} ->
-        Logger.debug(
-          "[process_actions] Action is :start_timer. Timer: #{inspect(timer_name)}, Timeout: #{inspect(timeout)}"
-        )
-
-        data = cancel_named_timer(timer_name, data)
-        ref = Process.send_after(self(), {:event, timer_name}, timeout)
-        timers = Map.put(data.timers || %{}, timer_name, ref)
-
-        Logger.debug("[process_actions] Timer started. Timers map: #{inspect(timers)}")
-
-        new_data = %{data | timers: timers}
-
-        case process_actions(rest, new_data) do
-          {:keep_state_and_data, _} -> {:keep_state, new_data}
-          {:keep_state, updated_data} -> {:keep_state, updated_data}
-          :stop -> {:stop, :normal, new_data}
-        end
-
-      {:cancel_timer, timer_name} ->
-        Logger.debug("[process_actions] Action is :cancel_timer. Timer: #{inspect(timer_name)}")
-        data = cancel_named_timer(timer_name, data)
-
-        Logger.debug("[process_actions] Timer cancelled. Timers map: #{inspect(data.timers)}")
-
-        process_actions(rest, data)
-
-      :terminate_transaction ->
-        Logger.debug("[process_actions] Action is :terminate_transaction. Stopping.")
-        :stop
-
-      :retransmit_last_response ->
-        Logger.debug("[process_actions] Action is :retransmit_last_response.")
-
-        last_response =
-          get_in(data, [:transaction, :last_response]) ||
-            get_in(data, [:data, :transaction, :last_response])
-
-        if last_response do
-          Logger.debug(
-            "[process_actions] Retransmitting last response: #{inspect(last_response)}"
-          )
-
-          source = extract_source(data, last_response)
-
-          if source do
-            send_via_transport_handler(:send_response, last_response, source)
-          else
-            send_via_transport_handler(:send_response, last_response, nil)
-          end
-        else
-          Logger.debug("[process_actions] No last response to retransmit.")
-        end
-
-        process_actions(rest, data)
-
-      {:notify_user, msg} ->
-        Logger.debug("[process_actions] Action is :notify_user. Message: #{inspect(msg)}")
-        # Implement user notification if needed
-        process_actions(rest, data)
-
-      :ignore ->
-        Logger.debug("[process_actions] Action is :ignore. Skipping.")
-        process_actions(rest, data)
-
-      :terminate ->
-        Logger.debug("[process_actions] Action is :terminate. Stopping.")
-        :stop
-
-      # Timer start actions from Transaction.next_state/2
-      :start_timer_a ->
-        process_timer_action(:start_timer, :a, 500, rest, data)
-
-      :start_timer_b ->
-        process_timer_action(:start_timer, :b, 32000, rest, data)
-
-      :start_timer_c ->
-        process_timer_action(:start_timer, :c, 180_000, rest, data)
-
-      :start_timer_d ->
-        process_timer_action(:start_timer, :d, 32000, rest, data)
-
-      :start_timer_e ->
-        process_timer_action(:start_timer, :e, 500, rest, data)
-
-      :start_timer_f ->
-        process_timer_action(:start_timer, :f, 32000, rest, data)
-
-      :start_timer_g ->
-        process_timer_action(:start_timer, :g, 500, rest, data)
-
-      :start_timer_h ->
-        process_timer_action(:start_timer, :h, 32000, rest, data)
-
-      :start_timer_i ->
-        process_timer_action(:start_timer, :i, 5000, rest, data)
-
-      :start_timer_j ->
-        process_timer_action(:start_timer, :j, 32000, rest, data)
-
-      :start_timer_k ->
-        process_timer_action(:start_timer, :k, 5000, rest, data)
-
-      # Timer cancel actions from Transaction.next_state/2
-      :cancel_timer_a ->
-        process_timer_action(:cancel_timer, :a, nil, rest, data)
-
-      :cancel_timer_b ->
-        process_timer_action(:cancel_timer, :b, nil, rest, data)
-
-      :cancel_timer_c ->
-        process_timer_action(:cancel_timer, :c, nil, rest, data)
-
-      :cancel_timer_d ->
-        process_timer_action(:cancel_timer, :d, nil, rest, data)
-
-      :cancel_timer_e ->
-        process_timer_action(:cancel_timer, :e, nil, rest, data)
-
-      :cancel_timer_f ->
-        process_timer_action(:cancel_timer, :f, nil, rest, data)
-
-      :cancel_timer_g ->
-        process_timer_action(:cancel_timer, :g, nil, rest, data)
-
-      :cancel_timer_h ->
-        process_timer_action(:cancel_timer, :h, nil, rest, data)
-
-      :cancel_timer_i ->
-        process_timer_action(:cancel_timer, :i, nil, rest, data)
-
-      :cancel_timer_j ->
-        process_timer_action(:cancel_timer, :j, nil, rest, data)
-
-      :cancel_timer_k ->
-        process_timer_action(:cancel_timer, :k, nil, rest, data)
-
-      _ ->
-        Logger.debug("[process_actions] Unknown action: #{inspect(action)}. Skipping.")
-        process_actions(rest, data)
-    end
+    Logger.debug("[process_actions] Unknown action: #{inspect(action)}. Skipping.")
+    process_actions(rest, data)
   end
 
   defp process_timer_action(:start_timer, timer_name, timeout, rest, data) do
