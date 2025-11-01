@@ -249,7 +249,6 @@ defmodule ParrotSip.TransportHandler do
          destination},
         state
       ) do
-    dbg(destination)
     key = {transport_type, local_ip, local_port}
     transport_ref = Map.get(state.transports, key) || state.transport_ref
     send_to_transport(request, destination, transport_ref, nil)

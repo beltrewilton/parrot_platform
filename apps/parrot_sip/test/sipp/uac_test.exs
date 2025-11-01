@@ -33,7 +33,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create minimal SIP stack (we don't need a handler since we're UAC)
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
 
       # Build outbound INVITE
@@ -81,7 +81,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create minimal SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
 
       # Build outbound OPTIONS
@@ -110,7 +110,6 @@ defmodule SippTest.UacTest do
                q_value: nil
              } = response.accept
 
-
       # Verify SIPp completed successfully
       assert :ok = Task.await(sipp_task, 5_000)
 
@@ -138,7 +137,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
 
       # Track responses
@@ -189,14 +188,14 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
       test_pid = self()
 
       # Send initial INVITE
       invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
-      uac_id =
+      _uac_id =
         UAC.request(invite_msg, fn result ->
           send(test_pid, {:uac_result, result})
         end)
@@ -210,14 +209,15 @@ defmodule SippTest.UacTest do
       call_id = invite_msg.call_id
 
       # Build re-INVITE with hold (sendonly)
-      reinvite_msg = build_reinvite_hold(
-        "127.0.0.1",
-        sipp_port,
-        stack.port,
-        call_id,
-        from_tag,
-        to_tag
-      )
+      reinvite_msg =
+        build_reinvite_hold(
+          "127.0.0.1",
+          sipp_port,
+          stack.port,
+          call_id,
+          from_tag,
+          to_tag
+        )
 
       # Send re-INVITE
       _reinvite_uac_id =
@@ -271,7 +271,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
       test_pid = self()
 
@@ -329,7 +329,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
       test_pid = self()
 
@@ -394,7 +394,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
       test_pid = self()
 
@@ -408,6 +408,9 @@ defmodule SippTest.UacTest do
 
       # Wait for 180 Ringing
       assert_receive {:uac_result, {:response, %Message{status_code: 180}}}, 5_000
+
+      # Wait 100ms
+      Process.sleep(100)
 
       # Send CANCEL
       :ok = UAC.cancel(uac_id)
@@ -446,7 +449,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
       test_pid = self()
 
@@ -494,7 +497,7 @@ defmodule SippTest.UacTest do
       Process.sleep(500)
 
       # Create SIP stack
-      handler = ParrotSip.TestHandler.new()
+      handler = SippTest.TestHandler.new()
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
       test_pid = self()
 
