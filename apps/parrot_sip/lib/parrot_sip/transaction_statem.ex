@@ -1020,9 +1020,11 @@ defmodule ParrotSip.TransactionStatem do
             source: request.source
           }
 
-        # Send ACK via transport
-        %ParrotSip.Headers.To{uri: %ParrotSip.Uri{host: host, port: port}} = last_response.to
-        send_via_transport_handler(:send_request, ack_msg, {host, port})
+        # Send ACK via transport - use destination from original request's source
+        if request.source do
+          destination = request.source.remote
+          send_via_transport_handler(:send_request, ack_msg, destination)
+        end
 
         Logger.debug("[process_actions] Finished :send_ack action, processing rest: #{inspect(rest)}")
 

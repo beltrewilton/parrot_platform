@@ -512,19 +512,22 @@ end
 defmodule MockTransport do
   use GenServer
 
+  @impl true
   def init(args) do
     {:ok, args}
   end
 
-  # Handle both 2-arg and 3-arg register_handler formats
+  @impl true
   def handle_call({:register_handler, _pid}, _from, state) do
     {:reply, :ok, state}
   end
 
+  @impl true
   def handle_call({:register_handler, _pid, _opts}, _from, state) do
     {:reply, :ok, state}
   end
 
+  @impl true
   def handle_cast({:send_packet, data, destination}, state) do
     # Forward to test process
     send(Process.get(:test_pid) || self(), {:send_packet, data, destination})
