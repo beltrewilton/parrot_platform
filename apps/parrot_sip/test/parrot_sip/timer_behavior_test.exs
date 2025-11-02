@@ -17,7 +17,7 @@ defmodule ParrotSip.TimerBehaviorTest do
 
   use ExUnit.Case, async: false
 
-  alias ParrotSip.{Transaction, TransactionStatem, Message}
+  alias ParrotSip.{Transaction, TransactionStatem, Message, Source}
   alias ParrotSip.Headers.{Via, From, To, CSeq}
 
   @moduletag :timers
@@ -391,7 +391,12 @@ defmodule ParrotSip.TimerBehaviorTest do
       call_id: "call-#{test_id}@example.com",
       cseq: %CSeq{number: 1, method: :invite},
       max_forwards: 70,
-      body: ""
+      body: "",
+      source: %Source{
+        local: {{127, 0, 0, 1}, 5060},
+        remote: {{127, 0, 0, 1}, 5061},
+        transport: :udp
+      }
     }
   end
 
@@ -407,7 +412,12 @@ defmodule ParrotSip.TimerBehaviorTest do
       call_id: "call-#{test_id}@example.com",
       cseq: %CSeq{number: 1, method: :register},
       max_forwards: 70,
-      body: ""
+      body: "",
+      source: %Source{
+        local: {{127, 0, 0, 1}, 5060},
+        remote: {{127, 0, 0, 1}, 5061},
+        transport: :udp
+      }
     }
   end
 
@@ -423,7 +433,12 @@ defmodule ParrotSip.TimerBehaviorTest do
       call_id: "call-#{test_id}@example.com",
       cseq: %CSeq{number: 1, method: :options},
       max_forwards: 70,
-      body: ""
+      body: "",
+      source: %Source{
+        local: {{127, 0, 0, 1}, 5060},
+        remote: {{127, 0, 0, 1}, 5061},
+        transport: :udp
+      }
     }
   end
 
