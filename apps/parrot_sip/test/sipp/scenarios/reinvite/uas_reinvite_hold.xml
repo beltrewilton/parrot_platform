@@ -17,15 +17,7 @@
 
 <scenario name="UAS re-INVITE Hold">
   <!-- Receive initial INVITE -->
-  <recv request="INVITE" crlf="true">
-    <action>
-      <ereg regexp=".*" search_in="hdr" header="From:" assign_to="from_hdr"/>
-      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="to_hdr"/>
-      <ereg regexp=".*" search_in="hdr" header="Call-ID:" assign_to="call_id"/>
-      <ereg regexp=".*" search_in="hdr" header="CSeq:" assign_to="cseq"/>
-      <ereg regexp=".*" search_in="hdr" header="Contact:" assign_to="contact"/>
-    </action>
-  </recv>
+  <recv request="INVITE" crlf="true"/>
 
   <!-- Send 200 OK for initial INVITE -->
   <send>

@@ -11,12 +11,7 @@
 
 <scenario name="UAS REGISTER">
   <!-- Receive REGISTER -->
-  <recv request="REGISTER" crlf="true">
-    <action>
-      <ereg regexp=".*" search_in="hdr" header="Contact:" assign_to="contact_hdr"/>
-      <ereg regexp=".*" search_in="hdr" header="Expires:" assign_to="expires_hdr"/>
-    </action>
-  </recv>
+  <recv request="REGISTER" crlf="true"/>
 
   <!-- Send 200 OK with registered Contact -->
   <send>
@@ -28,7 +23,7 @@
       [last_To:];tag=[pid]SIPpTag01[call_number]
       [last_Call-ID:]
       [last_CSeq:]
-      [$contact_hdr]
+      [last_Contact:]
       Expires: 3600
       Content-Length: 0
 
