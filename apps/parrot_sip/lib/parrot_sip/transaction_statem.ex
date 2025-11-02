@@ -736,15 +736,69 @@ defmodule ParrotSip.TransactionStatem do
   - RFC 3261 Section 17.1: Client Transaction initialization
   - RFC 3261 Section 17.2: Server Transaction initialization
   """
-  # Client transaction - INVITE
+  # Client transaction - INVITE (with source)
   @impl :gen_statem
-  def init([%ParrotSip.Transaction{type: :invite_client} = transaction, options, callback]) do
-    init_client_transaction(transaction, options, callback)
+  def init([
+        %ParrotSip.Transaction{
+          type: :invite_client,
+          request: %{source: %{remote: destination}} = sip_msg,
+          id: transaction_id,
+          branch: branch,
+          method: method,
+          state: initial_state
+        } = transaction,
+        options,
+        callback
+      ]) do
+    init_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback)
   end
 
-  # Client transaction - non-INVITE
-  def init([%ParrotSip.Transaction{type: :non_invite_client} = transaction, options, callback]) do
-    init_client_transaction(transaction, options, callback)
+  # Client transaction - INVITE (without source or remote)
+  def init([
+        %ParrotSip.Transaction{
+          type: :invite_client,
+          request: sip_msg,
+          id: transaction_id,
+          branch: branch,
+          method: method,
+          state: initial_state
+        } = transaction,
+        options,
+        callback
+      ]) do
+    init_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, nil, options, callback)
+  end
+
+  # Client transaction - non-INVITE (with source)
+  def init([
+        %ParrotSip.Transaction{
+          type: :non_invite_client,
+          request: %{source: %{remote: destination}} = sip_msg,
+          id: transaction_id,
+          branch: branch,
+          method: method,
+          state: initial_state
+        } = transaction,
+        options,
+        callback
+      ]) do
+    init_non_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback)
+  end
+
+  # Client transaction - non-INVITE (without source or remote)
+  def init([
+        %ParrotSip.Transaction{
+          type: :non_invite_client,
+          request: sip_msg,
+          id: transaction_id,
+          branch: branch,
+          method: method,
+          state: initial_state
+        } = transaction,
+        options,
+        callback
+      ]) do
+    init_non_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, nil, options, callback)
   end
 
   # Server transaction - all other transaction types
@@ -752,57 +806,23 @@ defmodule ParrotSip.TransactionStatem do
     init_server_transaction(transaction, handler)
   end
 
-  # Client transaction initialization helper
-  defp init_client_transaction(transaction, options, callback) do
-    %{request: sip_msg, id: transaction_id, branch: branch, type: client_type} = transaction
+  # INVITE client helper
+  defp init_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback) do
     registry = Map.get(options, :registry, ParrotSip.Registry)
-
     Registry.register(registry, transaction_id, nil)
 
-    Logger.metadata(
-      trans_id: transaction_id,
-      method: transaction.method,
-      call_id: sip_msg.call_id,
-      branch: branch
-    )
+    Logger.metadata(trans_id: transaction_id, method: method, call_id: sip_msg.call_id, branch: branch)
+    Logger.debug("trans: client: #{method} #{sip_msg.request_uri}; call-id: #{sip_msg.call_id}; branch: #{branch}")
 
-    Logger.debug(
-      "trans: client: #{transaction.method} #{sip_msg.request_uri}; " <>
-        "call-id: #{sip_msg.call_id}; branch: #{branch}"
-    )
-
-    # Extract destination from message source
-    destination =
-      case sip_msg.source do
-        %{remote: remote} when not is_nil(remote) -> remote
-        _ -> nil
-      end
-
-    # Send the initial request via transport handler
     send_via_transport_handler(:send_request, sip_msg, destination)
 
-    # Start timers immediately based on client type to avoid race condition
-    # where response arrives before queued :next_event timer actions fire
-    timers =
-      case client_type do
-        :invite_client ->
-          timer_a = Map.get(options, :timer_a, 500)
-          timer_b = Map.get(options, :timer_b, 32000)
+    timer_a = Map.get(options, :timer_a, 500)
+    timer_b = Map.get(options, :timer_b, 32000)
 
-          %{
-            a: Process.send_after(self(), {:event, :a}, timer_a),
-            b: Process.send_after(self(), {:event, :b}, timer_b)
-          }
-
-        :non_invite_client ->
-          timer_e = Map.get(options, :timer_e, 500)
-          timer_f = Map.get(options, :timer_f, 32000)
-
-          %{
-            e: Process.send_after(self(), {:event, :e}, timer_e),
-            f: Process.send_after(self(), {:event, :f}, timer_f)
-          }
-      end
+    timers = %{
+      a: Process.send_after(self(), {:event, :a}, timer_a),
+      b: Process.send_after(self(), {:event, :b}, timer_b)
+    }
 
     state = %{
       type: :client,
@@ -812,20 +832,54 @@ defmodule ParrotSip.TransactionStatem do
         transaction: transaction,
         options: options,
         outreq: sip_msg,
-        cancelled: false
+        cancelled: false,
+        timer_a_interval: timer_a
       },
       owner_mon: nil,
       timers: timers,
-      log:
-        Map.get(
-          options,
-          :debug_log,
-          Application.get_env(:parrot_sip, :transaction_debug_log, false)
-        ),
+      log: Map.get(options, :debug_log, Application.get_env(:parrot_sip, :transaction_debug_log, false)),
       logbranch: branch
     }
 
-    {:ok, transaction.state, state}
+    {:ok, initial_state, state}
+  end
+
+  # Non-INVITE client helper
+  defp init_non_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback) do
+    registry = Map.get(options, :registry, ParrotSip.Registry)
+    Registry.register(registry, transaction_id, nil)
+
+    Logger.metadata(trans_id: transaction_id, method: method, call_id: sip_msg.call_id, branch: branch)
+    Logger.debug("trans: client: #{method} #{sip_msg.request_uri}; call-id: #{sip_msg.call_id}; branch: #{branch}")
+
+    send_via_transport_handler(:send_request, sip_msg, destination)
+
+    timer_e = Map.get(options, :timer_e, 500)
+    timer_f = Map.get(options, :timer_f, 32000)
+
+    timers = %{
+      e: Process.send_after(self(), {:event, :e}, timer_e),
+      f: Process.send_after(self(), {:event, :f}, timer_f)
+    }
+
+    state = %{
+      type: :client,
+      data: %{
+        handler: callback,
+        origmsg: sip_msg,
+        transaction: transaction,
+        options: options,
+        outreq: sip_msg,
+        cancelled: false,
+        timer_e_interval: timer_e
+      },
+      owner_mon: nil,
+      timers: timers,
+      log: Map.get(options, :debug_log, Application.get_env(:parrot_sip, :transaction_debug_log, false)),
+      logbranch: branch
+    }
+
+    {:ok, initial_state, state}
   end
 
   # Server transaction initialization helper
