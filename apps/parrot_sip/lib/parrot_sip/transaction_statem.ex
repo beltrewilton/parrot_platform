@@ -91,7 +91,7 @@ defmodule ParrotSip.TransactionStatem do
 
   alias ParrotSip.Headers.{Via, CSeq}
   alias ParrotSip.Transaction
-  alias ParrotSip.{Handler, UAS, Message, Parser}
+  alias ParrotSip.{Handler, UAS, Message, Parser, Source}
 
   @type t :: {:trans, pid()}
   @type client_result :: {:stop, term()} | {:message, term()}
@@ -585,14 +585,20 @@ defmodule ParrotSip.TransactionStatem do
   """
   @spec client_response(term(), binary()) :: :ok
   def client_response(via, msg) when is_binary(msg) do
+    Logger.debug("[client_response] Received response, parsing...")
+
     case Parser.parse(msg) do
       {:ok, sip_msg} ->
+        Logger.debug("[client_response] Parse successful, extracting branch and method")
+
         # Generate transaction ID from branch and method
         branch =
           case via do
             %Via{parameters: %{"branch" => b}} -> b
             _ -> nil
           end
+
+        Logger.debug("[client_response] Branch: #{inspect(branch)}")
 
         # For responses, extract method from CSeq header
         method =
@@ -608,6 +614,8 @@ defmodule ParrotSip.TransactionStatem do
               nil
           end
 
+        Logger.debug("[client_response] Method: #{inspect(method)}, CSeq: #{inspect(sip_msg.cseq)}")
+
         trans_id =
           if branch && method do
             "#{branch}:#{method}:client"
@@ -616,14 +624,17 @@ defmodule ParrotSip.TransactionStatem do
             nil
           end
 
+        Logger.debug("[client_response] Transaction ID: #{inspect(trans_id)}")
+
         if trans_id do
           case Registry.lookup(ParrotSip.Registry, trans_id) do
             [{pid, _}] when is_pid(pid) ->
+              Logger.debug("[client_response] Found transaction pid: #{inspect(pid)}, casting :received")
               :gen_statem.cast(pid, {:received, sip_msg})
 
-            _ ->
+            lookup_result ->
               Logger.warning(
-                "cannot find transaction for request: #{inspect(via, @inspect_opts)}"
+                "[client_response] Cannot find transaction! Lookup result: #{inspect(lookup_result)}, transaction_id: #{trans_id}, via: #{inspect(via, @inspect_opts)}"
               )
           end
         end
@@ -760,6 +771,39 @@ defmodule ParrotSip.TransactionStatem do
         "call-id: #{sip_msg.call_id}; branch: #{branch}"
     )
 
+    # Extract destination from message source
+    destination =
+      case sip_msg.source do
+        %{remote: remote} when not is_nil(remote) -> remote
+        _ -> nil
+      end
+
+    # Send the initial request via transport handler
+    send_via_transport_handler(:send_request, sip_msg, destination)
+
+    # Start timers immediately based on client type to avoid race condition
+    # where response arrives before queued :next_event timer actions fire
+    timers =
+      case client_type do
+        :invite_client ->
+          timer_a = Map.get(options, :timer_a, 500)
+          timer_b = Map.get(options, :timer_b, 32000)
+
+          %{
+            a: Process.send_after(self(), {:event, :a}, timer_a),
+            b: Process.send_after(self(), {:event, :b}, timer_b)
+          }
+
+        :non_invite_client ->
+          timer_e = Map.get(options, :timer_e, 500)
+          timer_f = Map.get(options, :timer_f, 32000)
+
+          %{
+            e: Process.send_after(self(), {:event, :e}, timer_e),
+            f: Process.send_after(self(), {:event, :f}, timer_f)
+          }
+      end
+
     state = %{
       type: :client,
       data: %{
@@ -771,7 +815,7 @@ defmodule ParrotSip.TransactionStatem do
         cancelled: false
       },
       owner_mon: nil,
-      timers: %{},
+      timers: timers,
       log:
         Map.get(
           options,
@@ -781,39 +825,7 @@ defmodule ParrotSip.TransactionStatem do
       logbranch: branch
     }
 
-    # Extract destination from message source
-    destination =
-      case sip_msg.source do
-        %{remote: remote} when not is_nil(remote) -> remote
-        _ -> nil
-      end
-
-    # Send the initial request via transport handler
-    send_via_transport_handler(:send_request, sip_msg, destination)
-
-    # Build timer actions based on client type
-    timer_actions =
-      case client_type do
-        :invite_client ->
-          timer_a = Map.get(options, :timer_a, 500)
-          timer_b = Map.get(options, :timer_b, 32000)
-
-          [
-            {:next_event, :internal, {:start_timer, :a, timer_a}},
-            {:next_event, :internal, {:start_timer, :b, timer_b}}
-          ]
-
-        :non_invite_client ->
-          timer_e = Map.get(options, :timer_e, 500)
-          timer_f = Map.get(options, :timer_f, 32000)
-
-          [
-            {:next_event, :internal, {:start_timer, :e, timer_e}},
-            {:next_event, :internal, {:start_timer, :f, timer_f}}
-          ]
-      end
-
-    {:ok, transaction.state, state, timer_actions}
+    {:ok, transaction.state, state}
   end
 
   # Server transaction initialization helper
@@ -901,8 +913,16 @@ defmodule ParrotSip.TransactionStatem do
     update_response = Keyword.get(opts, :update_response, nil)
     send_response = Keyword.get(opts, :send_response, false)
 
+    Logger.debug(
+      "[apply_state_transition] Event: #{inspect(event)}, current state: #{transaction.state}, transaction_id: #{transaction.id}"
+    )
+
     case Transaction.next_state(transaction, event) do
       {:ok, new_state_atom, actions} ->
+        Logger.debug(
+          "[apply_state_transition] Transition: #{transaction.state} -> #{new_state_atom}, actions: #{inspect(actions)}"
+        )
+
         # Update transaction struct
         new_transaction =
           if update_response do
@@ -927,6 +947,10 @@ defmodule ParrotSip.TransactionStatem do
 
         # Check if gen_statem state should transition
         if transaction.state != new_state_atom do
+          Logger.debug(
+            "[apply_state_transition] State changing, will call process_actions and return :next_state"
+          )
+
           # Call state transition callback if handler exists (only for server transactions with Handler struct)
           if state.data.handler && is_struct(state.data.handler, ParrotSip.Handler) &&
                state.data[:origmsg] do
@@ -938,16 +962,32 @@ defmodule ParrotSip.TransactionStatem do
             )
           end
 
-          case process_actions(actions, new_state) do
-            :stop -> {:stop, :normal, new_state}
-            {:keep_state, result_state} -> {:next_state, new_state_atom, result_state}
-            other -> other
+          action_result = process_actions(actions, new_state)
+          Logger.debug("[apply_state_transition] process_actions returned: #{inspect(action_result)}")
+
+          case action_result do
+            :stop ->
+              Logger.debug("[apply_state_transition] Returning {:stop, :normal, new_state}")
+              {:stop, :normal, new_state}
+
+            {:keep_state, result_state} ->
+              Logger.debug("[apply_state_transition] Returning {:next_state, #{new_state_atom}, ...}")
+              {:next_state, new_state_atom, result_state}
+
+            other ->
+              Logger.debug("[apply_state_transition] Returning other: #{inspect(other)}")
+              other
           end
         else
+          Logger.debug(
+            "[apply_state_transition] State not changing, will call process_actions and keep current state"
+          )
+
           process_actions(actions, new_state)
         end
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.debug("[apply_state_transition] Transaction.next_state returned error: #{inspect(reason)}")
         {:keep_state, state}
     end
   end
@@ -989,13 +1029,17 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # Send request action
-  defp process_actions([{:send_request, request} | rest], data) do
+  defp process_actions(
+         [{:send_request, %Message{source: %Source{remote: destination}} = request} | rest],
+         data
+       ) do
     Logger.debug(
       "[process_actions] Processing action: {:send_request, ...} with data: #{inspect(data, pretty: false, limit: 10)}"
     )
 
     Logger.debug("[process_actions] Action is :send_request. Request: #{inspect(request)}")
-    send_via_transport_handler(:send_request, request, nil)
+    Logger.debug("[process_actions] Sending request to destination: #{inspect(destination)}")
+    send_via_transport_handler(:send_request, request, destination)
 
     Logger.debug(
       "[process_actions] Finished :send_request action, processing rest: #{inspect(rest)}"
@@ -1101,9 +1145,7 @@ defmodule ParrotSip.TransactionStatem do
         get_in(data, [:data, :transaction, :last_response])
 
     if last_response do
-      Logger.debug(
-        "[process_actions] Retransmitting last response: #{inspect(last_response)}"
-      )
+      Logger.debug("[process_actions] Retransmitting last response: #{inspect(last_response)}")
 
       source = extract_source(data, last_response)
 
@@ -2027,16 +2069,30 @@ defmodule ParrotSip.TransactionStatem do
          {:received, %{type: :response, status_code: status_code} = sip_msg},
          %{type: :client, data: %{transaction: transaction} = data} = state
        ) do
+    Logger.debug(
+      "[handle_common_event] Client received response #{status_code}, current state: #{transaction.state}, transaction_id: #{transaction.id}"
+    )
+
     log_response_info(sip_msg, state)
 
     # Call the user callback with the response for client transactions
     if is_function(data.handler) do
+      Logger.debug("[handle_common_event] Calling user callback with response")
       data.handler.({:response, sip_msg})
+      Logger.debug("[handle_common_event] User callback completed")
     end
 
-    apply_state_transition(transaction, {:receive_response, status_code}, state,
-      update_response: sip_msg
+    Logger.debug(
+      "[handle_common_event] Calling apply_state_transition with event: {:receive_response, #{status_code}}"
     )
+
+    result =
+      apply_state_transition(transaction, {:receive_response, status_code}, state,
+        update_response: sip_msg
+      )
+
+    Logger.debug("[handle_common_event] apply_state_transition returned: #{inspect(result)}")
+    result
   end
 
   defp handle_common_event(
@@ -2266,12 +2322,12 @@ defmodule ParrotSip.TransactionStatem do
         :info,
         {:event, :a},
         :calling,
-        %{data: %{transaction: %{type: :invite_client}, outreq: request}, timers: timers} = state
+        %{data: %{transaction: %{type: :invite_client}, outreq: %{source: %{remote: destination}} = request}, timers: timers} = state
       ) do
     Logger.debug("trans: timer A fired, retransmitting INVITE request and rescheduling")
 
     # Retransmit the request
-    send_via_transport_handler(:send_request, request, nil)
+    send_via_transport_handler(:send_request, request, destination)
 
     # Reschedule timer A with exponential backoff (double the interval)
     # Cancel old timer and flush any pending timer messages to prevent race condition
@@ -2302,13 +2358,13 @@ defmodule ParrotSip.TransactionStatem do
         :info,
         {:event, :e},
         :trying,
-        %{data: %{transaction: %{type: :non_invite_client}, outreq: request}, timers: timers} =
+        %{data: %{transaction: %{type: :non_invite_client}, outreq: %{source: %{remote: destination}} = request}, timers: timers} =
           state
       ) do
     Logger.debug("trans: timer E fired, retransmitting non-INVITE request and rescheduling")
 
     # Retransmit the request
-    send_via_transport_handler(:send_request, request, nil)
+    send_via_transport_handler(:send_request, request, destination)
 
     # Reschedule timer E with exponential backoff (double the interval, max T2 = 4000ms)
     # Cancel old timer and flush any pending timer messages to prevent race condition
