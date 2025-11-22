@@ -91,7 +91,8 @@ defmodule ParrotSip.TransactionStatem do
 
   alias ParrotSip.Headers.{Via, CSeq}
   alias ParrotSip.Transaction
-  alias ParrotSip.{Handler, UAS, Message, Parser, Source}
+  alias ParrotSip.{Handler, Message, Parser, Source}
+  alias ParrotSip.Transaction.Server
 
   @type t :: {:trans, pid()}
   @type client_result :: {:stop, term()} | {:message, term()}
@@ -1581,7 +1582,7 @@ defmodule ParrotSip.TransactionStatem do
     )
 
     :process_uas = Handler.transaction(transaction, sip_msg, handler)
-    UAS.process_ack(sip_msg, handler)
+    Server.process_ack(sip_msg, handler)
   end
 
   # Handle initial INVITE (no To tag) - send 100 Trying
@@ -1607,7 +1608,7 @@ defmodule ParrotSip.TransactionStatem do
       ParrotSip.Message.reply(sip_msg, 100, "Trying")
       |> Map.put(:body, "")
 
-    UAS.response(trying_resp, transaction)
+    Server.response(trying_resp, transaction)
 
     # After sending 100 Trying, INVITE server transactions move to proceeding
     # Store the provisional response we sent
@@ -1628,7 +1629,7 @@ defmodule ParrotSip.TransactionStatem do
             "Handler.transaction(transaction, sip_msg, handler) -> :process_uas, moving to proceeding"
           )
 
-          UAS.process(transaction, sip_msg, handler)
+          Server.process(transaction, sip_msg, handler)
           Handler.transaction_proceeding(transaction, sip_msg, handler)
           {:next_state, :proceeding, updated_state}
 
@@ -1666,7 +1667,7 @@ defmodule ParrotSip.TransactionStatem do
 
       :process_uas ->
         Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
-        UAS.process(transaction, sip_msg, handler)
+        Server.process(transaction, sip_msg, handler)
     end
 
     {:keep_state, state}
@@ -1691,7 +1692,7 @@ defmodule ParrotSip.TransactionStatem do
 
       :process_uas ->
         Logger.debug("Handler.transaction(transaction, sip_msg, handler) -> :process_uas")
-        UAS.process(transaction, sip_msg, handler)
+        Server.process(transaction, sip_msg, handler)
     end
 
     {:keep_state, state}
@@ -1721,8 +1722,8 @@ defmodule ParrotSip.TransactionStatem do
       "trans: canceling INVITE server transaction. state: #{inspect(state, @inspect_opts)}"
     )
 
-    UAS.process_cancel(transaction, handler)
-    resp = UAS.make_reply(487, "Request Terminated", transaction, transaction.request)
+    Server.process_cancel(transaction, handler)
+    resp = Server.make_reply(487, "Request Terminated", transaction, transaction.request)
     server_response(resp, transaction)
     {:keep_state, state}
   end
@@ -1737,7 +1738,7 @@ defmodule ParrotSip.TransactionStatem do
       "trans: canceling non-INVITE server transaction. state: #{inspect(state, @inspect_opts)}"
     )
 
-    UAS.process_cancel(transaction, handler)
+    Server.process_cancel(transaction, handler)
     {:keep_state, state}
   end
 
@@ -1847,8 +1848,8 @@ defmodule ParrotSip.TransactionStatem do
       "trans: canceling INVITE server transaction in proceeding state. state: #{inspect(state, @inspect_opts)}"
     )
 
-    UAS.process_cancel(transaction, handler)
-    resp = UAS.make_reply(487, "Request Terminated", transaction, transaction.request)
+    Server.process_cancel(transaction, handler)
+    resp = Server.make_reply(487, "Request Terminated", transaction, transaction.request)
     server_response(resp, transaction)
     {:keep_state, state}
   end
@@ -1863,7 +1864,7 @@ defmodule ParrotSip.TransactionStatem do
       "trans: canceling non-INVITE server transaction in proceeding state. state: #{inspect(state, @inspect_opts)}"
     )
 
-    UAS.process_cancel(transaction, handler)
+    Server.process_cancel(transaction, handler)
     {:keep_state, state}
   end
 

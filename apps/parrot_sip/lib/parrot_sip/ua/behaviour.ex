@@ -132,7 +132,7 @@ defmodule ParrotSip.UA.Behaviour do
   - `state` - Current UA state
 
   ## Returns
-  - `{:retry, contact, new_state}` - Retry with specific contact
+  - `{:redirect, contact, new_state}` - Follow redirect to specific contact
   - `{:stop, reason, new_state}` - Stop
   """
   @callback handle_redirect(
@@ -141,7 +141,7 @@ defmodule ParrotSip.UA.Behaviour do
               contacts :: [Contact.t()],
               state :: state()
             ) ::
-              {:retry, contact :: Contact.t(), state()}
+              {:redirect, contact :: Contact.t(), state()}
               | {:stop, reason :: term(), state()}
 
   @doc """

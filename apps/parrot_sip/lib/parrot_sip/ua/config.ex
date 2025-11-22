@@ -27,7 +27,10 @@ defmodule ParrotSip.UA.Config do
         },
         headers: %{
           "User-Agent" => "ParrotSip/1.0"
-        }
+        },
+        local_host: "192.168.1.100",
+        local_port: 5060,
+        transport: :udp
       }
   """
 
@@ -40,7 +43,10 @@ defmodule ParrotSip.UA.Config do
           contact: Contact.t() | nil,
           outbound_proxy: String.t() | nil,
           registration: ParrotSip.UA.Registration.t() | nil,
-          headers: headers_config()
+          headers: headers_config(),
+          local_host: String.t() | nil,
+          local_port: integer() | nil,
+          transport: :udp | :tcp | :tls
         }
 
   @enforce_keys [:from]
@@ -49,7 +55,10 @@ defmodule ParrotSip.UA.Config do
     contact: nil,
     outbound_proxy: nil,
     registration: nil,
-    headers: %{}
+    headers: %{},
+    local_host: nil,
+    local_port: nil,
+    transport: :udp
   ]
 
 

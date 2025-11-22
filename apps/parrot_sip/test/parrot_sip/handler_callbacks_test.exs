@@ -37,7 +37,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
 
           # Send 200 OK response
           response = Message.reply(sip_msg, 200, "OK")
-          ParrotSip.UAS.response(response, uas)
+          ParrotSip.Transaction.Server.response(response, uas)
           :ok
         end
       end
@@ -111,7 +111,7 @@ defmodule ParrotSip.HandlerCallbacksTest do
 
           # Send 180 Ringing
           ringing = Message.reply(sip_msg, 180, "Ringing")
-          ParrotSip.UAS.response(ringing, uas)
+          ParrotSip.Transaction.Server.response(ringing, uas)
 
           :ok
         end

@@ -15,7 +15,8 @@ defmodule ParrotSip.BasicCallFlowTest do
   """
   use ExUnit.Case, async: false
 
-  alias ParrotSip.{Message, Parser, Source, TransactionStatem, Handler, UAS}
+  alias ParrotSip.{Message, Parser, Source, TransactionStatem, Handler}
+  alias ParrotSip.Transaction.Server
 
   @tag :call_flow
   test "INVITE -> 200 OK -> ACK -> BYE flow completes successfully" do
@@ -127,7 +128,7 @@ defmodule ParrotSip.BasicCallFlowTest do
 
       # Generate appropriate response
       response = Message.reply(sip_msg, 501, "Not Implemented")
-      UAS.response(response, uas)
+      Server.response(response, uas)
       :ok
     end
 
@@ -160,7 +161,7 @@ defmodule ParrotSip.BasicCallFlowTest do
 
       response = Message.reply(sip_msg, 200, "OK")
       response = %{response | body: sdp}
-      UAS.response(response, uas)
+      Server.response(response, uas)
       :ok
     end
 
@@ -169,7 +170,7 @@ defmodule ParrotSip.BasicCallFlowTest do
       send(args.test_pid, {:bye_received, sip_msg})
 
       response = Message.reply(sip_msg, 200, "OK")
-      UAS.response(response, uas)
+      Server.response(response, uas)
       :ok
     end
 

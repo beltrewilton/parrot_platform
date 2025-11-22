@@ -1,7 +1,6 @@
-defmodule ParrotSip.UAS do
+defmodule ParrotSip.Transaction.Server do
   @moduledoc """
-  Parrot SIP Stack
-  UAS (User Agent Server)
+  Server Transaction Layer
 
   This module provides functionality for the server side of SIP transactions,
   including handling incoming requests and generating responses.

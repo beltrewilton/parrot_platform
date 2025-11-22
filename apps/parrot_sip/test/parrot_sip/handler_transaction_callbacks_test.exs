@@ -64,7 +64,7 @@ defmodule ParrotSip.HandlerTransactionCallbacksTest do
         def uas_request(uas, sip_msg, test_pid) do
           # Send 180 Ringing - should trigger proceeding state
           response = Message.reply(sip_msg, 180, "Ringing")
-          ParrotSip.UAS.response(response, uas)
+          ParrotSip.Transaction.Server.response(response, uas)
           send(test_pid, :sent_180)
           :ok
         end
@@ -113,7 +113,7 @@ defmodule ParrotSip.HandlerTransactionCallbacksTest do
         def uas_request(uas, sip_msg, test_pid) do
           # Send 200 OK - should trigger completed state
           response = Message.reply(sip_msg, 200, "OK")
-          ParrotSip.UAS.response(response, uas)
+          ParrotSip.Transaction.Server.response(response, uas)
           send(test_pid, :sent_200)
           :ok
         end

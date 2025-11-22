@@ -1,7 +1,8 @@
-defmodule ParrotSip.UACTest do
+defmodule ParrotSip.Transaction.ClientTest do
   use ExUnit.Case, async: true
 
-  alias ParrotSip.{UAC, Message}
+  alias ParrotSip.{Message}
+  alias ParrotSip.Transaction.Client
   alias ParrotSip.Headers.{Via, From, To, CSeq, Contact}
 
   @moduletag :uac
@@ -22,7 +23,7 @@ defmodule ParrotSip.UACTest do
         send(callback_pid, {:callback, result})
       end
 
-      {:uac_id, trans} = UAC.request(message, nexthop, callback)
+      {:uac_id, trans} = Client.request(message, nexthop, callback)
 
       assert {:trans, _pid} = trans
     end
@@ -30,7 +31,7 @@ defmodule ParrotSip.UACTest do
     test "adds branch to Via header" do
       message = build_test_invite()
 
-      {:uac_id, _trans} = UAC.request(message, "sip:proxy.example.com", fn _ -> :ok end)
+      {:uac_id, _trans} = Client.request(message, "sip:proxy.example.com", fn _ -> :ok end)
 
       # The branch should be added during request processing
       # Can't directly verify without intercepting transport
@@ -46,7 +47,7 @@ defmodule ParrotSip.UACTest do
         send(callback_pid, {:callback, result})
       end
 
-      {:uac_id, trans} = UAC.request(message, nexthop, callback)
+      {:uac_id, trans} = Client.request(message, nexthop, callback)
 
       assert {:trans, _pid} = trans
     end
@@ -72,7 +73,7 @@ defmodule ParrotSip.UACTest do
 
       message = build_test_invite() |> Map.put(:via, [via1, via2])
 
-      {:uac_id, _trans} = UAC.request(message, fn _ -> :ok end)
+      {:uac_id, _trans} = Client.request(message, fn _ -> :ok end)
 
       # Test passes if no crash
       assert true
@@ -88,7 +89,7 @@ defmodule ParrotSip.UACTest do
         send(callback_pid, {:callback, result})
       end
 
-      {:uac_id, trans} = UAC.request(message, callback)
+      {:uac_id, trans} = Client.request(message, callback)
 
       assert {:trans, _pid} = trans
     end
@@ -104,7 +105,7 @@ defmodule ParrotSip.UACTest do
         send(callback_pid, {:callback, result})
       end
 
-      {:uac_id, trans} = UAC.request_with_opts(message, options, callback)
+      {:uac_id, trans} = Client.request_with_opts(message, options, callback)
 
       assert {:trans, _pid} = trans
     end
@@ -118,7 +119,7 @@ defmodule ParrotSip.UACTest do
         }
       }
 
-      {:uac_id, _trans} = UAC.request_with_opts(message, options, fn _ -> :ok end)
+      {:uac_id, _trans} = Client.request_with_opts(message, options, fn _ -> :ok end)
 
       # Test passes if no crash
       assert true
@@ -134,10 +135,10 @@ defmodule ParrotSip.UACTest do
         send(callback_pid, {:callback, result})
       end
 
-      {:uac_id, trans} = UAC.request(message, callback)
+      {:uac_id, trans} = Client.request(message, callback)
 
       # Cancel the transaction
-      :ok = UAC.cancel({:uac_id, trans})
+      :ok = Client.cancel({:uac_id, trans})
 
       # Transaction should still be active (cancel is asynchronous)
       assert true
@@ -145,7 +146,7 @@ defmodule ParrotSip.UACTest do
 
     test "handles invalid transaction ID gracefully" do
       # Should not crash
-      :ok = UAC.cancel({:uac_id, {:trans, :invalid}})
+      :ok = Client.cancel({:uac_id, {:trans, :invalid}})
     end
   end
 
@@ -170,7 +171,7 @@ defmodule ParrotSip.UACTest do
       message = %{message | via: [build_test_via()]}
 
       # Should succeed now
-      {:uac_id, _trans} = UAC.request(message, callback)
+      {:uac_id, _trans} = Client.request(message, callback)
 
       assert true
     end
