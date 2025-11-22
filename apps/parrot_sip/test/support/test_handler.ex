@@ -24,7 +24,8 @@ defmodule SippTest.TestHandler do
   @behaviour ParrotSip.Handler
 
   require Logger
-  alias ParrotSip.{Message, UAS}
+  alias ParrotSip.Message
+  alias ParrotSip.Transaction.Server
 
   # ============================================================================
   # Required ParrotSip.Handler Callbacks
@@ -59,7 +60,7 @@ defmodule SippTest.TestHandler do
     update_stats(args, :other)
 
     response = Message.reply(sip_msg, 501, "Not Implemented")
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -121,7 +122,7 @@ defmodule SippTest.TestHandler do
         response
       end
 
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -142,7 +143,7 @@ defmodule SippTest.TestHandler do
         supported: ["replaces"]
     }
 
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -155,7 +156,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:bye_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -168,7 +169,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:cancel_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -181,7 +182,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:register_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -194,7 +195,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:subscribe_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -207,7 +208,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:notify_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -220,7 +221,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:message_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 
@@ -233,7 +234,7 @@ defmodule SippTest.TestHandler do
     {status, reason} = config[:info_response] || {200, "OK"}
 
     response = Message.reply(sip_msg, status, reason)
-    UAS.response(response, uas)
+    Server.response(response, uas)
     :ok
   end
 

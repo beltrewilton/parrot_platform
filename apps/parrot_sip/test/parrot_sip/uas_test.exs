@@ -1,7 +1,7 @@
-defmodule ParrotSip.UASTest do
+defmodule ParrotSip.Transaction.ServerTest do
   use ExUnit.Case, async: false
 
-  alias ParrotSip.UAS
+  alias ParrotSip.Transaction.Server
   alias ParrotSip.Message
   alias ParrotSip.Headers.{Via, From, To, CSeq, Contact}
   alias ParrotSip.TestHandler
@@ -26,7 +26,7 @@ defmodule ParrotSip.UASTest do
         role: :uas
       }
 
-      assert UAS.sipmsg(transaction) == req_msg
+      assert Server.sipmsg(transaction) == req_msg
     end
   end
 
@@ -35,7 +35,7 @@ defmodule ParrotSip.UASTest do
       req_msg = create_invite_request()
       uas = create_test_uas(req_msg)
 
-      response = UAS.make_reply(200, "OK", uas, req_msg)
+      response = Server.make_reply(200, "OK", uas, req_msg)
 
       assert response.status_code == 200
       assert response.reason_phrase == "OK"
@@ -52,7 +52,7 @@ defmodule ParrotSip.UASTest do
       req_msg = create_invite_request()
       uas = create_test_uas(req_msg)
 
-      response = UAS.make_reply(200, "OK", uas, req_msg)
+      response = Server.make_reply(200, "OK", uas, req_msg)
 
       to_header = response.to
       # Verify that a tag was added to the To header
@@ -64,11 +64,11 @@ defmodule ParrotSip.UASTest do
       req_msg = create_invite_request()
       uas = create_test_uas(req_msg)
 
-      response_486 = UAS.make_reply(486, "Busy Here", uas, req_msg)
+      response_486 = Server.make_reply(486, "Busy Here", uas, req_msg)
       assert response_486.status_code == 486
       assert response_486.reason_phrase == "Busy Here"
 
-      response_404 = UAS.make_reply(404, "Not Found", uas, req_msg)
+      response_404 = Server.make_reply(404, "Not Found", uas, req_msg)
       assert response_404.status_code == 404
       assert response_404.reason_phrase == "Not Found"
     end
@@ -80,12 +80,12 @@ defmodule ParrotSip.UASTest do
 
       for method <- supported_methods do
         msg = create_request_with_method(method)
-        # Use the private function through UAS.process to test validation
+        # Use the private function through Server.process to test validation
         handler = TestHandler.new()
         trans = create_test_uas(msg)
 
         # This should not raise an error and should process successfully
-        assert :ok == UAS.process(trans, msg, handler)
+        assert :ok == Server.process(trans, msg, handler)
       end
     end
 
@@ -117,7 +117,7 @@ defmodule ParrotSip.UASTest do
 
       # Mock the transaction server to capture the response
       # The validation should create a 405 response
-      assert :ok == UAS.process(trans, msg, handler)
+      assert :ok == Server.process(trans, msg, handler)
     end
   end
 
@@ -127,7 +127,7 @@ defmodule ParrotSip.UASTest do
       handler = TestHandler.new()
 
       # process_ack should complete without error
-      assert :ok == UAS.process_ack(ack_msg, handler)
+      assert :ok == Server.process_ack(ack_msg, handler)
     end
 
     test "handles ACK when dialog is not found" do
@@ -135,7 +135,7 @@ defmodule ParrotSip.UASTest do
       handler = TestHandler.new()
 
       # Should log warning but return :ok
-      assert :ok == UAS.process_ack(ack_msg, handler)
+      assert :ok == Server.process_ack(ack_msg, handler)
     end
   end
 
@@ -145,7 +145,7 @@ defmodule ParrotSip.UASTest do
       trans = create_test_uas(cancel_msg)
       handler = TestHandler.new()
 
-      assert :ok == UAS.process_cancel(trans, handler)
+      assert :ok == Server.process_cancel(trans, handler)
     end
 
     test "allows CANCEL for early dialog" do
@@ -173,7 +173,7 @@ defmodule ParrotSip.UASTest do
       handler = TestHandler.new()
 
       # Should allow CANCEL for early dialog
-      assert :ok == UAS.process_cancel(cancel_trans, handler)
+      assert :ok == Server.process_cancel(cancel_trans, handler)
 
       # Clean up
       Process.exit(dialog_pid, :kill)
@@ -208,7 +208,7 @@ defmodule ParrotSip.UASTest do
 
       # Should reject CANCEL for confirmed dialog
       # The implementation sends 481 response via TransactionStatem.server_response
-      assert :ok == UAS.process_cancel(cancel_trans, handler)
+      assert :ok == Server.process_cancel(cancel_trans, handler)
 
       # Clean up
       Process.exit(dialog_pid, :kill)
@@ -218,7 +218,7 @@ defmodule ParrotSip.UASTest do
       trans = {:trans, self()}
       handler = TestHandler.new()
 
-      assert :ok == UAS.process_cancel(trans, handler)
+      assert :ok == Server.process_cancel(trans, handler)
     end
   end
 
@@ -229,7 +229,7 @@ defmodule ParrotSip.UASTest do
       resp_msg = Message.reply(req_msg, 200, "OK")
 
       # Should complete without error
-      assert :ok == UAS.response(resp_msg, uas)
+      assert :ok == Server.response(resp_msg, uas)
     end
 
     test "response_retransmit/2 delegates to transaction server" do
@@ -238,7 +238,7 @@ defmodule ParrotSip.UASTest do
       resp_msg = Message.reply(req_msg, 200, "OK")
 
       # Should complete without error
-      assert :ok == UAS.response_retransmit(resp_msg, uas)
+      assert :ok == Server.response_retransmit(resp_msg, uas)
     end
   end
 
@@ -249,7 +249,7 @@ defmodule ParrotSip.UASTest do
       owner_pid = self()
       auto_resp_code = 500
 
-      assert :ok == UAS.set_owner(auto_resp_code, owner_pid, uas)
+      assert :ok == Server.set_owner(auto_resp_code, owner_pid, uas)
     end
   end
 

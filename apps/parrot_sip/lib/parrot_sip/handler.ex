@@ -19,20 +19,20 @@ defmodule ParrotSip.Handler do
   @callback transaction(ParrotSip.Transaction.t(), ParrotSip.Message.t(), any()) ::
               :process_uas | :ok
   @callback transaction_stop(ParrotSip.Transaction.t(), any(), any()) :: :ok
-  @callback uas_request(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback uas_cancel(ParrotSip.UAS.id(), any()) :: :ok
+  @callback uas_request(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback uas_cancel(ParrotSip.Transaction.Server.id(), any()) :: :ok
   @callback process_ack(ParrotSip.Message.t(), any()) :: :ok
 
   # Optional method-specific callbacks
-  @callback handle_options(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_invite(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_bye(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_cancel(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_register(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_subscribe(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_notify(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_message(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_info(ParrotSip.UAS.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_options(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_invite(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_bye(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_cancel(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_register(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_subscribe(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_notify(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_message(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_info(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
 
   # Optional transaction state callbacks
   @callback handle_transaction_trying(ParrotSip.Transaction.t(), ParrotSip.Message.t(), any()) ::
@@ -110,7 +110,7 @@ defmodule ParrotSip.Handler do
     :ok
   end
 
-  @spec uas_request(ParrotSip.UAS.t(), ParrotSip.Message.t(), handler()) :: :ok
+  @spec uas_request(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), handler()) :: :ok
   def uas_request(uas, req_sip_msg, %__MODULE__{module: mod, args: args}) do
     # Try method-specific callback first, fall back to generic uas_request
     method = req_sip_msg.method
@@ -135,7 +135,7 @@ defmodule ParrotSip.Handler do
   defp method_to_callback(:info), do: :handle_info
   defp method_to_callback(_), do: nil
 
-  @spec uas_cancel(ParrotSip.UAS.id(), handler()) :: :ok
+  @spec uas_cancel(ParrotSip.Transaction.Server.id(), handler()) :: :ok
   def uas_cancel(uas_id, %__MODULE__{module: mod, args: args}) do
     mod.uas_cancel(uas_id, args)
   end

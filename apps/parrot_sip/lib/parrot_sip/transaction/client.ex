@@ -1,7 +1,6 @@
-defmodule ParrotSip.UAC do
+defmodule ParrotSip.Transaction.Client do
   @moduledoc """
-  Parrot SIP Stack
-  UAC (User Agent Client)
+  Client Transaction Layer
 
   This module provides functionality for the client side of SIP transactions,
   including sending requests and handling responses.

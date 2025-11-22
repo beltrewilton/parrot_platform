@@ -1,13 +1,14 @@
-defmodule SippTest.UacTest do
+defmodule SippTest.ClientTest do
   @moduledoc """
-  Tests where ParrotSip acts as UAC (client) and SIPp acts as UAS (server).
+  Tests where ParrotSip acts as client and SIPp acts as server.
 
   This tests the outbound calling capabilities of the ParrotSip stack.
   """
   use ExUnit.Case, async: false
 
   alias SippTest.{SippRunner, SipStackHelper}
-  alias ParrotSip.{Message, UAC, Source}
+  alias ParrotSip.{Message, Source}
+  alias ParrotSip.Transaction.Client
   alias ParrotSip.Headers.{From, To, CSeq, Contact, Via}
 
   @moduletag :sipp
@@ -44,7 +45,7 @@ defmodule SippTest.UacTest do
 
       # Send INVITE as UAC
       _uac_id =
-        UAC.request(invite_msg, fn result ->
+        Client.request(invite_msg, fn result ->
           send(test_pid, {:uac_result, result})
         end)
 
@@ -92,7 +93,7 @@ defmodule SippTest.UacTest do
 
       # Send OPTIONS as UAC
       _uac_id =
-        UAC.request(options_msg, fn result ->
+        Client.request(options_msg, fn result ->
           send(test_pid, {:uac_result, result})
         end)
 
@@ -148,7 +149,7 @@ defmodule SippTest.UacTest do
         invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
         _uac_id =
-          UAC.request(invite_msg, fn result ->
+          Client.request(invite_msg, fn result ->
             send(test_pid, {:uac_result, result})
           end)
 
@@ -196,7 +197,7 @@ defmodule SippTest.UacTest do
       invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
       _uac_id =
-        UAC.request(invite_msg, fn result ->
+        Client.request(invite_msg, fn result ->
           send(test_pid, {:uac_result, result})
         end)
 
@@ -221,7 +222,7 @@ defmodule SippTest.UacTest do
 
       # Send re-INVITE
       _reinvite_uac_id =
-        UAC.request(reinvite_msg, fn result ->
+        Client.request(reinvite_msg, fn result ->
           send(test_pid, {:reinvite_result, result})
         end)
 
@@ -232,7 +233,7 @@ defmodule SippTest.UacTest do
       bye_msg = build_bye("127.0.0.1", sipp_port, stack.port, call_id, from_tag, to_tag)
 
       _bye_uac_id =
-        UAC.request(bye_msg, fn result ->
+        Client.request(bye_msg, fn result ->
           send(test_pid, {:bye_result, result})
         end)
 
@@ -279,7 +280,7 @@ defmodule SippTest.UacTest do
       invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
       _uac_id =
-        UAC.request(invite_msg, fn result ->
+        Client.request(invite_msg, fn result ->
           send(test_pid, {:uac_result, result})
         end)
 
@@ -295,7 +296,7 @@ defmodule SippTest.UacTest do
       bye_msg = build_bye("127.0.0.1", sipp_port, stack.port, call_id, from_tag, to_tag)
 
       _bye_uac_id =
-        UAC.request(bye_msg, fn result ->
+        Client.request(bye_msg, fn result ->
           send(test_pid, {:bye_result, result})
         end)
 
@@ -338,7 +339,7 @@ defmodule SippTest.UacTest do
         invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
         _uac_id =
-          UAC.request(invite_msg, fn result ->
+          Client.request(invite_msg, fn result ->
             send(test_pid, {:uac_result, result})
           end)
 
@@ -354,7 +355,7 @@ defmodule SippTest.UacTest do
         bye_msg = build_bye("127.0.0.1", sipp_port, stack.port, call_id, from_tag, to_tag)
 
         _bye_uac_id =
-          UAC.request(bye_msg, fn result ->
+          Client.request(bye_msg, fn result ->
             send(test_pid, {:bye_result, result})
           end)
 
@@ -402,7 +403,7 @@ defmodule SippTest.UacTest do
       invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
       uac_id =
-        UAC.request(invite_msg, fn result ->
+        Client.request(invite_msg, fn result ->
           send(test_pid, {:uac_result, result})
         end)
 
@@ -413,7 +414,7 @@ defmodule SippTest.UacTest do
       Process.sleep(100)
 
       # Send CANCEL
-      :ok = UAC.cancel(uac_id)
+      :ok = Client.cancel(uac_id)
 
       # Should receive 200 OK for CANCEL and 487 for INVITE
       assert_receive {:uac_result, {:response, %Message{status_code: code}}}
@@ -458,7 +459,7 @@ defmodule SippTest.UacTest do
 
       # Send REGISTER
       _uac_id =
-        UAC.request(register_msg, fn result ->
+        Client.request(register_msg, fn result ->
           send(test_pid, {:register_result, result})
         end)
 
@@ -506,7 +507,7 @@ defmodule SippTest.UacTest do
         register_msg = build_register("127.0.0.1", sipp_port, stack.port)
 
         _uac_id =
-          UAC.request(register_msg, fn result ->
+          Client.request(register_msg, fn result ->
             send(test_pid, {:register_result, result})
           end)
 
