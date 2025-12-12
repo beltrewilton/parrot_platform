@@ -47,21 +47,6 @@ defmodule ParrotSip.Serializer do
     "x" => "session-expires"
   }
 
-  # Standard headers that may contain spaces in quoted values
-  @headers_with_quotes [
-    "from",
-    "to",
-    "contact",
-    "reply-to",
-    "referred-by",
-    "refer-to",
-    "authentication-info",
-    "authorization",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "www-authenticate"
-  ]
-
   @doc """
   Encodes a SIP message struct into a raw SIP message string for transmission.
 
@@ -489,34 +474,75 @@ defmodule ParrotSip.Serializer do
   end
 
   # Formats header values based on their type
+  # Primitives - handle first for performance
   defp format_header_value(_name, value) when is_binary(value), do: value
   defp format_header_value(_name, value) when is_integer(value), do: Integer.to_string(value)
 
+  # Lists - recursively format each element
   defp format_header_value(name, value) when is_list(value) do
-    # Handle multiple header values (e.g. for Via or Route headers)
     Enum.map_join(value, ", ", &format_header_value(name, &1))
   end
 
-  defp format_header_value(name, value) do
-    # Try to call format function on header module
-    if is_struct(value) && function_exported?(value.__struct__, :format, 1) do
-      value.__struct__.format(value)
-    else
-      # For header values that might contain quotes, ensure they're properly escaped
-      if name in @headers_with_quotes and is_binary(value) and String.contains?(value, "\"") do
-        ensure_quotes_escaped(value)
-      else
-        # Fall back to inspect for unhandled types
-        inspect(value)
-      end
-    end
+  # Pattern match on each known header struct type
+  defp format_header_value(_name, %ParrotSip.Headers.From{} = value) do
+    ParrotSip.Headers.From.format(value)
   end
 
-  # Ensures that quotes within quoted strings are properly escaped
-  defp ensure_quotes_escaped(value) do
-    # This is a simplified implementation; a more complete version would use a parser
-    # to identify quoted sections and only escape unescaped quotes within those sections
-    Regex.replace(~r/(?<!\\)"/m, value, "\\\"")
+  defp format_header_value(_name, %ParrotSip.Headers.To{} = value) do
+    ParrotSip.Headers.To.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.Via{} = value) do
+    ParrotSip.Headers.Via.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.CSeq{} = value) do
+    ParrotSip.Headers.CSeq.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.Contact{} = value) do
+    ParrotSip.Headers.Contact.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.Route{} = value) do
+    ParrotSip.Headers.Route.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.RecordRoute{} = value) do
+    ParrotSip.Headers.RecordRoute.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.ContentType{} = value) do
+    ParrotSip.Headers.ContentType.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.Event{} = value) do
+    ParrotSip.Headers.Event.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.SubscriptionState{} = value) do
+    ParrotSip.Headers.SubscriptionState.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.ReferTo{} = value) do
+    ParrotSip.Headers.ReferTo.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.Accept{} = value) do
+    ParrotSip.Headers.Accept.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.Subject{} = value) do
+    ParrotSip.Headers.Subject.format(value)
+  end
+
+  defp format_header_value(_name, %ParrotSip.Headers.ContentLength{} = value) do
+    ParrotSip.Headers.ContentLength.format(value)
+  end
+
+  # Catch-all for unknown types - fallback to inspect
+  defp format_header_value(_name, value) do
+    inspect(value)
   end
 
   # Folds long header values according to RFC 3261 Section 7.3.1
