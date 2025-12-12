@@ -1071,11 +1071,7 @@ defmodule ParrotSip.Dialog do
     String.starts_with?(message.request_uri || "", "sips:")
   end
 
-  defp generate_tag do
-    # Generate a random tag
-    :crypto.strong_rand_bytes(8)
-    |> Base.encode16(case: :lower)
-  end
+  defp generate_tag, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
 
   # Helper to normalize URI to string
   #
