@@ -1195,9 +1195,10 @@ defmodule ParrotSip.TransactionStatem do
 
     Logger.debug("[process_actions] Action is :retransmit_last_response.")
 
-    last_response =
-      get_in(data, [:transaction, :last_response]) ||
-        get_in(data, [:data, :transaction, :last_response])
+    transaction =
+      data[:transaction] || get_in(data, [:data, :transaction])
+
+    last_response = transaction && transaction.last_response
 
     if last_response do
       Logger.debug("[process_actions] Retransmitting last response: #{inspect(last_response)}")
@@ -1868,6 +1869,38 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
+  # CANCEL for INVITE client transactions in proceeding
+  def proceeding(:cast, :cancel, %{type: :client, data: %{cancelled: false, outreq: out_req} = data} = state) do
+    Logger.debug("trans: canceling client transaction in proceeding state")
+    # Generate CANCEL request from original request
+    cancel_req = %Message{
+      type: :request,
+      method: :cancel,
+      request_uri: out_req.request_uri,
+      call_id: out_req.call_id,
+      from: out_req.from,
+      to: out_req.to,
+      cseq: %CSeq{number: out_req.cseq.number, method: :cancel},
+      via: out_req.via,
+      source: out_req.source,
+      other_headers: %{}
+    }
+
+    {:ok, cancel_transaction} = Transaction.create_non_invite_client(cancel_req)
+    _ = client_new(cancel_transaction, %{}, fn _ -> :ok end)
+
+    # Schedule cancel timeout
+    cancel_timeout = Application.get_env(:parrot_sip, :cancel_timeout, 32_000)
+
+    {:keep_state, %{state | data: %{data | cancelled: true}},
+     [{:state_timeout, cancel_timeout, :cancel_timeout}]}
+  end
+
+  def proceeding(:cast, :cancel, %{type: :client, data: %{cancelled: true}} = state) do
+    Logger.debug("trans: transaction is already cancelled in proceeding state")
+    {:keep_state, state}
+  end
+
   def proceeding(:cast, event, state), do: handle_common_event(event, state)
 
   def proceeding(:info, event, state), do: handle_event(:info, event, :proceeding, state)
@@ -2010,9 +2043,10 @@ defmodule ParrotSip.TransactionStatem do
 
   def completed(:cast, {:received, _msg}, %{type: :client} = state) do
     # For client transactions, retransmit last response if available
-    if last = get_in(state, [:data, :transaction, :last_response]) do
-      source = get_in(state, [:data, :transaction, :source])
-      send_via_transport_handler(:send_response, last, source)
+    transaction = get_in(state, [:data, :transaction])
+    if transaction && transaction.last_response && transaction.request do
+      source = transaction.request.source
+      send_via_transport_handler(:send_response, transaction.last_response, source)
     end
 
     {:keep_state, state}

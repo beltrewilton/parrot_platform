@@ -199,6 +199,9 @@ defmodule SippTest.UATest do
       # Wait for ringing
       assert_receive {:ua_event, :ringing, _entity}, 5_000
 
+      # Wait for SIPP's pause to complete (100ms in scenario)
+      Process.sleep(150)
+
       # Cancel
       :ok = UA.cancel(ua, entity)
 

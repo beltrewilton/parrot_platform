@@ -437,7 +437,10 @@ defmodule ParrotSip.UA do
   end
 
   # UAC response - 180 Ringing
-  def handle_cast({:uac_response, entity_id, {:response, %Message{status_code: code} = response}}, state)
+  def handle_cast(
+        {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
       when code in 180..189 do
     case Map.get(state.entities, entity_id) do
       nil ->
@@ -457,7 +460,10 @@ defmodule ParrotSip.UA do
   end
 
   # UAC response - 2xx Success
-  def handle_cast({:uac_response, entity_id, {:response, %Message{status_code: code} = response}}, state)
+  def handle_cast(
+        {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
       when code >= 200 and code < 300 do
     case Map.get(state.entities, entity_id) do
       nil ->
@@ -479,7 +485,10 @@ defmodule ParrotSip.UA do
   end
 
   # UAC response - 3xx-6xx Failure
-  def handle_cast({:uac_response, entity_id, {:response, %Message{status_code: code} = response}}, state)
+  def handle_cast(
+        {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
       when code >= 300 do
     case Map.get(state.entities, entity_id) do
       nil ->
@@ -509,7 +518,10 @@ defmodule ParrotSip.UA do
   end
 
   # Register response - Success
-  def handle_cast({:register_response, reg_id, {:response, %Message{status_code: code} = response}}, state)
+  def handle_cast(
+        {:register_response, reg_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
       when code >= 200 and code < 300 do
     # Update registration state
     registrations =
@@ -525,7 +537,10 @@ defmodule ParrotSip.UA do
   end
 
   # Register response - Failure
-  def handle_cast({:register_response, reg_id, {:response, %Message{status_code: code} = response}}, state)
+  def handle_cast(
+        {:register_response, reg_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
       when code >= 300 do
     # Update registration state
     registrations =
