@@ -13,7 +13,11 @@ defmodule ParrotSip.Application do
       # Transaction supervisor
       ParrotSip.Transaction.Supervisor,
       # Dialog supervisor
-      ParrotSip.Dialog.Supervisor
+      ParrotSip.Dialog.Supervisor,
+      # UAS supervisor - incoming call legs
+      ParrotSip.UAS.Supervisor,
+      # UAC supervisor - outgoing call legs
+      ParrotSip.UAC.Supervisor
     ]
 
     opts = [strategy: :one_for_one, name: ParrotSip.Application]

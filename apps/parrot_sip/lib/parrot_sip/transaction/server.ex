@@ -150,6 +150,12 @@ defmodule ParrotSip.Transaction.Server do
     TransactionStatem.server_response(resp_sip_msg, transaction)
   end
 
+  # Test/mock transaction reference - bypass transaction layer
+  def response(resp_sip_msg, _mock_transaction_ref) do
+    Logger.debug("UAS: response #{inspect(resp_sip_msg.status_code)} (mock transaction)")
+    :ok
+  end
+
   @spec response_retransmit(Message.t(), Transaction.t()) :: :ok
   def response_retransmit(resp_sip_msg, transaction) do
     TransactionStatem.server_response(resp_sip_msg, transaction)
@@ -209,10 +215,7 @@ defmodule ParrotSip.Transaction.Server do
 
   # Generate a random tag for responses
   @spec generate_tag() :: binary()
-  defp generate_tag do
-    :crypto.strong_rand_bytes(6)
-    |> Base.encode32(case: :lower, padding: false)
-  end
+  defp generate_tag, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
 
   # Validate incoming SIP request - replaces ersip_uas.process_request
   @spec validate_request(Message.t()) :: {:process, Message.t()} | {:reply, Message.t()}

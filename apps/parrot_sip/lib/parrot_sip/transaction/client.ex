@@ -7,7 +7,7 @@ defmodule ParrotSip.Transaction.Client do
   """
   require Logger
 
-  alias ParrotSip.{Transaction, Dialog, Message, Branch, Uri}
+  alias ParrotSip.{Transaction, Dialog, Message, Branch, Uri, Source}
   alias ParrotSip.TransactionStatem
   alias ParrotSip.Headers.{Via, CSeq}
 
@@ -20,14 +20,21 @@ defmodule ParrotSip.Transaction.Client do
         }
 
   @spec request(Message.t(), Uri.t() | String.t(), callback()) :: id()
-  def request(%Message{} = sip_msg, _nexthop, uac_callback) do
+  def request(%Message{} = sip_msg, nexthop, uac_callback) do
     # Generate a random branch for this transaction
     branch = Branch.generate()
 
     # Add the branch to the topmost Via header
     sip_msg = add_branch_to_via(sip_msg, branch)
 
-    # nexthop is passed to transport layer, not stored in message
+    # Parse destination from nexthop URI and add to message source
+    destination =
+      case Uri.parse(nexthop) do
+        {:ok, %Uri{host: host, port: port}} -> {host, port || 5060}
+        {:error, _} -> {nexthop, 5060}  # Assume it's already host:port or just host
+      end
+
+    sip_msg = %{sip_msg | source: %Source{remote: destination}}
 
     # Create the transaction based on method
     {:ok, transaction} = create_client_transaction(sip_msg, branch)

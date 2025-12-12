@@ -31,20 +31,14 @@ defmodule ParrotSip.TransportHandler do
   alias ParrotSip.Source
 
   defstruct [
-    # Deprecated - kept for backward compatibility
-    :transport_ref,
     :name,
     handlers: [],
-    # New: Map of transport refs by {transport, local_ip, local_port}
-    transports: %{}
+    transports: %{}  # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
   ]
 
   @type t :: %__MODULE__{
-          # Deprecated
-          transport_ref: pid() | atom() | nil,
           name: atom() | nil,
           handlers: list(pid()),
-          # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
           transports: map()
         }
 
@@ -55,7 +49,6 @@ defmodule ParrotSip.TransportHandler do
 
   Options:
   - `:name` - Optional name to register the process
-  - `:transport_ref` - Reference to the transport process (pid or registered name)
   """
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name)
@@ -103,18 +96,6 @@ defmodule ParrotSip.TransportHandler do
   end
 
   @doc """
-  Sets or updates the transport reference.
-
-  ## Options
-  - `timeout` - GenServer call timeout in milliseconds (default: 5000)
-
-  DEPRECATED: Use register_transport/5 for multi-transport support
-  """
-  def set_transport(handler, transport_ref, timeout \\ 5000) do
-    GenServer.call(handler, {:set_transport, transport_ref}, timeout)
-  end
-
-  @doc """
   Registers a transport listener for a specific transport/address combination.
 
   This allows TransportHandler to manage multiple listeners (e.g., UDP:5060, TCP:5060, TLS:5061).
@@ -147,17 +128,20 @@ defmodule ParrotSip.TransportHandler do
     )
   end
 
+  @doc """
+  Gets the default transport info (first registered transport).
+
+  Returns {:ok, {transport_type, local_ip, local_port}} or {:error, :no_transport}
+  """
+  def get_default_transport(handler, timeout \\ 5000) do
+    GenServer.call(handler, :get_default_transport, timeout)
+  end
+
   # GenServer Callbacks
 
   @impl true
   def init(opts) do
-    transport_ref = Keyword.get(opts, :transport_ref)
     name = Keyword.get(opts, :name)
-
-    # If we have a transport ref, register with it
-    if transport_ref do
-      register_with_transport(transport_ref, self())
-    end
 
     # Register in the SIP registry if we have a name
     if name do
@@ -165,14 +149,10 @@ defmodule ParrotSip.TransportHandler do
     end
 
     state = %__MODULE__{
-      transport_ref: transport_ref,
       name: name,
       handlers: [],
       transports: %{}
     }
-
-    # Logger.info("TransportHandler started#{if name, do: " as #{name}", else: ""}")
-    # Startup log disabled for cleaner test output
 
     {:ok, state}
   end
@@ -181,12 +161,6 @@ defmodule ParrotSip.TransportHandler do
   def handle_call({:register_handler, handler_pid}, _from, state) do
     new_handlers = Enum.uniq([handler_pid | state.handlers])
     {:reply, :ok, %{state | handlers: new_handlers}}
-  end
-
-  def handle_call({:set_transport, transport_ref}, _from, state) do
-    # Register with the new transport (deprecated single-transport mode)
-    register_with_transport(transport_ref, self())
-    {:reply, :ok, %{state | transport_ref: transport_ref}}
   end
 
   def handle_call(
@@ -198,6 +172,24 @@ defmodule ParrotSip.TransportHandler do
     key = {transport_type, local_ip, local_port}
     new_transports = Map.put(state.transports, key, transport_ref)
 
+    # Register ourselves as a handler with the transport to receive incoming packets
+    # Note: UDP listeners require explicit handler registration, but TCP/TLS listeners
+    # already have their handler set during creation, so we skip registration for them
+    case {transport_type, resolve_transport(transport_ref)} do
+      {:udp, {:ok, pid}} ->
+        Process.monitor(pid)
+        result = :gen_statem.call(pid, {:register_handler, self()})
+        Logger.debug("[TransportHandler] Registered self (#{inspect(self())}) with UDP transport #{inspect(pid)}: #{inspect(result)}")
+
+      {transport, {:ok, pid}} when transport in [:tcp, :tls, :websocket] ->
+        # TCP/TLS/WebSocket listeners already have handler registered at creation
+        Process.monitor(pid)
+        Logger.debug("[TransportHandler] Monitoring #{transport} transport #{inspect(pid)} (handler pre-registered)")
+
+      {_, {:error, reason}} ->
+        Logger.error("Failed to resolve transport: #{reason}")
+    end
+
     Logger.debug(
       "[TransportHandler] Registered transport #{transport_type}://#{inspect(local_ip)}:#{local_port}"
     )
@@ -205,9 +197,31 @@ defmodule ParrotSip.TransportHandler do
     {:reply, :ok, %{state | transports: new_transports}}
   end
 
+  def handle_call(:get_default_transport, _from, state) do
+    case Map.keys(state.transports) |> List.first() do
+      nil ->
+        {:reply, {:error, :no_transport}, state}
+
+      {transport_type, local_ip, local_port} ->
+        # Convert IP tuple to string
+        local_host =
+          local_ip
+          |> :inet.ntoa()
+          |> to_string()
+
+        {:reply, {:ok, {transport_type, local_host, local_port}}, state}
+    end
+  end
+
   @impl true
   def handle_cast({:send_sip_message, message, destination}, state) do
-    send_to_transport(message, destination, state.transport_ref, nil)
+    transport_ref =
+      case Map.values(state.transports) |> List.first() do
+        nil -> nil
+        ref -> ref
+      end
+
+    send_to_transport(message, destination, transport_ref, nil)
     {:noreply, state}
   end
 
@@ -223,12 +237,13 @@ defmodule ParrotSip.TransportHandler do
         } ->
           # Look up the correct transport based on where the request came from
           key = {transport_type, local_ip, local_port}
-          transport = Map.get(state.transports, key) || state.transport_ref
+          transport = Map.get(state.transports, key)
           {remote, transport, conn}
 
         {host, port} ->
-          # Fallback to old single-transport mode
-          {{host, port}, state.transport_ref, nil}
+          # Use default transport
+          default_transport = Map.values(state.transports) |> List.first()
+          {{host, port}, default_transport, nil}
 
         _ ->
           Logger.error("Invalid source for response: #{inspect(source)}")
@@ -250,33 +265,56 @@ defmodule ParrotSip.TransportHandler do
         state
       ) do
     key = {transport_type, local_ip, local_port}
-    transport_ref = Map.get(state.transports, key) || state.transport_ref
+    transport_ref = Map.get(state.transports, key)
     send_to_transport(request, destination, transport_ref, nil)
     {:noreply, state}
   end
 
   # Send request without source info - use default transport
   def handle_cast({:send_sip_request, request, destination}, state) do
-    send_to_transport(request, destination, state.transport_ref, nil)
+    # Use first registered transport
+    transport_ref =
+      case Map.values(state.transports) |> List.first() do
+        nil -> nil
+        ref -> ref
+      end
+
+    send_to_transport(request, destination, transport_ref, nil)
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:packet_received, raw_data, {remote_ip, remote_port}, metadata}, state) do
+  def handle_info({:incoming_packet, packet}, state) do
+    Logger.debug("[TransportHandler] Received incoming_packet")
+
+    # Convert from ParrotTransport.Types.IncomingPacket to our format
+    %{
+      data: raw_data,
+      source: %{
+        remote_addr: {remote_ip, remote_port},
+        local_addr: {local_ip, local_port},
+        transport: transport,
+        connection: connection_pid
+      },
+      metadata: _metadata
+    } = packet
+
     # Parse the raw SIP message
     case Parser.parse(raw_data) do
       {:ok, sip_message} ->
-        # Add source information to the message
-        local_ip = Map.get(metadata, :local_ip, {0, 0, 0, 0})
-        local_port = Map.get(metadata, :local_port, 5060)
-
+        # Add source information to the message (including connection PID for TCP/TLS)
         source = %Source{
-          transport: Map.get(metadata, :transport, :udp),
+          transport: transport,
           remote: {remote_ip, remote_port},
-          local: {local_ip, local_port}
+          local: {local_ip, local_port},
+          connection: connection_pid
         }
 
-        message_with_source = Map.put(sip_message, :source, source)
+        # Store both parsed message with source AND raw data for retransmissions
+        message_with_source =
+          sip_message
+          |> Map.put(:source, source)
+          |> Map.put(:raw_data, raw_data)
 
         Logger.debug(
           "Parsed SIP #{message_with_source.type} #{if message_with_source.type == :request, do: message_with_source.method, else: "#{message_with_source.status_code} #{message_with_source.reason_phrase}"}"
@@ -294,31 +332,11 @@ defmodule ParrotSip.TransportHandler do
     {:noreply, state}
   end
 
-  # Handle transport process down
-  def handle_info({:DOWN, _ref, :process, pid, reason}, %{transport_ref: pid} = state) do
-    Logger.error("Transport process down: #{inspect(reason)}")
-    {:noreply, %{state | transport_ref: nil}}
-  end
-
   def handle_info(_msg, state) do
     {:noreply, state}
   end
 
   # Private Functions
-
-  defp register_with_transport(transport_ref, handler_pid) do
-    case resolve_transport(transport_ref) do
-      {:ok, pid} ->
-        # Monitor the transport process
-        Process.monitor(pid)
-
-        # Register as a handler with the transport (using gen_statem call)
-        :gen_statem.call(pid, {:register_handler, handler_pid}, 5000)
-
-      {:error, reason} ->
-        Logger.error("Failed to register with transport: #{reason}")
-    end
-  end
 
   defp send_to_transport(_message, nil, _transport_ref, _connection_pid) do
     Logger.debug("[TransportHandler] Skipping send (no destination) in test environment")
@@ -363,26 +381,25 @@ defmodule ParrotSip.TransportHandler do
     # Always route to handlers for visibility
     route_to_handlers(message, state)
 
-    # Also try to route to transaction layer
-    case ParrotSip.TransactionStatem.server_process(message, %{}) do
-      :ok ->
-        Logger.debug("Request forwarded to existing transaction: #{method}")
-
-      {:ok, _pid} ->
-        Logger.debug("New transaction created for request: #{method}")
-
-      {:error, reason} ->
-        Logger.debug("Transaction layer routing failed: #{inspect(reason)}")
-    end
+    # Don't route to transaction layer from global TransportHandler
+    # Individual SIP stacks (like SipStackHelper) handle their own routing
+    Logger.debug("Request #{method} routed to registered handlers only")
 
     :ok
   end
 
   # Route SIP responses to client transactions (RFC 3261 Section 17.1.3)
-  defp route_message(%{type: :response, status_code: status} = message, state) do
-    # For now, just route to handlers since we don't have client transaction lookup by response
-    Logger.debug("Response received: #{status} - routing to handlers")
+  defp route_message(%{type: :response, status_code: status, via: via, raw_data: raw_data} = message, state) do
+    Logger.debug("Response received: #{status} - routing to client transaction")
+
+    # Extract topmost Via header and route to client transaction
+    via_header = List.first(via)
+    ParrotSip.TransactionStatem.client_response(via_header, raw_data)
+
+    # Also route to handlers for application-layer visibility
     route_to_handlers(message, state)
+
+    :ok
   end
 
   # Route to registered message handlers (for application-layer processing)

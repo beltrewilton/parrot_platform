@@ -37,13 +37,6 @@ defmodule ParrotSip.TransportHandlerTest do
       GenServer.stop(pid)
     end
 
-    test "starts with transport_ref option" do
-      mock_transport = spawn_link(fn -> mock_transport_loop([]) end)
-      assert {:ok, pid} = TransportHandler.start_link(transport_ref: mock_transport)
-      assert Process.alive?(pid)
-      GenServer.stop(pid)
-      Process.exit(mock_transport, :normal)
-    end
 
     test "registers in ParrotSip.Registry with name" do
       name = :registry_test_handler
@@ -59,8 +52,8 @@ defmodule ParrotSip.TransportHandlerTest do
     end
   end
 
-  describe "set_transport/2" do
-    test "sets transport reference", %{handler: handler} do
+  describe "register_transport/5" do
+    test "registers transport reference", %{handler: handler} do
       test_pid = self()
 
       mock_transport =
@@ -69,7 +62,7 @@ defmodule ParrotSip.TransportHandlerTest do
           mock_transport_loop([])
         end)
 
-      assert :ok = TransportHandler.set_transport(handler, mock_transport)
+      assert :ok = TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       # Verify by sending a message through
       test_message = build_test_request()
@@ -81,12 +74,12 @@ defmodule ParrotSip.TransportHandlerTest do
       Process.exit(mock_transport, :normal)
     end
 
-    test "updates existing transport reference", %{handler: handler} do
+    test "registers multiple transports", %{handler: handler} do
       transport1 = spawn_link(fn -> mock_transport_loop([]) end)
       transport2 = spawn_link(fn -> mock_transport_loop([]) end)
 
-      assert :ok = TransportHandler.set_transport(handler, transport1)
-      assert :ok = TransportHandler.set_transport(handler, transport2)
+      assert :ok = TransportHandler.register_transport(handler, transport1, :udp, {127, 0, 0, 1}, 5060)
+      assert :ok = TransportHandler.register_transport(handler, transport2, :tcp, {127, 0, 0, 1}, 5061)
 
       Process.exit(transport1, :normal)
       Process.exit(transport2, :normal)
@@ -101,7 +94,8 @@ defmodule ParrotSip.TransportHandlerTest do
 
       # Send a packet to the transport handler
       raw_sip = build_raw_sip_request()
-      send(handler, {:packet_received, raw_sip, {{192, 168, 1, 1}, 5060}, %{}})
+      packet = build_incoming_packet(raw_sip, {{192, 168, 1, 1}, 5060})
+      send(handler, {:incoming_packet, packet})
 
       # Should receive the parsed message
       assert_receive {:sip_message, %Message{method: :invite}}, 1000
@@ -116,7 +110,8 @@ defmodule ParrotSip.TransportHandlerTest do
 
       # Send a packet
       raw_sip = build_raw_sip_request()
-      send(handler, {:packet_received, raw_sip, {{192, 168, 1, 1}, 5060}, %{}})
+      packet = build_incoming_packet(raw_sip, {{192, 168, 1, 1}, 5060})
+      send(handler, {:incoming_packet, packet})
 
       # Both handlers should receive the message
       Process.sleep(50)
@@ -137,7 +132,8 @@ defmodule ParrotSip.TransportHandlerTest do
 
       # Send a packet
       raw_sip = build_raw_sip_request()
-      send(handler, {:packet_received, raw_sip, {{192, 168, 1, 1}, 5060}, %{}})
+      packet = build_incoming_packet(raw_sip, {{192, 168, 1, 1}, 5060})
+      send(handler, {:incoming_packet, packet})
 
       # Should only receive one message (not duplicated)
       assert_receive {:sip_message, %Message{method: :invite}}, 100
@@ -147,7 +143,7 @@ defmodule ParrotSip.TransportHandlerTest do
 
   describe "send_message/3" do
     test "serializes and sends SIP message", %{handler: handler, mock_transport: mock_transport} do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       message = build_test_request()
       destination = {{192, 168, 1, 100}, 5060}
@@ -163,7 +159,7 @@ defmodule ParrotSip.TransportHandlerTest do
     end
 
     test "handles string host in destination", %{handler: handler, mock_transport: mock_transport} do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       message = build_test_request()
       destination = {"localhost", 5060}
@@ -175,7 +171,7 @@ defmodule ParrotSip.TransportHandlerTest do
     end
 
     test "handles nil destination gracefully", %{handler: handler, mock_transport: mock_transport} do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       message = build_test_request()
 
@@ -192,7 +188,7 @@ defmodule ParrotSip.TransportHandlerTest do
       handler: handler,
       mock_transport: mock_transport
     } do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       response = build_test_response()
 
@@ -209,7 +205,7 @@ defmodule ParrotSip.TransportHandlerTest do
     end
 
     test "handles tuple source format", %{handler: handler, mock_transport: mock_transport} do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       response = build_test_response()
       source = {{192, 168, 1, 75}, 5060}
@@ -220,7 +216,7 @@ defmodule ParrotSip.TransportHandlerTest do
     end
 
     test "handles invalid source gracefully", %{handler: handler, mock_transport: mock_transport} do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       response = build_test_response()
 
@@ -234,7 +230,7 @@ defmodule ParrotSip.TransportHandlerTest do
 
   describe "send_request/3" do
     test "sends request to destination", %{handler: handler, mock_transport: mock_transport} do
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       request = build_test_request()
       destination = {{10, 0, 0, 1}, 5060}
@@ -254,9 +250,9 @@ defmodule ParrotSip.TransportHandlerTest do
       # Send raw SIP packet
       raw_sip = build_raw_sip_request()
       remote = {{192, 168, 1, 100}, 5060}
-      metadata = %{local_ip: {192, 168, 1, 1}, local_port: 5060, transport: :udp}
+      packet = build_incoming_packet(raw_sip, remote, transport: :udp)
 
-      send(handler, {:packet_received, raw_sip, remote, metadata})
+      send(handler, {:incoming_packet, packet})
 
       # Should receive parsed message with source
       assert_receive {:sip_message, message}, 1000
@@ -272,9 +268,9 @@ defmodule ParrotSip.TransportHandlerTest do
 
       raw_sip = build_raw_sip_response()
       remote = {{192, 168, 1, 200}, 5060}
-      metadata = %{}
+      packet = build_incoming_packet(raw_sip, remote)
 
-      send(handler, {:packet_received, raw_sip, remote, metadata})
+      send(handler, {:incoming_packet, packet})
 
       assert_receive {:sip_message, message}, 1000
 
@@ -289,8 +285,9 @@ defmodule ParrotSip.TransportHandlerTest do
       # Send invalid SIP data
       invalid_sip = "NOT A VALID SIP MESSAGE\r\n\r\n"
       remote = {{192, 168, 1, 100}, 5060}
+      packet = build_incoming_packet(invalid_sip, remote)
 
-      send(handler, {:packet_received, invalid_sip, remote, %{}})
+      send(handler, {:incoming_packet, packet})
 
       # Should not receive any message
       refute_receive {:sip_message, _}, 100
@@ -308,13 +305,15 @@ defmodule ParrotSip.TransportHandlerTest do
       local_ip = {10, 0, 0, 1}
       local_port = 5060
 
-      metadata = %{
+      packet = build_incoming_packet(
+        raw_sip,
+        {remote_ip, remote_port},
         local_ip: local_ip,
         local_port: local_port,
         transport: :tcp
-      }
+      )
 
-      send(handler, {:packet_received, raw_sip, {remote_ip, remote_port}, metadata})
+      send(handler, {:incoming_packet, packet})
 
       assert_receive {:sip_message, message}, 1000
 
@@ -328,7 +327,7 @@ defmodule ParrotSip.TransportHandlerTest do
     test "monitors transport process", %{handler: handler} do
       {:ok, mock_transport} = GenServer.start_link(MockTransport, [])
 
-      TransportHandler.set_transport(handler, mock_transport)
+      TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
 
       # Kill the transport normally (not with :kill which propagates)
       GenServer.stop(mock_transport, :normal)
@@ -353,8 +352,9 @@ defmodule ParrotSip.TransportHandlerTest do
       # This would normally create a server transaction
       raw_sip = build_raw_sip_request()
       remote = {{192, 168, 1, 100}, 5060}
+      packet = build_incoming_packet(raw_sip, remote)
 
-      send(handler, {:packet_received, raw_sip, remote, %{}})
+      send(handler, {:incoming_packet, packet})
 
       # Give it time to route
       Process.sleep(50)
@@ -366,8 +366,9 @@ defmodule ParrotSip.TransportHandlerTest do
     test "routes response to transaction layer", %{handler: handler} do
       raw_sip = build_raw_sip_response()
       remote = {{192, 168, 1, 100}, 5060}
+      packet = build_incoming_packet(raw_sip, remote)
 
-      send(handler, {:packet_received, raw_sip, remote, %{}})
+      send(handler, {:incoming_packet, packet})
 
       Process.sleep(50)
       assert Process.alive?(handler)
@@ -375,6 +376,25 @@ defmodule ParrotSip.TransportHandlerTest do
   end
 
   # Helper functions
+
+  defp build_incoming_packet(raw_data, remote, opts \\ []) do
+    local_ip = Keyword.get(opts, :local_ip, {192, 168, 1, 1})
+    local_port = Keyword.get(opts, :local_port, 5060)
+    transport = Keyword.get(opts, :transport, :udp)
+    connection = Keyword.get(opts, :connection, nil)
+    metadata = Keyword.get(opts, :metadata, %{})
+
+    %{
+      data: raw_data,
+      source: %{
+        remote_addr: remote,
+        local_addr: {local_ip, local_port},
+        transport: transport,
+        connection: connection
+      },
+      metadata: metadata
+    }
+  end
 
   defp build_test_request do
     %Message{
