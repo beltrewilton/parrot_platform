@@ -540,6 +540,10 @@ defmodule ParrotSip.Serializer do
     ParrotSip.Headers.ContentLength.format(value)
   end
 
+  defp format_header_value(_name, %ParrotSip.MethodSet{} = value) do
+    ParrotSip.MethodSet.to_allow_string(value)
+  end
+
   # Catch-all for unknown types - fallback to inspect
   defp format_header_value(_name, value) do
     inspect(value)

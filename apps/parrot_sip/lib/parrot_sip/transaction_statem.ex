@@ -2042,13 +2042,10 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   def completed(:cast, {:received, _msg}, %{type: :client} = state) do
-    # For client transactions, retransmit last response if available
-    transaction = get_in(state, [:data, :transaction])
-    if transaction && transaction.last_response && transaction.request do
-      source = transaction.request.source
-      send_via_transport_handler(:send_response, transaction.last_response, source)
-    end
-
+    # For client transactions, absorb retransmissions of final responses
+    # Per RFC 3261 Section 17.1.1.3 (INVITE client) and 17.1.2.3 (non-INVITE client):
+    # Client transactions wait for Timer D/K to expire and ignore any retransmissions
+    Logger.debug("Client transaction in completed state: absorbing response retransmission")
     {:keep_state, state}
   end
 
