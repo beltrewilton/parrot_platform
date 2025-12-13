@@ -410,16 +410,16 @@ defmodule SippTest.ClientTest do
       # Wait for 180 Ringing
       assert_receive {:uac_result, {:response, %Message{status_code: 180}}}, 5_000
 
-      # Wait 100ms
-      Process.sleep(100)
+      # Wait for SIPP's pause to complete (100ms in scenario)
+      Process.sleep(150)
 
       # Send CANCEL
       :ok = Client.cancel(uac_id)
 
-      # Should receive 200 OK for CANCEL and 487 for INVITE
-      assert_receive {:uac_result, {:response, %Message{status_code: code}}}
-                     when code in [200, 487],
-                     5_000
+      # Should receive final responses (200 for CANCEL or 487 for INVITE)
+      # Drain any provisional responses and get the final one
+      final_code = receive_final_response(5_000)
+      assert final_code in [200, 487]
 
       # Verify SIPp completed successfully
       assert :ok = Task.await(sipp_task, 5_000)
@@ -795,5 +795,20 @@ defmodule SippTest.ClientTest do
         transport: :udp
       }
     }
+  end
+
+  # Helper to drain provisional responses and return final response code
+  defp receive_final_response(timeout) do
+    receive do
+      {:uac_result, {:response, %Message{status_code: code}}} when code >= 200 ->
+        code
+
+      {:uac_result, {:response, %Message{status_code: _code}}} ->
+        # Provisional response, keep waiting
+        receive_final_response(timeout)
+    after
+      timeout ->
+        flunk("Timeout waiting for final response")
+    end
   end
 end
