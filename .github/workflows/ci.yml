@@ -42,13 +42,14 @@ jobs:
     - name: Compile without warnings
       run: mix compile --warnings-as-errors
 
+    - name: Check Credo
+      run: mix credo --strict
+
+    - name: Run Dialyzer
+      run: mix dialyzer --halt-exit-status
+
     - name: Run unit tests
       run: mix test --exclude integration --exclude sipp
-    
-    # Optional: Run dialyzer for type checking
-    # - name: Run dialyzer
-    #   run: mix dialyzer
-    #   if: matrix.elixir == '1.18.x' && matrix.otp == '26.x'
 
   # SIPp integration tests
   sipp-tests:
