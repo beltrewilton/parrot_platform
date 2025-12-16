@@ -25,27 +25,35 @@ defmodule ParrotSip.UAS do
     :metadata,
     :local_host,
     :local_port,
-    :transport
+    :transport,
+    # CSeq tracking per RFC 3261 Section 12.2.1.1
+    # For UAS, starts at 0 (no requests sent yet)
+    local_seq: 0
   ]
 
   # Public API
 
+  @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(opts) do
     :gen_statem.start_link(__MODULE__, opts, [])
   end
 
+  @spec ring(pid(), keyword()) :: :ok
   def ring(uas, opts \\ []) do
     :gen_statem.call(uas, {:ring, opts})
   end
 
+  @spec answer(pid(), keyword()) :: :ok
   def answer(uas, opts) do
     :gen_statem.call(uas, {:answer, opts})
   end
 
+  @spec reject(pid(), pos_integer(), keyword()) :: :ok
   def reject(uas, status_code, opts \\ []) when status_code >= 300 do
     :gen_statem.call(uas, {:reject, status_code, opts})
   end
 
+  @spec hangup(pid()) :: :ok
   def hangup(uas) do
     :gen_statem.call(uas, :hangup)
   end
@@ -197,23 +205,34 @@ defmodule ParrotSip.UAS do
   end
 
   # State: answering
+  # Replaced polling loop with immediate lookup + bounded retry per Phase 2.1
 
   def answering(:enter, _old_state, data) do
-    send(self(), :find_dialog)
-    {:keep_state, data}
-  end
-
-  def answering(:info, :find_dialog, data) do
+    # Try immediate dialog lookup - common case should succeed immediately
     case Registry.lookup(ParrotSip.Registry, data.dialog_id) do
       [{dialog_pid, _}] ->
         :ok = DialogStatem.set_owner(dialog_pid, data.dialog_id)
         ref = Process.monitor(dialog_pid)
-        data = %{data | dialog: dialog_pid, dialog_ref: ref}
-        {:keep_state, data}
+        {:keep_state, %{data | dialog: dialog_pid, dialog_ref: ref}}
 
       [] ->
-        Process.send_after(self(), :find_dialog, 100)
-        {:keep_state, data}
+        # Dialog not found yet - single short retry for race condition
+        {:keep_state, data, [{:state_timeout, 50, :retry_dialog_lookup}]}
+    end
+  end
+
+  def answering(:state_timeout, :retry_dialog_lookup, data) do
+    # Final retry attempt - if still not found, fail gracefully
+    case Registry.lookup(ParrotSip.Registry, data.dialog_id) do
+      [{dialog_pid, _}] ->
+        :ok = DialogStatem.set_owner(dialog_pid, data.dialog_id)
+        ref = Process.monitor(dialog_pid)
+        {:keep_state, %{data | dialog: dialog_pid, dialog_ref: ref}}
+
+      [] ->
+        Logger.warning("UAS dialog not found after retry: #{data.dialog_id}")
+        notify(data, {:uas_error, self(), :dialog_not_found})
+        {:next_state, :terminated, data}
     end
   end
 
@@ -250,10 +269,12 @@ defmodule ParrotSip.UAS do
   end
 
   def established({:call, from}, :hangup, data) do
-    bye = build_bye(data)
+    # Increment CSeq per RFC 3261 Section 12.2.1.1
+    next_seq = data.local_seq + 1
+    bye = build_bye(data, next_seq)
     Client.request(bye, fn _result -> :ok end)
 
-    {:next_state, :terminating, data, [{:reply, from, :ok}]}
+    {:next_state, :terminating, %{data | local_seq: next_seq}, [{:reply, from, :ok}]}
   end
 
   def established(:info, {:dialog_event, {:reinvite, invite}}, data) do
@@ -262,9 +283,11 @@ defmodule ParrotSip.UAS do
   end
 
   def established(:cast, {:send_reinvite, sdp}, data) do
-    reinvite = build_reinvite(data, sdp)
+    # Increment CSeq per RFC 3261 Section 12.2.1.1
+    next_seq = data.local_seq + 1
+    reinvite = build_reinvite(data, sdp, next_seq)
     Client.request(reinvite, fn _result -> :ok end)
-    {:keep_state, data}
+    {:keep_state, %{data | local_seq: next_seq}}
   end
 
   # State: terminating
@@ -321,7 +344,8 @@ defmodule ParrotSip.UAS do
     Dialog.generate_id(:uas, call_id, local_tag, remote_tag)
   end
 
-  defp build_bye(data) do
+  # Build BYE with proper CSeq tracking per RFC 3261 Section 12.2.1.1
+  defp build_bye(data, cseq_number) do
     via = Via.new(data.local_host, data.transport, data.local_port)
 
     %Message{
@@ -331,13 +355,14 @@ defmodule ParrotSip.UAS do
       from: data.invite.to,
       to: data.invite.from,
       call_id: data.invite.call_id,
-      cseq: CSeq.new(2, :bye),
+      cseq: CSeq.new(cseq_number, :bye),
       via: [via],
       max_forwards: 70
     }
   end
 
-  defp build_reinvite(data, sdp) do
+  # Build re-INVITE with proper CSeq tracking per RFC 3261 Section 12.2.1.1
+  defp build_reinvite(data, sdp, cseq_number) do
     via = Via.new(data.local_host, data.transport, data.local_port)
 
     %Message{
@@ -347,7 +372,7 @@ defmodule ParrotSip.UAS do
       from: data.invite.to,
       to: data.invite.from,
       call_id: data.invite.call_id,
-      cseq: CSeq.new(3, :invite),
+      cseq: CSeq.new(cseq_number, :invite),
       via: [via],
       body: sdp,
       max_forwards: 70

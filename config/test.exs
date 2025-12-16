@@ -25,14 +25,9 @@ if sip_trace do
     level: log_level,
     format: "$time $metadata[$level] $message\n"
 else
-  # Completely disable console backend when not tracing
-  # This is the most effective way to suppress ALL logs
-  config :logger,
-    backends: [],
-    level: :emergency,
-    compile_time_purge_matching: [
-      [level_lower_than: :emergency]
-    ]
+  # Suppress logs during tests but keep handlers available
+  # so they can be re-enabled at runtime with LOG_LEVEL or SIP_TRACE
+  config :logger, level: :emergency
 end
 
 # Configure each umbrella app separately

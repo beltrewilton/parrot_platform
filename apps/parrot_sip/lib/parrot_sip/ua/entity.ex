@@ -19,6 +19,10 @@ defmodule ParrotSip.UA.Entity do
           call_id: String.t(),
           local_tag: String.t(),
           remote_tag: String.t() | nil,
+          # CSeq tracking per RFC 3261 Section 12.2.1.1
+          local_seq: pos_integer(),
+          # Timestamp for garbage collection
+          created_at: integer() | nil,
           # Internal references (not exposed in docs)
           ua_pid: pid(),
           uas: term() | nil,
@@ -38,7 +42,11 @@ defmodule ParrotSip.UA.Entity do
     :ua_pid,
     :uas,
     :trans,
-    :request
+    :request,
+    # CSeq tracking - initialized from INVITE's CSeq (keyword entries must be last)
+    local_seq: 1,
+    # Created timestamp for GC
+    created_at: nil
   ]
 
   @doc """

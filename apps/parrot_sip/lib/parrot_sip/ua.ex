@@ -192,6 +192,9 @@ defmodule ParrotSip.UA do
           local_host: Keyword.get(opts, :local_host, "127.0.0.1")
         }
 
+        # Schedule entity garbage collection
+        schedule_entity_cleanup()
+
         {:ok, state}
 
       {:error, reason} ->
@@ -260,7 +263,7 @@ defmodule ParrotSip.UA do
     # Build INVITE
     invite = build_invite(uri, opts, state)
 
-    # Create entity
+    # Create entity with CSeq tracking (RFC 3261 Section 12.2.1.1)
     entity = %Entity{
       id: Entity.generate_id(),
       type: :client,
@@ -270,6 +273,8 @@ defmodule ParrotSip.UA do
       call_id: invite.call_id,
       local_tag: invite.from.parameters["tag"],
       remote_tag: nil,
+      local_seq: invite.cseq.number,
+      created_at: System.monotonic_time(:millisecond),
       ua_pid: self(),
       request: invite
     }
@@ -290,7 +295,8 @@ defmodule ParrotSip.UA do
   end
 
   def handle_call({:incoming_invite, uas, invite}, _from, state) do
-    # Create server entity
+    # Create server entity with CSeq tracking (RFC 3261 Section 12.2.1.1)
+    # For UAS, local_seq starts at 0 (no requests sent yet)
     entity = %Entity{
       id: Entity.generate_id(),
       type: :server,
@@ -300,6 +306,8 @@ defmodule ParrotSip.UA do
       call_id: invite.call_id,
       local_tag: generate_tag(),
       remote_tag: invite.from.parameters["tag"],
+      local_seq: 0,
+      created_at: System.monotonic_time(:millisecond),
       ua_pid: self(),
       uas: uas,
       request: invite
@@ -348,8 +356,11 @@ defmodule ParrotSip.UA do
         {:reply, {:error, :entity_not_found}, state}
 
       entity ->
-        # Build and send BYE
-        bye = build_bye(entity, state)
+        # Increment CSeq per RFC 3261 Section 12.2.1.1
+        next_seq = entity.local_seq + 1
+
+        # Build and send BYE with proper CSeq
+        bye = build_bye(entity, next_seq, state)
 
         ua_pid = self()
 
@@ -358,8 +369,8 @@ defmodule ParrotSip.UA do
             GenServer.cast(ua_pid, {:bye_response, entity_id, result})
           end)
 
-        # Update entity state
-        entity = %{entity | state: :terminated}
+        # Update entity state and local_seq
+        entity = %{entity | state: :terminated, local_seq: next_seq}
         entities = Map.put(state.entities, entity_id, entity)
 
         {:reply, :ok, %{state | entities: entities}}
@@ -566,8 +577,38 @@ defmodule ParrotSip.UA do
   end
 
   # ============================================================================
+  # GenServer handle_info
+  # ============================================================================
+
+  @impl true
+  def handle_info(:cleanup_entities, state) do
+    # Clean up terminated entities and entities older than max age
+    # This prevents memory leaks from accumulating stale entities
+    now = System.monotonic_time(:millisecond)
+    max_age_ms = :timer.minutes(10)
+
+    {removed, kept} =
+      Map.split_with(state.entities, fn {_id, entity} ->
+        entity.state == :terminated or
+          (entity.created_at != nil and now - entity.created_at > max_age_ms)
+      end)
+
+    if map_size(removed) > 0 do
+      Logger.debug("UA cleanup: removed #{map_size(removed)} stale entities")
+    end
+
+    schedule_entity_cleanup()
+    {:noreply, %{state | entities: kept}}
+  end
+
+  # ============================================================================
   # Private Helpers
   # ============================================================================
+
+  # Schedule periodic entity garbage collection (every 1 minute)
+  defp schedule_entity_cleanup do
+    Process.send_after(self(), :cleanup_entities, :timer.minutes(1))
+  end
 
   defp build_invite(uri, opts, state) do
     call_id = "#{Entity.generate_id()}@#{state.local_host}"
@@ -623,7 +664,8 @@ defmodule ParrotSip.UA do
     }
   end
 
-  defp build_bye(entity, state) do
+  # Build BYE with proper CSeq tracking per RFC 3261 Section 12.2.1.1
+  defp build_bye(entity, cseq_number, state) do
     dest_uri = ParrotSip.Uri.parse!(entity.remote_uri)
     {:ok, dest_ip} = :inet.parse_address(String.to_charlist(dest_uri.host))
     dest_port = dest_uri.port || 5060
@@ -645,7 +687,7 @@ defmodule ParrotSip.UA do
         parameters: %{"tag" => entity.remote_tag}
       },
       call_id: entity.call_id,
-      cseq: %CSeq{number: 2, method: :bye},
+      cseq: %CSeq{number: cseq_number, method: :bye},
       via: [
         %Via{
           protocol: "SIP",
