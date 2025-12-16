@@ -385,49 +385,9 @@ defmodule ParrotSip.Transaction do
 
   """
   @spec create_invite_client(Message.t()) :: {:ok, t()}
-  def create_invite_client(%Message{via: %Headers.Via{parameters: %{"branch" => branch}}} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:invite_client, branch, request)
-
-    # Create the transaction in calling state (RFC 3261 17.1.1)
-    transaction = %__MODULE__{
-      id: id,
-      type: :invite_client,
-      state: :calling,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: :invite,
-      created_at: System.system_time(:millisecond),
-      role: :uac
-    }
-
-    {:ok, transaction}
-  end
-
-  def create_invite_client(%Message{via: [%Headers.Via{parameters: %{"branch" => branch}} | _]} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:invite_client, branch, request)
-
-    # Create the transaction in calling state (RFC 3261 17.1.1)
-    transaction = %__MODULE__{
-      id: id,
-      type: :invite_client,
-      state: :calling,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: :invite,
-      created_at: System.system_time(:millisecond),
-      role: :uac
-    }
-
-    {:ok, transaction}
-  end
-
   def create_invite_client(%Message{} = request) do
-    # RFC 2543 compatibility: no branch parameter, compute it from message headers
-    id = generate_transaction_id(:invite_client, nil, request)
+    branch = extract_branch_from_via(request.via)
+    id = generate_transaction_id(:invite_client, branch, request)
 
     # Create the transaction in calling state (RFC 3261 17.1.1)
     transaction = %__MODULE__{
@@ -436,7 +396,7 @@ defmodule ParrotSip.Transaction do
       state: :calling,
       request: request,
       last_response: nil,
-      branch: nil,
+      branch: branch,
       method: :invite,
       created_at: System.system_time(:millisecond),
       role: :uac
@@ -502,49 +462,9 @@ defmodule ParrotSip.Transaction do
 
   """
   @spec create_non_invite_client(Message.t()) :: {:ok, t()}
-  def create_non_invite_client(%Message{via: %Headers.Via{parameters: %{"branch" => branch}}} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:non_invite_client, branch, request)
-
-    # Create the transaction in trying state (RFC 3261 17.1.2)
-    transaction = %__MODULE__{
-      id: id,
-      type: :non_invite_client,
-      state: :trying,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: request.method,
-      created_at: System.system_time(:millisecond),
-      role: :uac
-    }
-
-    {:ok, transaction}
-  end
-
-  def create_non_invite_client(%Message{via: [%Headers.Via{parameters: %{"branch" => branch}} | _]} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:non_invite_client, branch, request)
-
-    # Create the transaction in trying state (RFC 3261 17.1.2)
-    transaction = %__MODULE__{
-      id: id,
-      type: :non_invite_client,
-      state: :trying,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: request.method,
-      created_at: System.system_time(:millisecond),
-      role: :uac
-    }
-
-    {:ok, transaction}
-  end
-
   def create_non_invite_client(%Message{} = request) do
-    # RFC 2543 compatibility: no branch parameter, compute it from message headers
-    id = generate_transaction_id(:non_invite_client, nil, request)
+    branch = extract_branch_from_via(request.via)
+    id = generate_transaction_id(:non_invite_client, branch, request)
 
     # Create the transaction in trying state (RFC 3261 17.1.2)
     transaction = %__MODULE__{
@@ -553,7 +473,7 @@ defmodule ParrotSip.Transaction do
       state: :trying,
       request: request,
       last_response: nil,
-      branch: nil,
+      branch: branch,
       method: request.method,
       created_at: System.system_time(:millisecond),
       role: :uac
@@ -622,58 +542,18 @@ defmodule ParrotSip.Transaction do
 
   """
   @spec create_invite_server(Message.t()) :: {:ok, t()}
-  def create_invite_server(%Message{via: %Headers.Via{parameters: %{"branch" => branch}}} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:invite_server, branch, request)
-
-    # Create the transaction in initial state
-    transaction = %__MODULE__{
-      id: id,
-      type: :invite_server,
-      state: :trying,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: :invite,
-      created_at: System.system_time(:millisecond),
-      role: :uas
-    }
-
-    {:ok, transaction}
-  end
-
-  def create_invite_server(%Message{via: [%Headers.Via{parameters: %{"branch" => branch}} | _]} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:invite_server, branch, request)
-
-    # Create the transaction in initial state
-    transaction = %__MODULE__{
-      id: id,
-      type: :invite_server,
-      state: :trying,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: :invite,
-      created_at: System.system_time(:millisecond),
-      role: :uas
-    }
-
-    {:ok, transaction}
-  end
-
   def create_invite_server(%Message{} = request) do
-    # RFC 2543 compatibility: no branch parameter, compute it from message headers
-    id = generate_transaction_id(:invite_server, nil, request)
+    branch = extract_branch_from_via(request.via)
+    id = generate_transaction_id(:invite_server, branch, request)
 
-    # Create the transaction in initial state
+    # Create the transaction in initial state (RFC 3261 17.2.1)
     transaction = %__MODULE__{
       id: id,
       type: :invite_server,
       state: :trying,
       request: request,
       last_response: nil,
-      branch: nil,
+      branch: branch,
       method: :invite,
       created_at: System.system_time(:millisecond),
       role: :uas
@@ -740,49 +620,9 @@ defmodule ParrotSip.Transaction do
 
   """
   @spec create_non_invite_server(Message.t()) :: {:ok, t()}
-  def create_non_invite_server(%Message{via: %Headers.Via{parameters: %{"branch" => branch}}} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:non_invite_server, branch, request)
-
-    # Create the transaction in trying state (per RFC 3261 17.2.2)
-    transaction = %__MODULE__{
-      id: id,
-      type: :non_invite_server,
-      state: :trying,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: request.method,
-      created_at: System.system_time(:millisecond),
-      role: :uas
-    }
-
-    {:ok, transaction}
-  end
-
-  def create_non_invite_server(%Message{via: [%Headers.Via{parameters: %{"branch" => branch}} | _]} = request) do
-    # Create transaction ID
-    id = generate_transaction_id(:non_invite_server, branch, request)
-
-    # Create the transaction in trying state (per RFC 3261 17.2.2)
-    transaction = %__MODULE__{
-      id: id,
-      type: :non_invite_server,
-      state: :trying,
-      request: request,
-      last_response: nil,
-      branch: branch,
-      method: request.method,
-      created_at: System.system_time(:millisecond),
-      role: :uas
-    }
-
-    {:ok, transaction}
-  end
-
   def create_non_invite_server(%Message{} = request) do
-    # RFC 2543 compatibility: no branch parameter, compute it from message headers
-    id = generate_transaction_id(:non_invite_server, nil, request)
+    branch = extract_branch_from_via(request.via)
+    id = generate_transaction_id(:non_invite_server, branch, request)
 
     # Create the transaction in trying state (per RFC 3261 17.2.2)
     transaction = %__MODULE__{
@@ -791,7 +631,7 @@ defmodule ParrotSip.Transaction do
       state: :trying,
       request: request,
       last_response: nil,
-      branch: nil,
+      branch: branch,
       method: request.method,
       created_at: System.system_time(:millisecond),
       role: :uas
@@ -858,70 +698,29 @@ defmodule ParrotSip.Transaction do
 
   """
   @spec generate_transaction_id(transaction_type(), String.t(), Message.t()) :: String.t()
-  def generate_transaction_id(
-        type,
-        branch,
-        %Message{
-          request_uri: request_uri,
-          from: %Headers.From{parameters: %{"tag" => from_tag}},
-          to: %Headers.To{parameters: %{"tag" => to_tag}},
-          call_id: call_id,
-          cseq: %Headers.CSeq{number: cseq_number},
-          via: [%Headers.Via{host: via_host, port: via_port} | _]
-        } = request
-      )
-      when is_nil(branch) do
-    # RFC 3261 Section 17.2.3: When branch parameter is missing (RFC 2543 compatibility),
-    # compute transaction ID from Request-URI, To tag, From tag, Call-ID, CSeq, and top Via
-    # This clause handles Via as a list (most common case)
-    branch =
-      [
-        request_uri,
-        from_tag,
-        to_tag,
-        call_id,
-        cseq_number,
-        "#{via_host}:#{via_port || "5060"}"
-      ]
-      |> Enum.join("|")
-      |> then(&:crypto.hash(:md5, &1))
-      |> Base.encode16(case: :lower)
-      |> String.slice(0, 16)
+  # RFC 2543 compatibility: When branch is nil, compute transaction ID from message fields
+  # Consolidated into single clause that handles both Via list and struct formats
+  def generate_transaction_id(type, nil = _branch, %Message{} = request) do
+    # Extract Via host/port, handling both list and struct formats
+    {via_host, via_port} = extract_via_host_port(request.via)
 
-    generate_transaction_id(type, branch, request)
-  end
+    # Extract tags, handling missing tags gracefully (common in early dialogs)
+    from_tag = get_tag(request.from)
+    to_tag = get_tag(request.to)
+    cseq_number = if request.cseq, do: request.cseq.number, else: 0
 
-  def generate_transaction_id(
-        type,
-        branch,
-        %Message{
-          request_uri: request_uri,
-          from: %Headers.From{parameters: %{"tag" => from_tag}},
-          to: %Headers.To{parameters: %{"tag" => to_tag}},
-          call_id: call_id,
-          cseq: %Headers.CSeq{number: cseq_number},
-          via: %Headers.Via{host: via_host, port: via_port}
-        } = request
-      )
-      when is_nil(branch) do
-    # RFC 3261 Section 17.2.3: When branch parameter is missing (RFC 2543 compatibility),
-    # compute transaction ID from Request-URI, To tag, From tag, Call-ID, CSeq, and top Via
-    # This clause handles Via as a struct (less common case)
-    branch =
-      [
-        request_uri,
-        from_tag,
-        to_tag,
-        call_id,
-        cseq_number,
-        "#{via_host}:#{via_port || "5060"}"
-      ]
-      |> Enum.join("|")
-      |> then(&:crypto.hash(:md5, &1))
-      |> Base.encode16(case: :lower)
-      |> String.slice(0, 16)
+    # RFC 3261 Section 17.2.3: Compute branch from message fields
+    computed_branch = compute_rfc2543_branch(
+      request.request_uri,
+      from_tag,
+      to_tag,
+      request.call_id,
+      cseq_number,
+      via_host,
+      via_port
+    )
 
-    generate_transaction_id(type, branch, request)
+    generate_transaction_id(type, computed_branch, request)
   end
 
   def generate_transaction_id(type, branch, request) do
@@ -1804,6 +1603,47 @@ defmodule ParrotSip.Transaction do
   @spec is_terminated?(t()) :: boolean()
   def is_terminated?(transaction) do
     transaction.state == :terminated
+  end
+
+  # ==========================================================================
+  # Via Header Helpers
+  # ==========================================================================
+
+  # Extract branch parameter from Via header, handling both list and struct formats
+  # Returns nil if no branch found (RFC 2543 compatibility case)
+  defp extract_branch_from_via(%Headers.Via{parameters: %{"branch" => branch}}), do: branch
+  defp extract_branch_from_via([%Headers.Via{parameters: %{"branch" => branch}} | _]), do: branch
+  defp extract_branch_from_via(_), do: nil
+
+  # ==========================================================================
+  # RFC 2543 Compatibility Helpers
+  # ==========================================================================
+
+  # Extract Via host and port, handling both list and struct formats
+  defp extract_via_host_port([%Headers.Via{host: host, port: port} | _]), do: {host, port}
+  defp extract_via_host_port(%Headers.Via{host: host, port: port}), do: {host, port}
+  defp extract_via_host_port(_), do: {"unknown", nil}
+
+  # Extract tag from From/To header, handling missing tags gracefully
+  defp get_tag(%{parameters: %{"tag" => tag}}) when is_binary(tag), do: tag
+  defp get_tag(_), do: ""
+
+  # Compute RFC 2543 compatible branch from message fields
+  # RFC 3261 Section 17.2.3: When branch parameter is missing,
+  # compute transaction ID from Request-URI, To tag, From tag, Call-ID, CSeq, and top Via
+  defp compute_rfc2543_branch(request_uri, from_tag, to_tag, call_id, cseq_number, via_host, via_port) do
+    [
+      request_uri || "",
+      from_tag,
+      to_tag,
+      call_id || "",
+      to_string(cseq_number),
+      "#{via_host}:#{via_port || "5060"}"
+    ]
+    |> Enum.join("|")
+    |> then(&:crypto.hash(:md5, &1))
+    |> Base.encode16(case: :lower)
+    |> String.slice(0, 16)
   end
 
 end

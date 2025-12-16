@@ -21,24 +21,22 @@ full_trace = System.get_env("FULL_TRACE", "false") == "true"
       {:debug, true}
 
     sip_trace ->
-      IO.puts("SIP_TRACE enabled - setting log level to :info")
-      {:info, true}
+      IO.puts("SIP_TRACE enabled - setting log level to :debug")
+      {:debug, true}
 
     true ->
       {:emergency, false}
   end
 
 if show_logs do
+  # Configure the primary logger level
   Logger.configure(level: log_level)
-  Logger.add_backend(:console)
 
-  Logger.configure_backend(:console,
-    format: "$time $metadata[$level] $message\n",
-    metadata: if(full_trace or log_level == :debug, do: [:file, :line], else: [])
-  )
+  # Ensure the default handler is configured properly (Elixir 1.15+ / OTP 21+)
+  :logger.update_handler_config(:default, :level, log_level)
 else
   Logger.configure(level: :emergency)
-  Logger.remove_backend(:console)
+  :logger.update_handler_config(:default, :level, :emergency)
 end
 
 # Exclude slow tests by default - include with mix test --include sipp

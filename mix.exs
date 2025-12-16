@@ -6,9 +6,12 @@ defmodule ParrotPlatform.MixProject do
       apps_path: "apps",
       version: "0.0.1-alpha.4",
       start_permanent: Mix.env() == :prod,
+      consolidate_protocols: Mix.env() != :dev,
       deps: deps(),
       aliases: aliases(),
-      preferred_cli_env: preferred_cli_env(),
+
+      # Test coverage
+      test_coverage: [tool: ExCoveralls],
 
       # Hex.pm metadata
       name: "Parrot Platform",
@@ -20,10 +23,32 @@ defmodule ParrotPlatform.MixProject do
     ]
   end
 
+  def cli do
+    [
+      preferred_envs: [
+        "test.sipp": :test,
+        "test.all": :test,
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.post": :test,
+        "coveralls.html": :test,
+        "coveralls.json": :test
+      ]
+    ]
+  end
+
   defp deps do
     [
-      # Umbrella-wide deps only (like ex_doc)
-      {:ex_doc, "~> 0.31", only: :dev, runtime: false}
+      {:claude, "~> 0.5", only: [:dev], runtime: false},
+      {:igniter, "~> 0.5", only: [:dev, :test]},
+      # Code quality and documentation
+      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:excoveralls, "~> 0.18", only: :test},
+      # Testing and observability
+      {:stream_data, "~> 1.1", only: :test},
+      {:telemetry, "~> 1.0"}
     ]
   end
 
@@ -33,13 +58,6 @@ defmodule ParrotPlatform.MixProject do
       "test.sipp": ["test --only sipp"],
       "test.all": ["test --include sipp --include slow"],
       docs: ["docs", &copy_images/1]
-    ]
-  end
-
-  defp preferred_cli_env do
-    [
-      "test.sipp": :test,
-      "test.all": :test
     ]
   end
 

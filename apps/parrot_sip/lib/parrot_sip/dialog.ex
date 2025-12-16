@@ -64,7 +64,13 @@ defmodule ParrotSip.Dialog do
     # List of Route headers
     :route_set,
     # Boolean indicating if dialog is secure
-    :secure
+    :secure,
+    # Local host for Via headers (optional, falls back to config)
+    :local_host,
+    # Local port for Via headers (optional)
+    :local_port,
+    # Transport protocol (optional, defaults to :udp)
+    :transport
   ]
 
   @type t :: %__MODULE__{
@@ -79,7 +85,10 @@ defmodule ParrotSip.Dialog do
           local_seq: non_neg_integer(),
           remote_seq: non_neg_integer(),
           route_set: list(),
-          secure: boolean()
+          secure: boolean(),
+          local_host: String.t() | nil,
+          local_port: non_neg_integer() | nil,
+          transport: :udp | :tcp | :tls | :ws | :wss | nil
         }
 
   @doc """
@@ -132,64 +141,35 @@ defmodule ParrotSip.Dialog do
       :early
   """
   @spec create_from_invite(Message.t(), :uac | :uas) :: {:ok, String.t()} | {:error, term()}
-  def create_from_invite(%Message{method: :invite} = invite_message, :uac) do
+  def create_from_invite(%Message{method: :invite} = invite_message, role) when role in [:uac, :uas] do
     call_id = invite_message.call_id
     from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
     to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil
 
     with {:call_id, call_id} when not is_nil(call_id) <- {:call_id, call_id},
          {:from_tag, from_tag} when not is_nil(from_tag) <- {:from_tag, from_tag} do
-      dialog_id = generate_id(:uac, call_id, from_tag, to_tag)
+      # Extract role-specific dialog parameters
+      {local_tag, remote_tag, local_seq, remote_seq} =
+        extract_dialog_params(role, from_tag, to_tag, invite_message.cseq)
 
-      dialog = %__MODULE__{
-        id: dialog_id,
-        state: :early,
-        call_id: call_id,
-        local_tag: from_tag,
-        remote_tag: to_tag,
-        local_uri: extract_local_uri(invite_message, :uac),
-        remote_uri: extract_remote_uri(invite_message, :uac),
-        remote_target: extract_contact_uri(invite_message),
-        local_seq: if(invite_message.cseq, do: invite_message.cseq.number, else: 0),
-        remote_seq: 0,
-        route_set: extract_route_set_from_message(invite_message),
-        secure: is_secure_dialog?(invite_message)
-      }
-
-      dialog_with_role = Map.put(dialog, :role, :uac)
-      start_dialog_process(dialog_with_role, dialog_id)
-    else
-      {:call_id, nil} -> {:error, :no_call_id}
-      {:from_tag, nil} -> {:error, :no_from_tag}
-    end
-  end
-
-  def create_from_invite(%Message{method: :invite} = invite_message, :uas) do
-    call_id = invite_message.call_id
-    from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
-    to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil
-
-    with {:call_id, call_id} when not is_nil(call_id) <- {:call_id, call_id},
-         {:from_tag, from_tag} when not is_nil(from_tag) <- {:from_tag, from_tag} do
-      local_tag = to_tag || generate_tag()
-      dialog_id = generate_id(:uas, call_id, local_tag, from_tag)
+      dialog_id = generate_id(role, call_id, local_tag, remote_tag)
 
       dialog = %__MODULE__{
         id: dialog_id,
         state: :early,
         call_id: call_id,
         local_tag: local_tag,
-        remote_tag: from_tag,
-        local_uri: extract_local_uri(invite_message, :uas),
-        remote_uri: extract_remote_uri(invite_message, :uas),
+        remote_tag: remote_tag,
+        local_uri: extract_local_uri(invite_message, role),
+        remote_uri: extract_remote_uri(invite_message, role),
         remote_target: extract_contact_uri(invite_message),
-        local_seq: 0,
-        remote_seq: if(invite_message.cseq, do: invite_message.cseq.number, else: 0),
+        local_seq: local_seq,
+        remote_seq: remote_seq,
         route_set: extract_route_set_from_message(invite_message),
         secure: is_secure_dialog?(invite_message)
       }
 
-      dialog_with_role = Map.put(dialog, :role, :uas)
+      dialog_with_role = Map.put(dialog, :role, role)
       start_dialog_process(dialog_with_role, dialog_id)
     else
       {:call_id, nil} -> {:error, :no_call_id}
@@ -877,6 +857,12 @@ defmodule ParrotSip.Dialog do
       method: template.method
     }
 
+    # Get local host from dialog or fall back to application config
+    # RFC 3261 Section 12.2.1.1: Via header must use local address for response routing
+    local_host = dialog.local_host || Application.get_env(:parrot_sip, :local_host, "127.0.0.1")
+    local_port = dialog.local_port
+    transport = dialog.transport || :udp
+
     # Create a basic request structure
     request = %Message{
       method: template.method,
@@ -887,9 +873,9 @@ defmodule ParrotSip.Dialog do
       via: %Headers.Via{
         protocol: "SIP",
         version: "2.0",
-        transport: :udp,
-        # This would typically be configurable
-        host: "pc33.atlanta.com",
+        transport: transport,
+        host: local_host,
+        port: local_port,
         parameters: %{"branch" => Headers.generate_branch()}
       },
       from: from,
@@ -932,6 +918,36 @@ defmodule ParrotSip.Dialog do
     new_state = determine_dialog_state(response, dialog)
     updated_dialog = %{dialog | state: new_state}
     {:ok, updated_dialog}
+  end
+
+  @doc """
+  Returns the next CSeq number and updates the dialog's local sequence.
+
+  Per RFC 3261 Section 12.2.1.1, in-dialog requests MUST have a CSeq number
+  that is one higher than the highest CSeq number in any previous request
+  sent within the same dialog.
+
+  ## Parameters
+
+  - `dialog`: The current Dialog struct
+
+  ## Returns
+
+  - `{next_cseq, updated_dialog}`: Tuple with the next CSeq number and updated dialog
+
+  ## Examples
+
+      iex> dialog = %ParrotSip.Dialog{local_seq: 1}
+      iex> {cseq, updated} = ParrotSip.Dialog.next_seq(dialog)
+      iex> cseq
+      2
+      iex> updated.local_seq
+      2
+  """
+  @spec next_seq(t()) :: {pos_integer(), t()}
+  def next_seq(%__MODULE__{local_seq: current} = dialog) do
+    next = current + 1
+    {next, %{dialog | local_seq: next}}
   end
 
   # Dialog becomes confirmed on 2xx to INVITE
@@ -1042,6 +1058,20 @@ defmodule ParrotSip.Dialog do
   end
 
   defp extract_route_set(_response), do: []
+
+  # Extract role-specific dialog parameters (local_tag, remote_tag, local_seq, remote_seq)
+  # For UAC: local is From, remote is To, local initiated the INVITE
+  # For UAS: local is To, remote is From, remote initiated the INVITE
+  defp extract_dialog_params(:uac, from_tag, to_tag, cseq) do
+    local_seq = if cseq, do: cseq.number, else: 0
+    {from_tag, to_tag, local_seq, 0}
+  end
+
+  defp extract_dialog_params(:uas, from_tag, to_tag, cseq) do
+    local_tag = to_tag || generate_tag()
+    remote_seq = if cseq, do: cseq.number, else: 0
+    {local_tag, from_tag, 0, remote_seq}
+  end
 
   # For UAC, local URI is From
   defp extract_local_uri(%Message{from: %From{uri: uri}}, :uac), do: uri

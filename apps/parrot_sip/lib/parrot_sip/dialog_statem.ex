@@ -283,7 +283,7 @@ defmodule ParrotSip.DialogStatem do
         call_id: call_id
       }) do
     # For UAS (incoming request): local=to_tag (us), remote=from_tag (them)
-    dialog_id_str = "#{call_id};local=#{to_tag};remote=#{from_tag};uas"
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
     Logger.info("uas_find: looking for dialog with ID #{inspect(dialog_id_str)}")
 
     case Registry.lookup(ParrotSip.Registry, dialog_id_str) do
@@ -313,7 +313,7 @@ defmodule ParrotSip.DialogStatem do
     Logger.debug("dialog: uas_request #{inspect(sip_msg)}")
 
     # For UAS: local=to_tag, remote=from_tag
-    dialog_id_str = "#{call_id};local=#{to_tag};remote=#{from_tag};uas"
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
     Logger.debug("dialog: constructed dialog id #{inspect(dialog_id_str)} from request")
 
     case Registry.lookup(ParrotSip.Registry, dialog_id_str) do
@@ -355,7 +355,7 @@ defmodule ParrotSip.DialogStatem do
     Logger.debug("dialog: uas_response #{inspect(resp_sip_msg)}")
 
     # For UAS: local=to_tag, remote=from_tag
-    dialog_id_str = "#{call_id};local=#{to_tag};remote=#{from_tag};uas"
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
     Logger.debug("dialog: constructed dialog id #{inspect(dialog_id_str)} from response")
 
     case Registry.lookup(ParrotSip.Registry, dialog_id_str) do
@@ -403,7 +403,7 @@ defmodule ParrotSip.DialogStatem do
         trans_result
       ) do
     # For UAC: local=from_tag (us), remote=to_tag (them)
-    dialog_id_str = "#{call_id};local=#{from_tag};remote=#{to_tag};uac"
+    dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
 
     Registry.lookup(ParrotSip.Registry, dialog_id_str)
     |> handle_registry_lookup_result()
@@ -448,7 +448,7 @@ defmodule ParrotSip.DialogStatem do
          %Message{to: %{parameters: %{"tag" => to_tag}}} = response
        ) do
     # For UAC: local=from_tag, remote=to_tag
-    dialog_id_str = "#{call_id};local=#{from_tag};remote=#{to_tag};uac"
+    dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
 
     Registry.lookup(ParrotSip.Registry, dialog_id_str)
     |> handle_registry_lookup_result()
@@ -694,7 +694,7 @@ defmodule ParrotSip.DialogStatem do
           }}
        ) do
     # For UAS: local=to_tag, remote=from_tag
-    dialog_id_str = "#{call_id};local=#{to_tag};remote=#{from_tag};uas"
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
     {:dialog, dialog_id_str}
   end
 
@@ -706,7 +706,7 @@ defmodule ParrotSip.DialogStatem do
           }, %Message{to: %{parameters: %{"tag" => to_tag}}}}
        ) do
     # For UAC: local=from_tag, remote=to_tag
-    dialog_id_str = "#{call_id};local=#{from_tag};remote=#{to_tag};uac"
+    dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
     {:dialog, dialog_id_str}
   end
 
