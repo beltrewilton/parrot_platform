@@ -70,6 +70,8 @@ defmodule ParrotMedia.MediaSession do
       :rtp_socket,
       # Membrane pipeline PID
       :pipeline_pid,
+      # Monitor reference for pipeline
+      :pipeline_monitor,
       # Audio file to play (if any)
       :audio_file,
       # Owner process
@@ -111,6 +113,7 @@ defmodule ParrotMedia.MediaSession do
             remote_rtp_address: String.t() | nil,
             rtp_socket: port() | nil,
             pipeline_pid: pid() | nil,
+            pipeline_monitor: reference() | nil,
             audio_file: String.t() | nil,
             owner_pid: pid() | nil,
             owner_monitor: reference() | nil,
@@ -365,7 +368,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def idle(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -425,7 +428,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def negotiating(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -465,7 +468,7 @@ defmodule ParrotMedia.MediaSession do
 
     # Start media pipeline
     case start_media_pipeline(updated_data) do
-      {:ok, pipeline_pid} ->
+      {:ok, pipeline_pid, monitor_ref} ->
         Logger.info(
           "MediaSession #{data.id}: Media pipeline started successfully with PID: #{inspect(pipeline_pid)}"
         )
@@ -476,7 +479,7 @@ defmodule ParrotMedia.MediaSession do
           :gen_udp.close(updated_data.rtp_socket)
         end
 
-        final_data = %{updated_data | pipeline_pid: pipeline_pid, rtp_socket: nil}
+        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref, rtp_socket: nil}
         {:next_state, :active, final_data, [{:reply, from, :ok}]}
 
       {:error, reason} = error ->
@@ -498,7 +501,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def ready(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:keep_state, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -532,7 +535,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def active(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -566,7 +569,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def paused(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Media control messages
@@ -1108,8 +1111,8 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Membrane pipeline created with PID: #{inspect(pipeline_pid)}"
         )
 
-        Process.monitor(pipeline_pid)
-        {:ok, pipeline_pid}
+        monitor_ref = Process.monitor(pipeline_pid)
+        {:ok, pipeline_pid, monitor_ref}
 
       {:ok, _supervisor_pid, pipeline_pid} ->
         # Membrane.Pipeline.start_link returns {ok, supervisor_pid, pipeline_pid}
@@ -1117,8 +1120,8 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Membrane pipeline created with PID: #{inspect(pipeline_pid)}"
         )
 
-        Process.monitor(pipeline_pid)
-        {:ok, pipeline_pid}
+        monitor_ref = Process.monitor(pipeline_pid)
+        {:ok, pipeline_pid, monitor_ref}
 
       {:error, reason} = error ->
         Logger.error(
@@ -1255,15 +1258,15 @@ defmodule ParrotMedia.MediaSession do
   defp restart_pipeline_if_needed(data) do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Restarting pipeline with new audio file")
-      stop_media_pipeline(data)
+      data_after_stop = stop_media_pipeline(data)
 
-      case start_media_pipeline(data) do
-        {:ok, new_pipeline_pid} ->
-          %{data | pipeline_pid: new_pipeline_pid}
+      case start_media_pipeline(data_after_stop) do
+        {:ok, new_pipeline_pid, monitor_ref} ->
+          %{data_after_stop | pipeline_pid: new_pipeline_pid, pipeline_monitor: monitor_ref}
 
         {:error, reason} ->
           Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")
-          data
+          data_after_stop
       end
     else
       # Pipeline not running yet, just update the data
@@ -1319,13 +1322,25 @@ defmodule ParrotMedia.MediaSession do
   defp stop_media_pipeline(data) do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Stopping pipeline")
+
+      # Demonitor before stopping
+      if data.pipeline_monitor do
+        Process.demonitor(data.pipeline_monitor, [:flush])
+      end
+
       ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
     end
 
-    %{data | pipeline_pid: nil}
+    %{data | pipeline_pid: nil, pipeline_monitor: nil}
   end
 
   defp cleanup_session(data) do
+    # Demonitor pipeline if monitored
+    if data.pipeline_monitor do
+      Logger.debug("MediaSession #{data.id}: Demonitoring pipeline")
+      Process.demonitor(data.pipeline_monitor, [:flush])
+    end
+
     # Stop media pipeline if running
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.debug("MediaSession #{data.id}: Stopping Membrane pipeline")
