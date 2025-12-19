@@ -38,8 +38,8 @@ defmodule ParrotMedia.AlawPipeline do
     # Create RTP SessionBin for bidirectional RTP handling
     rtp_session_spec =
       child(:rtp, %Membrane.RTP.SessionBin{
-        # payload type 8 = G.711 A-law (static encoding uses string format)
-        fmt_mapping: %{8 => {"PCMA", 8000}}
+        # payload type 8 = G.711 A-law (static encoding uses atom format)
+        fmt_mapping: %{8 => {:PCMA, 8000}}
       })
 
     # Receiving pipeline: UDP -> RTP -> Decoder
