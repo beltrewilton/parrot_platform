@@ -502,11 +502,8 @@ defmodule ParrotMedia.PortAudioPipeline do
 
   defp build_sink_pipeline(:file, opts, _udp, _rtp) do
     [
-      # Basic RTP depayloader that extracts audio from RTP packets
-      child(:rtp_receiver, %ParrotMedia.BasicRTPDepayloader{
-        clock_rate: 8000,
-        selected_codec: opts[:selected_codec]
-      }),
+      # RTP depayloader that extracts audio from RTP packets
+      child(:rtp_receiver, Membrane.RTP.G711.Depayloader),
 
       # G.711 A-law decoder
       child(:g711_decoder, Membrane.G711.Decoder),
