@@ -657,7 +657,7 @@ defmodule ParrotMedia.MediaSession do
   # Codec mapping between symbols and RTP payload types
   # Codec mapping - using standard SDP names
   defp codec_info(:pcma), do: {8, "PCMA/8000", ParrotMedia.AlawPipeline}
-  defp codec_info(:opus), do: {111, "opus/48000/2", ParrotMedia.OpusPipeline}
+  defp codec_info(:opus), do: {111, "opus/48000/1", ParrotMedia.OpusPipeline}
 
   defp get_codec_payload_type(codec) do
     {pt, _, _} = codec_info(codec)
@@ -937,6 +937,39 @@ defmodule ParrotMedia.MediaSession do
     # Get the IP address to use in SDP
     sdp_ip = get_sdp_ip(data)
 
+    # Build attributes based on codec
+    # Parse rtpmap to extract encoding, clock_rate, and optional channels
+    rtpmap_parts = String.split(rtpmap, "/")
+    encoding = List.first(rtpmap_parts)
+    clock_rate = Enum.at(rtpmap_parts, 1) |> String.to_integer()
+    # Get channels if present (3rd part of rtpmap)
+    channels = case Enum.at(rtpmap_parts, 2) do
+      nil -> nil
+      ch -> String.to_integer(ch)
+    end
+
+    base_attributes = [
+      %ExSDP.Attribute.RTPMapping{
+        payload_type: pt,
+        encoding: encoding,
+        clock_rate: clock_rate,
+        params: channels
+      }
+    ]
+
+    # Add codec-specific attributes
+    codec_attributes = case selected_codec do
+      :opus ->
+        [
+          %ExSDP.Attribute.FMTP{pt: pt, stereo: false, useinbandfec: true},
+          {:ptime, 20}
+        ]
+      _ ->
+        []
+    end
+
+    attributes = base_attributes ++ codec_attributes ++ [:sendrecv]
+
     sdp = %ExSDP{
       version: 0,
       origin: %ExSDP.Origin{
@@ -961,14 +994,7 @@ defmodule ParrotMedia.MediaSession do
           port: local_rtp_port,
           protocol: "RTP/AVP",
           fmt: [pt],
-          attributes: [
-            %ExSDP.Attribute.RTPMapping{
-              payload_type: pt,
-              encoding: String.split(rtpmap, "/") |> List.first(),
-              clock_rate: rtpmap |> String.split("/") |> Enum.at(1) |> String.to_integer()
-            },
-            :sendrecv
-          ]
+          attributes: attributes
         }
       ]
     }
