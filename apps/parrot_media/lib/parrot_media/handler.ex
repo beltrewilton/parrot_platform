@@ -553,13 +553,9 @@ defmodule ParrotMedia.Handler do
 
   # Optional callbacks - all except init
   @optional_callbacks [
-    handle_session_start: 3,
     handle_session_stop: 3,
     handle_offer: 3,
     handle_answer: 3,
-    handle_codec_negotiation: 3,
-    handle_negotiation_complete: 4,
-    handle_stream_start: 3,
     handle_stream_stop: 3,
     handle_stream_error: 3,
     handle_play_complete: 2,
