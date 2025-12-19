@@ -170,10 +170,16 @@ defmodule ParrotMedia.MediaSession do
 
   @doc """
   Generates an SDP offer (UAC case).
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec generate_offer(String.t() | pid()) :: {:ok, String.t()} | {:error, term()}
-  def generate_offer(session) do
-    :gen_statem.call(get_pid(session), :generate_offer)
+  @spec generate_offer(String.t() | pid(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def generate_offer(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :generate_offer, timeout)
   end
 
   @doc """
@@ -188,48 +194,71 @@ defmodule ParrotMedia.MediaSession do
 
     * `session_id` - The session identifier
     * `sdp_offer` - The SDP offer as a string
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
 
   ## Returns
 
     * `{:ok, sdp_answer}` - Successfully negotiated, returns SDP answer
     * `{:error, reason}` - Negotiation failed
   """
-  @spec process_offer(String.t() | pid(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def process_offer(session, sdp_offer) do
+  @spec process_offer(String.t() | pid(), String.t(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def process_offer(session, sdp_offer, timeout \\ 5000) do
     Logger.debug("MediaSession.process_offer called for session: #{inspect(session)}")
-    :gen_statem.call(get_pid(session), {:process_offer, sdp_offer})
+    :gen_statem.call(get_pid(session), {:process_offer, sdp_offer}, timeout)
   end
 
   @doc """
   Processes an SDP answer (UAC case).
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `sdp_answer` - The SDP answer as a string
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec process_answer(String.t() | pid(), String.t()) :: :ok | {:error, term()}
-  def process_answer(session, sdp_answer) do
-    :gen_statem.call(get_pid(session), {:process_answer, sdp_answer})
+  @spec process_answer(String.t() | pid(), String.t(), timeout()) :: :ok | {:error, term()}
+  def process_answer(session, sdp_answer, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:process_answer, sdp_answer}, timeout)
   end
 
   @doc """
   Starts the media streams.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec start_media(String.t() | pid()) :: :ok | {:error, term()}
-  def start_media(session) do
-    :gen_statem.call(get_pid(session), :start_media)
+  @spec start_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def start_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :start_media, timeout)
   end
 
   @doc """
   Pauses the media streams.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec pause_media(String.t() | pid()) :: :ok | {:error, term()}
-  def pause_media(session) do
-    :gen_statem.call(get_pid(session), :pause_media)
+  @spec pause_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def pause_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :pause_media, timeout)
   end
 
   @doc """
   Resumes the media streams.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec resume_media(String.t() | pid()) :: :ok | {:error, term()}
-  def resume_media(session) do
-    :gen_statem.call(get_pid(session), :resume_media)
+  @spec resume_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def resume_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :resume_media, timeout)
   end
 
   @doc """
