@@ -1020,13 +1020,17 @@ defmodule ParrotMedia.MediaSession do
     Stream.iterate(0, &(&1 + 1))
     |> Stream.take(max_attempts)
     |> Stream.map(fn _ ->
-      port = min_port + :rand.uniform(max_port - min_port)
+      # Generate random port and ensure it's even (for RTP/RTCP pairing)
+      candidate_port = min_port + :rand.uniform(max_port - min_port)
+      rtp_port = if rem(candidate_port, 2) == 0, do: candidate_port, else: candidate_port - 1
 
-      case :gen_udp.open(port, [:binary, {:active, false}]) do
-        {:ok, socket} ->
-          :gen_udp.close(socket)
-          {:ok, port}
-
+      # Verify both RTP port and RTCP port (RTP+1) are available
+      with {:ok, rtp_socket} <- :gen_udp.open(rtp_port, [:binary, {:active, false}]),
+           {:ok, rtcp_socket} <- :gen_udp.open(rtp_port + 1, [:binary, {:active, false}]) do
+        :gen_udp.close(rtp_socket)
+        :gen_udp.close(rtcp_socket)
+        {:ok, rtp_port}
+      else
         {:error, :eaddrinuse} ->
           {:error, :in_use}
 
