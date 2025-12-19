@@ -38,8 +38,11 @@ defmodule ParrotMedia.OpusPipeline do
     # Create RTP SessionBin for bidirectional RTP handling
     rtp_session_spec =
       child(:rtp, %Membrane.RTP.SessionBin{
-        # payload type 111 = Opus (dynamic encoding)  
-        fmt_mapping: %{111 => {:opus, 48000}}
+        # payload type 111 = Opus (dynamic encoding)
+        fmt_mapping: %{111 => {:opus, 48000}},
+        # RTCP intervals per RFC 3550
+        rtcp_receiver_report_interval: Membrane.Time.seconds(5),
+        rtcp_sender_report_interval: Membrane.Time.seconds(5)
       })
 
     # Receiving pipeline: UDP -> RTP -> Decoder

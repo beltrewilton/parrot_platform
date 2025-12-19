@@ -39,7 +39,10 @@ defmodule ParrotMedia.AlawPipeline do
     rtp_session_spec =
       child(:rtp, %Membrane.RTP.SessionBin{
         # payload type 8 = G.711 A-law (static encoding uses string format)
-        fmt_mapping: %{8 => {"PCMA", 8000}}
+        fmt_mapping: %{8 => {"PCMA", 8000}},
+        # RTCP intervals per RFC 3550
+        rtcp_receiver_report_interval: Membrane.Time.seconds(5),
+        rtcp_sender_report_interval: Membrane.Time.seconds(5)
       })
 
     # Receiving pipeline: UDP -> RTP -> Decoder
