@@ -23,6 +23,11 @@ defmodule ParrotMedia.RTPPacketLogger do
   end
 
   @impl true
+  def handle_stream_format(:input, stream_format, _ctx, state) do
+    {[stream_format: {:output, stream_format}], state}
+  end
+
+  @impl true
   def handle_buffer(:input, buffer, _ctx, state) do
     state = %{state | counter: state.counter + 1}
 
