@@ -95,7 +95,9 @@ defmodule ParrotMedia.MediaSession do
       :output_device_id,
       # IP configuration for SDP
       :local_ip,
-      :advertised_ip
+      :advertised_ip,
+      # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
+      direction: :sendrecv
     ]
 
     @type t :: %__MODULE__{
@@ -122,7 +124,8 @@ defmodule ParrotMedia.MediaSession do
             input_device_id: non_neg_integer() | nil,
             output_device_id: non_neg_integer() | nil,
             local_ip: :auto | String.t() | tuple() | nil,
-            advertised_ip: String.t() | tuple() | nil
+            advertised_ip: String.t() | tuple() | nil,
+            direction: :sendrecv | :sendonly | :recvonly | :inactive
           }
   end
 
@@ -537,9 +540,18 @@ defmodule ParrotMedia.MediaSession do
   # State: active #
   #################
 
-  def active({:call, from}, :pause_media, _data) do
-    # Pause not implemented
-    {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
+  def active({:call, from}, :pause_media, data) do
+    Logger.info("MediaSession #{data.id}: Pausing media")
+
+    # Stop the pipeline
+    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+      Logger.info("MediaSession #{data.id}: Stopping pipeline for pause")
+      ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
+    end
+
+    # Update direction to sendonly (we're holding)
+    updated_data = %{data | pipeline_pid: nil, direction: :sendonly}
+    {:next_state, :paused, updated_data, [{:reply, from, :ok}]}
   end
 
   # Owner process DOWN
@@ -571,9 +583,23 @@ defmodule ParrotMedia.MediaSession do
   # State: paused #
   #################
 
-  def paused({:call, from}, :resume_media, _data) do
-    # Resume not implemented
-    {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
+  def paused({:call, from}, :resume_media, data) do
+    Logger.info("MediaSession #{data.id}: Resuming media")
+
+    # Restore direction to sendrecv
+    updated_data = %{data | direction: :sendrecv}
+
+    # Restart the pipeline
+    case start_media_pipeline(updated_data) do
+      {:ok, pipeline_pid} ->
+        Logger.info("MediaSession #{data.id}: Pipeline restarted successfully")
+        final_data = %{updated_data | pipeline_pid: pipeline_pid}
+        {:next_state, :active, final_data, [{:reply, from, :ok}]}
+
+      {:error, reason} = error ->
+        Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")
+        {:keep_state, updated_data, [{:reply, from, error}]}
+    end
   end
 
   # Owner process DOWN
@@ -733,7 +759,7 @@ defmodule ParrotMedia.MediaSession do
             clock_rate: rtpmap |> String.split("/") |> Enum.at(1) |> String.to_integer()
           }
         ]
-      end) ++ [:sendrecv]
+      end) ++ [data.direction]
 
     # Create SDP using ex_sdp
     sdp = %ExSDP{
@@ -981,7 +1007,7 @@ defmodule ParrotMedia.MediaSession do
               encoding: String.split(rtpmap, "/") |> List.first(),
               clock_rate: rtpmap |> String.split("/") |> Enum.at(1) |> String.to_integer()
             },
-            :sendrecv
+            data.direction
           ]
         }
       ]
