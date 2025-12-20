@@ -99,7 +99,9 @@ defmodule ParrotMedia.MediaSession do
       :output_device_id,
       # IP configuration for SDP
       :local_ip,
-      :advertised_ip
+      :advertised_ip,
+      # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
+      direction: :sendrecv
     ]
 
     @type t :: %__MODULE__{
@@ -128,7 +130,8 @@ defmodule ParrotMedia.MediaSession do
             input_device_id: non_neg_integer() | nil,
             output_device_id: non_neg_integer() | nil,
             local_ip: :auto | String.t() | tuple() | nil,
-            advertised_ip: String.t() | tuple() | nil
+            advertised_ip: String.t() | tuple() | nil,
+            direction: :sendrecv | :sendonly | :recvonly | :inactive
           }
   end
 
@@ -176,10 +179,16 @@ defmodule ParrotMedia.MediaSession do
 
   @doc """
   Generates an SDP offer (UAC case).
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec generate_offer(String.t() | pid()) :: {:ok, String.t()} | {:error, term()}
-  def generate_offer(session) do
-    :gen_statem.call(get_pid(session), :generate_offer)
+  @spec generate_offer(String.t() | pid(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def generate_offer(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :generate_offer, timeout)
   end
 
   @doc """
@@ -194,48 +203,71 @@ defmodule ParrotMedia.MediaSession do
 
     * `session_id` - The session identifier
     * `sdp_offer` - The SDP offer as a string
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
 
   ## Returns
 
     * `{:ok, sdp_answer}` - Successfully negotiated, returns SDP answer
     * `{:error, reason}` - Negotiation failed
   """
-  @spec process_offer(String.t() | pid(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def process_offer(session, sdp_offer) do
+  @spec process_offer(String.t() | pid(), String.t(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def process_offer(session, sdp_offer, timeout \\ 5000) do
     Logger.debug("MediaSession.process_offer called for session: #{inspect(session)}")
-    :gen_statem.call(get_pid(session), {:process_offer, sdp_offer})
+    :gen_statem.call(get_pid(session), {:process_offer, sdp_offer}, timeout)
   end
 
   @doc """
   Processes an SDP answer (UAC case).
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `sdp_answer` - The SDP answer as a string
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec process_answer(String.t() | pid(), String.t()) :: :ok | {:error, term()}
-  def process_answer(session, sdp_answer) do
-    :gen_statem.call(get_pid(session), {:process_answer, sdp_answer})
+  @spec process_answer(String.t() | pid(), String.t(), timeout()) :: :ok | {:error, term()}
+  def process_answer(session, sdp_answer, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:process_answer, sdp_answer}, timeout)
   end
 
   @doc """
   Starts the media streams.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec start_media(String.t() | pid()) :: :ok | {:error, term()}
-  def start_media(session) do
-    :gen_statem.call(get_pid(session), :start_media)
+  @spec start_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def start_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :start_media, timeout)
   end
 
   @doc """
   Pauses the media streams.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec pause_media(String.t() | pid()) :: :ok | {:error, term()}
-  def pause_media(session) do
-    :gen_statem.call(get_pid(session), :pause_media)
+  @spec pause_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def pause_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :pause_media, timeout)
   end
 
   @doc """
   Resumes the media streams.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
   """
-  @spec resume_media(String.t() | pid()) :: :ok | {:error, term()}
-  def resume_media(session) do
-    :gen_statem.call(get_pid(session), :resume_media)
+  @spec resume_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def resume_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :resume_media, timeout)
   end
 
   @doc """
@@ -466,6 +498,14 @@ defmodule ParrotMedia.MediaSession do
     # Process any media action from handler
     updated_data = process_media_action(action, updated_data)
 
+    # Close the RTP socket before starting pipeline (so pipeline can bind to the port)
+    if updated_data.rtp_socket do
+      Logger.debug("MediaSession #{data.id}: Closing temporary RTP socket before pipeline start")
+      :gen_udp.close(updated_data.rtp_socket)
+    end
+
+    updated_data = %{updated_data | rtp_socket: nil}
+
     # Start media pipeline
     case start_media_pipeline(updated_data) do
       {:ok, pipeline_pid, monitor_ref} ->
@@ -473,13 +513,7 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Media pipeline started successfully with PID: #{inspect(pipeline_pid)}"
         )
 
-        # Close the RTP socket now that pipeline has started and will open its own
-        if updated_data.rtp_socket do
-          Logger.debug("MediaSession #{data.id}: Closing temporary RTP socket, pipeline will use its own")
-          :gen_udp.close(updated_data.rtp_socket)
-        end
-
-        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref, rtp_socket: nil}
+        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref}
         {:next_state, :active, final_data, [{:reply, from, :ok}]}
 
       {:error, reason} = error ->
@@ -520,9 +554,18 @@ defmodule ParrotMedia.MediaSession do
   # State: active #
   #################
 
-  def active({:call, from}, :pause_media, _data) do
-    # Pause not implemented
-    {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
+  def active({:call, from}, :pause_media, data) do
+    Logger.info("MediaSession #{data.id}: Pausing media")
+
+    # Stop the pipeline
+    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+      Logger.info("MediaSession #{data.id}: Stopping pipeline for pause")
+      ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
+    end
+
+    # Update direction to sendonly (we're holding)
+    updated_data = %{data | pipeline_pid: nil, direction: :sendonly}
+    {:next_state, :paused, updated_data, [{:reply, from, :ok}]}
   end
 
   # Owner process DOWN
@@ -554,9 +597,23 @@ defmodule ParrotMedia.MediaSession do
   # State: paused #
   #################
 
-  def paused({:call, from}, :resume_media, _data) do
-    # Resume not implemented
-    {:keep_state_and_data, [{:reply, from, {:error, :not_implemented}}]}
+  def paused({:call, from}, :resume_media, data) do
+    Logger.info("MediaSession #{data.id}: Resuming media")
+
+    # Restore direction to sendrecv
+    updated_data = %{data | direction: :sendrecv}
+
+    # Restart the pipeline
+    case start_media_pipeline(updated_data) do
+      {:ok, pipeline_pid, monitor_ref} ->
+        Logger.info("MediaSession #{data.id}: Pipeline restarted successfully")
+        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref}
+        {:next_state, :active, final_data, [{:reply, from, :ok}]}
+
+      {:error, reason} = error ->
+        Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")
+        {:keep_state, updated_data, [{:reply, from, error}]}
+    end
   end
 
   # Owner process DOWN
@@ -716,7 +773,7 @@ defmodule ParrotMedia.MediaSession do
             clock_rate: rtpmap |> String.split("/") |> Enum.at(1) |> String.to_integer()
           }
         ]
-      end) ++ [:sendrecv]
+      end) ++ [data.direction]
 
     # Create SDP using ex_sdp
     sdp = %ExSDP{
@@ -968,7 +1025,7 @@ defmodule ParrotMedia.MediaSession do
         []
     end
 
-    attributes = base_attributes ++ codec_attributes ++ [:sendrecv]
+    attributes = base_attributes ++ codec_attributes ++ [data.direction]
 
     sdp = %ExSDP{
       version: 0,
@@ -1066,13 +1123,19 @@ defmodule ParrotMedia.MediaSession do
     Stream.iterate(0, &(&1 + 1))
     |> Stream.take(max_attempts)
     |> Stream.map(fn _ ->
-      port = min_port + :rand.uniform(max_port - min_port)
+      # Generate random port and ensure it's even (for RTP/RTCP pairing)
+      candidate_port = min_port + :rand.uniform(max_port - min_port)
+      rtp_port = if rem(candidate_port, 2) == 0, do: candidate_port, else: candidate_port - 1
 
-      case :gen_udp.open(port, [:binary, {:active, false}]) do
-        {:ok, socket} ->
-          # Keep socket open to maintain port reservation
-          {:ok, port, socket}
-
+      # Verify both RTP port and RTCP port (RTP+1) are available
+      # Keep RTP socket open to maintain port reservation
+      with {:ok, rtp_socket} <- :gen_udp.open(rtp_port, [:binary, {:active, false}]),
+           {:ok, rtcp_socket} <- :gen_udp.open(rtp_port + 1, [:binary, {:active, false}]) do
+        # Close RTCP socket - only need to reserve RTP port
+        :gen_udp.close(rtcp_socket)
+        # Return with socket kept open for port reservation
+        {:ok, rtp_port, rtp_socket}
+      else
         {:error, :eaddrinuse} ->
           {:error, :in_use}
 
