@@ -5,7 +5,10 @@ defmodule ParrotExampleUas.MixProject do
     [
       app: :parrot_example_uas,
       version: "0.1.0",
-      elixir: "~> 1.14",
+      build_path: "../../_build",
+      deps_path: "../../deps",
+      lockfile: "../../mix.lock",
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -13,16 +16,16 @@ defmodule ParrotExampleUas.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {ParrotExampleUas.Application, []}
     ]
   end
 
   defp deps do
     [
-      # Use local parrot_platform when available
-      {:parrot_platform, path: "../..", override: true}
-      # Or use from hex when published:
-      # {:parrot_platform, "~> 0.0.1-alpha"}
+      {:parrot_sip, path: "../../apps/parrot_sip"},
+      {:parrot_transport, path: "../../apps/parrot_transport"},
+      {:parrot_media, path: "../../apps/parrot_media"}
     ]
   end
 end
