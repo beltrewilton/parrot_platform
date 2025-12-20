@@ -66,8 +66,12 @@ defmodule ParrotMedia.MediaSession do
       :local_rtp_port,
       :remote_rtp_port,
       :remote_rtp_address,
+      # RTP socket (kept open until pipeline takes ownership)
+      :rtp_socket,
       # Membrane pipeline PID
       :pipeline_pid,
+      # Monitor reference for pipeline
+      :pipeline_monitor,
       # Audio file to play (if any)
       :audio_file,
       # Owner process
@@ -107,7 +111,9 @@ defmodule ParrotMedia.MediaSession do
             local_rtp_port: non_neg_integer() | nil,
             remote_rtp_port: non_neg_integer() | nil,
             remote_rtp_address: String.t() | nil,
+            rtp_socket: port() | nil,
             pipeline_pid: pid() | nil,
+            pipeline_monitor: reference() | nil,
             audio_file: String.t() | nil,
             owner_pid: pid() | nil,
             owner_monitor: reference() | nil,
@@ -362,7 +368,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def idle(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -422,7 +428,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def negotiating(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -462,12 +468,18 @@ defmodule ParrotMedia.MediaSession do
 
     # Start media pipeline
     case start_media_pipeline(updated_data) do
-      {:ok, pipeline_pid} ->
+      {:ok, pipeline_pid, monitor_ref} ->
         Logger.info(
           "MediaSession #{data.id}: Media pipeline started successfully with PID: #{inspect(pipeline_pid)}"
         )
 
-        final_data = %{updated_data | pipeline_pid: pipeline_pid}
+        # Close the RTP socket now that pipeline has started and will open its own
+        if updated_data.rtp_socket do
+          Logger.debug("MediaSession #{data.id}: Closing temporary RTP socket, pipeline will use its own")
+          :gen_udp.close(updated_data.rtp_socket)
+        end
+
+        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref, rtp_socket: nil}
         {:next_state, :active, final_data, [{:reply, from, :ok}]}
 
       {:error, reason} = error ->
@@ -489,7 +501,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def ready(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:keep_state, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -523,7 +535,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def active(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Unknown process DOWN
@@ -557,7 +569,7 @@ defmodule ParrotMedia.MediaSession do
   # Pipeline process DOWN
   def paused(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
     Logger.warning("MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}")
-    {:next_state, :ready, %{data | pipeline_pid: nil}}
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil}}
   end
 
   # Media control messages
@@ -645,7 +657,7 @@ defmodule ParrotMedia.MediaSession do
   # Codec mapping between symbols and RTP payload types
   # Codec mapping - using standard SDP names
   defp codec_info(:pcma), do: {8, "PCMA/8000", ParrotMedia.AlawPipeline}
-  defp codec_info(:opus), do: {111, "opus/48000/2", ParrotMedia.OpusPipeline}
+  defp codec_info(:opus), do: {111, "opus/48000/1", ParrotMedia.OpusPipeline}
 
   defp get_codec_payload_type(codec) do
     {pt, _, _} = codec_info(codec)
@@ -683,8 +695,8 @@ defmodule ParrotMedia.MediaSession do
   defp get_pid(pid) when is_pid(pid), do: pid
 
   defp generate_sdp_offer(data) do
-    # Allocate local RTP port
-    local_rtp_port = allocate_rtp_port()
+    # Allocate local RTP port and keep socket open
+    {local_rtp_port, rtp_socket} = allocate_rtp_port()
 
     # Get the IP address to use in SDP
     sdp_ip = get_sdp_ip(data)
@@ -737,7 +749,7 @@ defmodule ParrotMedia.MediaSession do
     }
 
     sdp_string = to_string(sdp)
-    updated_data = %{data | local_sdp: sdp_string, local_rtp_port: local_rtp_port}
+    updated_data = %{data | local_sdp: sdp_string, local_rtp_port: local_rtp_port, rtp_socket: rtp_socket}
     {:ok, sdp_string, updated_data}
   end
 
@@ -749,7 +761,7 @@ defmodule ParrotMedia.MediaSession do
          {:ok, remote_info} <- extract_remote_info(parsed_sdp, audio_media, data.id),
          {:ok, selected_codec, handler_state} <- negotiate_codec(audio_media, data) do
       data_with_handler_state = %{data | handler_state: handler_state}
-      local_rtp_port = get_or_allocate_rtp_port(data_with_handler_state)
+      {local_rtp_port, rtp_socket} = get_or_allocate_rtp_port(data_with_handler_state)
       sdp_answer = generate_answer_sdp(local_rtp_port, selected_codec, data_with_handler_state)
       pipeline_module = get_pipeline_module_for_config(selected_codec, data_with_handler_state)
 
@@ -760,6 +772,7 @@ defmodule ParrotMedia.MediaSession do
           remote_info,
           selected_codec,
           local_rtp_port,
+          rtp_socket,
           sdp_answer,
           pipeline_module
         )
@@ -833,15 +846,15 @@ defmodule ParrotMedia.MediaSession do
     end
   end
 
-  defp get_or_allocate_rtp_port(%{local_rtp_port: port, id: session_id}) when not is_nil(port) do
+  defp get_or_allocate_rtp_port(%{local_rtp_port: port, rtp_socket: socket, id: session_id}) when not is_nil(port) do
     Logger.info("MediaSession #{session_id}: Using pre-allocated local RTP port: #{port}")
-    port
+    {port, socket}
   end
 
   defp get_or_allocate_rtp_port(%{id: session_id}) do
-    port = allocate_rtp_port()
+    {port, socket} = allocate_rtp_port()
     Logger.info("MediaSession #{session_id}: Allocated new local RTP port: #{port}")
-    port
+    {port, socket}
   end
 
   defp build_session_data(
@@ -850,6 +863,7 @@ defmodule ParrotMedia.MediaSession do
          remote_info,
          selected_codec,
          local_rtp_port,
+         rtp_socket,
          sdp_answer,
          pipeline_module
        ) do
@@ -858,6 +872,7 @@ defmodule ParrotMedia.MediaSession do
       | local_sdp: sdp_answer,
         remote_sdp: sdp_offer,
         local_rtp_port: local_rtp_port,
+        rtp_socket: rtp_socket,
         remote_rtp_port: remote_info.port,
         remote_rtp_address: remote_info.address,
         selected_codec: selected_codec,
@@ -922,6 +937,39 @@ defmodule ParrotMedia.MediaSession do
     # Get the IP address to use in SDP
     sdp_ip = get_sdp_ip(data)
 
+    # Build attributes based on codec
+    # Parse rtpmap to extract encoding, clock_rate, and optional channels
+    rtpmap_parts = String.split(rtpmap, "/")
+    encoding = List.first(rtpmap_parts)
+    clock_rate = Enum.at(rtpmap_parts, 1) |> String.to_integer()
+    # Get channels if present (3rd part of rtpmap)
+    channels = case Enum.at(rtpmap_parts, 2) do
+      nil -> nil
+      ch -> String.to_integer(ch)
+    end
+
+    base_attributes = [
+      %ExSDP.Attribute.RTPMapping{
+        payload_type: pt,
+        encoding: encoding,
+        clock_rate: clock_rate,
+        params: channels
+      }
+    ]
+
+    # Add codec-specific attributes
+    codec_attributes = case selected_codec do
+      :opus ->
+        [
+          %ExSDP.Attribute.FMTP{pt: pt, stereo: false, useinbandfec: true},
+          {:ptime, 20}
+        ]
+      _ ->
+        []
+    end
+
+    attributes = base_attributes ++ codec_attributes ++ [:sendrecv]
+
     sdp = %ExSDP{
       version: 0,
       origin: %ExSDP.Origin{
@@ -946,14 +994,7 @@ defmodule ParrotMedia.MediaSession do
           port: local_rtp_port,
           protocol: "RTP/AVP",
           fmt: [pt],
-          attributes: [
-            %ExSDP.Attribute.RTPMapping{
-              payload_type: pt,
-              encoding: String.split(rtpmap, "/") |> List.first(),
-              clock_rate: rtpmap |> String.split("/") |> Enum.at(1) |> String.to_integer()
-            },
-            :sendrecv
-          ]
+          attributes: attributes
         }
       ]
     }
@@ -1003,8 +1044,8 @@ defmodule ParrotMedia.MediaSession do
     max_attempts = Map.get(config, :max_port_attempts, 100)
 
     case find_available_port(min_port, max_port, max_attempts) do
-      {:ok, port} ->
-        port
+      {:ok, port, socket} ->
+        {port, socket}
 
       {:error, :no_ports_available} ->
         # Fallback to random port as last resort
@@ -1012,7 +1053,12 @@ defmodule ParrotMedia.MediaSession do
           "Failed to find available RTP port in range #{min_port}-#{max_port}, using random port"
         )
 
-        min_port + :rand.uniform(max_port - min_port)
+        port = min_port + :rand.uniform(max_port - min_port)
+        # Try to open socket for the fallback port
+        case :gen_udp.open(port, [:binary, {:active, false}]) do
+          {:ok, socket} -> {port, socket}
+          {:error, _} -> {port, nil}
+        end
     end
   end
 
@@ -1024,8 +1070,8 @@ defmodule ParrotMedia.MediaSession do
 
       case :gen_udp.open(port, [:binary, {:active, false}]) do
         {:ok, socket} ->
-          :gen_udp.close(socket)
-          {:ok, port}
+          # Keep socket open to maintain port reservation
+          {:ok, port, socket}
 
         {:error, :eaddrinuse} ->
           {:error, :in_use}
@@ -1035,7 +1081,7 @@ defmodule ParrotMedia.MediaSession do
       end
     end)
     |> Enum.find({:error, :no_ports_available}, fn
-      {:ok, _port} -> true
+      {:ok, _port, _socket} -> true
       _ -> false
     end)
   end
@@ -1091,8 +1137,8 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Membrane pipeline created with PID: #{inspect(pipeline_pid)}"
         )
 
-        Process.monitor(pipeline_pid)
-        {:ok, pipeline_pid}
+        monitor_ref = Process.monitor(pipeline_pid)
+        {:ok, pipeline_pid, monitor_ref}
 
       {:ok, _supervisor_pid, pipeline_pid} ->
         # Membrane.Pipeline.start_link returns {ok, supervisor_pid, pipeline_pid}
@@ -1100,8 +1146,8 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Membrane pipeline created with PID: #{inspect(pipeline_pid)}"
         )
 
-        Process.monitor(pipeline_pid)
-        {:ok, pipeline_pid}
+        monitor_ref = Process.monitor(pipeline_pid)
+        {:ok, pipeline_pid, monitor_ref}
 
       {:error, reason} = error ->
         Logger.error(
@@ -1238,15 +1284,15 @@ defmodule ParrotMedia.MediaSession do
   defp restart_pipeline_if_needed(data) do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Restarting pipeline with new audio file")
-      stop_media_pipeline(data)
+      data_after_stop = stop_media_pipeline(data)
 
-      case start_media_pipeline(data) do
-        {:ok, new_pipeline_pid} ->
-          %{data | pipeline_pid: new_pipeline_pid}
+      case start_media_pipeline(data_after_stop) do
+        {:ok, new_pipeline_pid, monitor_ref} ->
+          %{data_after_stop | pipeline_pid: new_pipeline_pid, pipeline_monitor: monitor_ref}
 
         {:error, reason} ->
           Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")
-          data
+          data_after_stop
       end
     else
       # Pipeline not running yet, just update the data
@@ -1302,18 +1348,36 @@ defmodule ParrotMedia.MediaSession do
   defp stop_media_pipeline(data) do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Stopping pipeline")
+
+      # Demonitor before stopping
+      if data.pipeline_monitor do
+        Process.demonitor(data.pipeline_monitor, [:flush])
+      end
+
       ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
     end
 
-    %{data | pipeline_pid: nil}
+    %{data | pipeline_pid: nil, pipeline_monitor: nil}
   end
 
   defp cleanup_session(data) do
+    # Demonitor pipeline if monitored
+    if data.pipeline_monitor do
+      Logger.debug("MediaSession #{data.id}: Demonitoring pipeline")
+      Process.demonitor(data.pipeline_monitor, [:flush])
+    end
+
     # Stop media pipeline if running
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.debug("MediaSession #{data.id}: Stopping Membrane pipeline")
       # Use ensure_pipeline_termination for proper cleanup
       ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
+    end
+
+    # Close RTP socket if still open
+    if data.rtp_socket do
+      Logger.debug("MediaSession #{data.id}: Closing RTP socket")
+      :gen_udp.close(data.rtp_socket)
     end
 
     Logger.info("MediaSession #{data.id}: Cleaned up resources")
