@@ -328,9 +328,15 @@ defmodule ParrotMedia.SwitchableFileSource do
       "[SwitchableFileSource:#{state.session_id}] File complete: #{state.current_file}"
     )
 
-    # Check playlist first
+    # Always notify handler first to update handler state
+    {handler_response, updated_handler_state} =
+      notify_handler_and_get_response(state)
+
+    state = %{state | handler_state: updated_handler_state}
+
+    # Check playlist for what to play next (playlist takes priority)
     case {state.playlist_mode, state.playlist} do
-      # Sequence mode with more files
+      # Sequence mode with more files - continue regardless of handler response
       {:sequence, [next_file | remaining]} ->
         Logger.debug(
           "[SwitchableFileSource:#{state.session_id}] Playing next file in sequence: #{next_file}"
@@ -354,96 +360,121 @@ defmodule ParrotMedia.SwitchableFileSource do
 
         switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # No playlist - ask handler what to do
+      # No active playlist - use handler's response to decide next action
       _ ->
+        handle_handler_response(handler_response, state)
+    end
+  end
+
+  defp notify_handler_and_get_response(state) do
+    Logger.debug(
+      "[SwitchableFileSource:#{state.session_id}] Calling handler.handle_play_complete"
+    )
+
+    case state.media_handler.handle_play_complete(state.current_file, state.handler_state) do
+      # Wrapped responses - extract handler state
+      {{_action, _data}, new_handler_state} = response ->
+        {response, new_handler_state}
+
+      {:stop, new_handler_state} ->
+        {{:stop, nil}, new_handler_state}
+
+      {:noreply, new_handler_state} ->
+        {{:noreply, nil}, new_handler_state}
+
+      # Unwrapped responses - keep existing handler state
+      response ->
+        {response, state.handler_state}
+    end
+  end
+
+  defp handle_handler_response(response, state) do
+    # Handler state is already updated in state, so we just process the action
+    case response do
+      # Wrapped responses - handler state already extracted
+      {{:play, new_file}, _handler_state} ->
         Logger.debug(
-          "[SwitchableFileSource:#{state.session_id}] Calling handler.handle_play_complete"
+          "[SwitchableFileSource:#{state.session_id}] Handler requested play: #{new_file}"
         )
 
-        case state.media_handler.handle_play_complete(state.current_file, state.handler_state) do
-          # Wrapped responses with new handler state
-          {{:play, new_file}, new_handler_state} ->
-            Logger.debug(
-              "[SwitchableFileSource:#{state.session_id}] Handler requested play: #{new_file}"
-            )
+        switch_to_next_file(new_file, state)
 
-            switch_to_next_file(new_file, %{state | handler_state: new_handler_state})
+      {{:play_sequence, files}, _handler_state} when is_list(files) and length(files) > 0 ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested sequence: #{inspect(files)}"
+        )
 
-          {{:play_sequence, files}, new_handler_state} when is_list(files) and length(files) > 0 ->
-            Logger.debug(
-              "[SwitchableFileSource:#{state.session_id}] Handler requested sequence: #{inspect(files)}"
-            )
+        [first_file | remaining] = files
 
-            [first_file | remaining] = files
+        new_state = %{
+          state
+          | playlist: remaining,
+            playlist_mode: :sequence,
+            loop_files: []
+        }
 
-            new_state = %{
-              state
-              | playlist: remaining,
-                playlist_mode: :sequence,
-                loop_files: [],
-                handler_state: new_handler_state
-            }
+        switch_to_next_file(first_file, new_state)
 
-            switch_to_next_file(first_file, new_state)
+      {{:play_loop, files}, _handler_state} when is_list(files) and length(files) > 0 ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested loop: #{inspect(files)}"
+        )
 
-          {{:play_loop, files}, new_handler_state} when is_list(files) and length(files) > 0 ->
-            Logger.debug(
-              "[SwitchableFileSource:#{state.session_id}] Handler requested loop: #{inspect(files)}"
-            )
+        [first_file | remaining] = files
 
-            [first_file | remaining] = files
+        new_state = %{
+          state
+          | playlist: remaining,
+            playlist_mode: :loop,
+            loop_files: files
+        }
 
-            new_state = %{
-              state
-              | playlist: remaining,
-                playlist_mode: :loop,
-                loop_files: files,
-                handler_state: new_handler_state
-            }
+        switch_to_next_file(first_file, new_state)
 
-            switch_to_next_file(first_file, new_state)
+      {{:stop, _}, _handler_state} ->
+        Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler requested stop")
+        {[end_of_stream: :output], state}
 
-          {:stop, new_handler_state} ->
-            Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler requested stop")
-            {[end_of_stream: :output], %{state | handler_state: new_handler_state}}
+      {{:noreply, _}, _handler_state} ->
+        Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler returned noreply")
+        {[end_of_stream: :output], state}
 
-          # Unwrapped responses (no handler state update)
-          {:play, new_file} ->
-            Logger.debug(
-              "[SwitchableFileSource:#{state.session_id}] Handler requested play (unwrapped): #{new_file}"
-            )
+      # Unwrapped responses (no handler state update)
+      {:play, new_file} ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested play (unwrapped): #{new_file}"
+        )
 
-            switch_to_next_file(new_file, state)
+        switch_to_next_file(new_file, state)
 
-          {:play_sequence, files} when is_list(files) and length(files) > 0 ->
-            Logger.debug(
-              "[SwitchableFileSource:#{state.session_id}] Handler requested sequence (unwrapped): #{inspect(files)}"
-            )
+      {:play_sequence, files} when is_list(files) and length(files) > 0 ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested sequence (unwrapped): #{inspect(files)}"
+        )
 
-            [first_file | remaining] = files
-            new_state = %{state | playlist: remaining, playlist_mode: :sequence, loop_files: []}
-            switch_to_next_file(first_file, new_state)
+        [first_file | remaining] = files
+        new_state = %{state | playlist: remaining, playlist_mode: :sequence, loop_files: []}
+        switch_to_next_file(first_file, new_state)
 
-          {:play_loop, files} when is_list(files) and length(files) > 0 ->
-            Logger.debug(
-              "[SwitchableFileSource:#{state.session_id}] Handler requested loop (unwrapped): #{inspect(files)}"
-            )
+      {:play_loop, files} when is_list(files) and length(files) > 0 ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested loop (unwrapped): #{inspect(files)}"
+        )
 
-            [first_file | remaining] = files
-            new_state = %{state | playlist: remaining, playlist_mode: :loop, loop_files: files}
-            switch_to_next_file(first_file, new_state)
+        [first_file | remaining] = files
+        new_state = %{state | playlist: remaining, playlist_mode: :loop, loop_files: files}
+        switch_to_next_file(first_file, new_state)
 
-          {:noreply, new_handler_state} ->
-            Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler returned noreply")
-            {[end_of_stream: :output], %{state | handler_state: new_handler_state}}
+      {:noreply, _handler_state} ->
+        Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler returned noreply")
+        {[end_of_stream: :output], state}
 
-          other ->
-            Logger.warning(
-              "[SwitchableFileSource:#{state.session_id}] Unexpected handler response: #{inspect(other)}, stopping"
-            )
+      other ->
+        Logger.warning(
+          "[SwitchableFileSource:#{state.session_id}] Unexpected handler response: #{inspect(other)}, stopping"
+        )
 
-            {[end_of_stream: :output], state}
-        end
+        {[end_of_stream: :output], state}
     end
   end
 
