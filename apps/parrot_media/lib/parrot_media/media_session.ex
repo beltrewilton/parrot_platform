@@ -35,7 +35,7 @@ defmodule ParrotMedia.MediaSession do
   require Logger
 
   alias ExSDP
-  alias ParrotMedia.Inet
+  alias ParrotMedia.{Inet, Sdp}
 
   # Child spec for supervisor
   def child_spec(opts) do
@@ -716,15 +716,6 @@ defmodule ParrotMedia.MediaSession do
   defp codec_info(:pcma), do: {8, "PCMA/8000", ParrotMedia.AlawPipeline}
   defp codec_info(:opus), do: {111, "opus/48000/1", ParrotMedia.OpusPipeline}
 
-  defp get_codec_payload_type(codec) do
-    {pt, _, _} = codec_info(codec)
-    pt
-  end
-
-  defp get_codec_rtpmap(codec) do
-    {pt, rtpmap, _} = codec_info(codec)
-    {pt, rtpmap}
-  end
 
   defp get_pipeline_module(codec) do
     {_, _, module} = codec_info(codec)
@@ -758,87 +749,76 @@ defmodule ParrotMedia.MediaSession do
     # Get the IP address to use in SDP
     sdp_ip = get_sdp_ip(data)
 
-    # Build media formats based on supported codecs
-    formats = Enum.map(data.supported_codecs, &get_codec_payload_type/1)
-
-    # Build RTP mappings
-    attributes =
-      Enum.flat_map(data.supported_codecs, fn codec ->
-        {pt, rtpmap} = get_codec_rtpmap(codec)
-
-        [
-          %ExSDP.Attribute.RTPMapping{
-            payload_type: pt,
-            encoding: String.split(rtpmap, "/") |> List.first(),
-            clock_rate: rtpmap |> String.split("/") |> Enum.at(1) |> String.to_integer()
-          }
-        ]
-      end) ++ [data.direction]
-
-    # Create SDP using ex_sdp
-    sdp = %ExSDP{
-      version: 0,
-      origin: %ExSDP.Origin{
-        username: "-",
-        session_id: :os.system_time(:second),
-        session_version: :os.system_time(:second),
-        network_type: "IN",
-        address: sdp_ip
-      },
-      session_name: "Parrot Media Session",
-      connection_data: %ExSDP.ConnectionData{
-        network_type: "IN",
-        address: sdp_ip
-      },
-      timing: %ExSDP.Timing{
-        start_time: 0,
-        stop_time: 0
-      },
-      media: [
-        %ExSDP.Media{
-          type: :audio,
-          port: local_rtp_port,
-          protocol: "RTP/AVP",
-          fmt: formats,
-          attributes: attributes
+    # Build SDP offer using the Sdp module
+    case Sdp.build_offer(
+           local_ip: sdp_ip,
+           local_port: local_rtp_port,
+           supported_codecs: data.supported_codecs,
+           direction: data.direction
+         ) do
+      {:ok, sdp_string} ->
+        updated_data = %{
+          data
+          | local_sdp: sdp_string,
+            local_rtp_port: local_rtp_port,
+            rtp_socket: rtp_socket
         }
-      ]
-    }
 
-    sdp_string = to_string(sdp)
-    updated_data = %{data | local_sdp: sdp_string, local_rtp_port: local_rtp_port, rtp_socket: rtp_socket}
-    {:ok, sdp_string, updated_data}
+        {:ok, sdp_string, updated_data}
+
+      {:error, reason} ->
+        # Close socket on error
+        if rtp_socket, do: :gen_udp.close(rtp_socket)
+        {:error, reason}
+    end
   end
 
   defp process_sdp_offer(sdp_offer, data) do
     Logger.debug("MediaSession #{data.id}: Parsing SDP offer")
 
-    with {:ok, parsed_sdp} <- ExSDP.parse(sdp_offer),
+    with {:ok, parsed_sdp} <- Sdp.parse(sdp_offer),
          {:ok, audio_media} <- find_audio_media(parsed_sdp),
          {:ok, remote_info} <- extract_remote_info(parsed_sdp, audio_media, data.id),
          {:ok, selected_codec, handler_state} <- negotiate_codec(audio_media, data) do
       data_with_handler_state = %{data | handler_state: handler_state}
       {local_rtp_port, rtp_socket} = get_or_allocate_rtp_port(data_with_handler_state)
-      sdp_answer = generate_answer_sdp(local_rtp_port, selected_codec, data_with_handler_state)
-      pipeline_module = get_pipeline_module_for_config(selected_codec, data_with_handler_state)
 
-      session_data =
-        build_session_data(
-          data_with_handler_state,
-          sdp_offer,
-          remote_info,
-          selected_codec,
-          local_rtp_port,
-          rtp_socket,
-          sdp_answer,
-          pipeline_module
-        )
+      # Get the IP address to use in SDP
+      sdp_ip = get_sdp_ip(data_with_handler_state)
 
-      {:ok, final_data} =
-        call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec)
+      # Use Sdp module to generate answer
+      case Sdp.build_offer(
+             local_ip: sdp_ip,
+             local_port: local_rtp_port,
+             supported_codecs: [selected_codec],
+             direction: data_with_handler_state.direction
+           ) do
+        {:ok, sdp_answer} ->
+          pipeline_module = get_pipeline_module_for_config(selected_codec, data_with_handler_state)
 
-      Logger.info("MediaSession #{data.id}: SDP negotiation complete")
-      {:ok, sdp_answer, final_data}
+          session_data =
+            build_session_data(
+              data_with_handler_state,
+              sdp_offer,
+              remote_info,
+              selected_codec,
+              local_rtp_port,
+              rtp_socket,
+              sdp_answer,
+              pipeline_module
+            )
+
+          {:ok, final_data} =
+            call_handler_if_present(session_data, sdp_answer, sdp_offer, selected_codec)
+
+          Logger.info("MediaSession #{data.id}: SDP negotiation complete")
+          {:ok, sdp_answer, final_data}
+
+        {:error, reason} ->
+          # Close socket on error
+          if rtp_socket, do: :gen_udp.close(rtp_socket)
+          {:error, reason}
+      end
     end
   end
 
@@ -988,112 +968,24 @@ defmodule ParrotMedia.MediaSession do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp generate_answer_sdp(local_rtp_port, selected_codec, data) do
-    {pt, rtpmap} = get_codec_rtpmap(selected_codec)
-
-    # Get the IP address to use in SDP
-    sdp_ip = get_sdp_ip(data)
-
-    # Build attributes based on codec
-    # Parse rtpmap to extract encoding, clock_rate, and optional channels
-    rtpmap_parts = String.split(rtpmap, "/")
-    encoding = List.first(rtpmap_parts)
-    clock_rate = Enum.at(rtpmap_parts, 1) |> String.to_integer()
-    # Get channels if present (3rd part of rtpmap)
-    channels = case Enum.at(rtpmap_parts, 2) do
-      nil -> nil
-      ch -> String.to_integer(ch)
-    end
-
-    base_attributes = [
-      %ExSDP.Attribute.RTPMapping{
-        payload_type: pt,
-        encoding: encoding,
-        clock_rate: clock_rate,
-        params: channels
-      }
-    ]
-
-    # Add codec-specific attributes
-    codec_attributes = case selected_codec do
-      :opus ->
-        [
-          %ExSDP.Attribute.FMTP{pt: pt, stereo: false, useinbandfec: true},
-          {:ptime, 20}
-        ]
-      _ ->
-        []
-    end
-
-    attributes = base_attributes ++ codec_attributes ++ [data.direction]
-
-    sdp = %ExSDP{
-      version: 0,
-      origin: %ExSDP.Origin{
-        username: "-",
-        session_id: :os.system_time(:second),
-        session_version: :os.system_time(:second),
-        network_type: "IN",
-        address: sdp_ip
-      },
-      session_name: "Parrot Media Session",
-      connection_data: %ExSDP.ConnectionData{
-        network_type: "IN",
-        address: sdp_ip
-      },
-      timing: %ExSDP.Timing{
-        start_time: 0,
-        stop_time: 0
-      },
-      media: [
-        %ExSDP.Media{
-          type: :audio,
-          port: local_rtp_port,
-          protocol: "RTP/AVP",
-          fmt: [pt],
-          attributes: attributes
-        }
-      ]
-    }
-
-    to_string(sdp)
-  end
 
   defp process_sdp_answer(sdp_answer, data) do
-    with {:ok, parsed_sdp} <- ExSDP.parse(sdp_answer),
-         {:ok, audio_media} <- find_audio_media(parsed_sdp),
-         {:ok, remote_info} <- extract_answer_remote_info(parsed_sdp, audio_media, data.id),
-         {:ok, updated_data} <- build_answer_data(sdp_answer, remote_info, audio_media, data) do
+    with {:ok, answer_info} <- Sdp.process_answer(sdp_answer) do
+      pipeline_module = get_pipeline_module_for_config(answer_info.selected_codec, data)
+
+      updated_data = %{
+        data
+        | remote_sdp: sdp_answer,
+          remote_rtp_port: answer_info.remote_port,
+          remote_rtp_address: answer_info.remote_ip,
+          selected_codec: answer_info.selected_codec,
+          pipeline_module: pipeline_module
+      }
+
       {:ok, updated_data}
     end
   end
 
-  defp extract_answer_remote_info(parsed_sdp, audio_media, session_id) do
-    remote_address = get_remote_address(parsed_sdp, session_id)
-    remote_port = audio_media.port
-
-    {:ok, %{address: remote_address, port: remote_port}}
-  end
-
-  defp build_answer_data(sdp_answer, remote_info, audio_media, data) do
-    selected_codec =
-      audio_media
-      |> extract_offered_codecs()
-      |> List.first(:pcma)
-
-    pipeline_module = get_pipeline_module_for_config(selected_codec, data)
-
-    updated_data = %{
-      data
-      | remote_sdp: sdp_answer,
-        remote_rtp_port: remote_info.port,
-        remote_rtp_address: remote_info.address,
-        selected_codec: selected_codec,
-        pipeline_module: pipeline_module
-    }
-
-    {:ok, updated_data}
-  end
 
   defp allocate_rtp_port(config \\ %{}) do
     min_port = Map.get(config, :min_rtp_port, 16384)
