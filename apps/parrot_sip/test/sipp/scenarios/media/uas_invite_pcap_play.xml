@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS scenario that receives INVITE and plays RTP from a PCAP file.
+
+  This tests:
+  - Parrot UAC sends INVITE with SDP offer
+  - SIPp UAS receives INVITE, sends 200 OK with SDP answer
+  - SIPp plays RTP from PCAP file to Parrot
+  - Parrot receives RTP packets
+
+  Usage:
+    sipp -sf uas_invite_pcap_play.xml -mp <media_port> <target>:<port>
+
+  Note: Requires play_pcap_audio action in SIPp scenario
+-->
+<scenario name="UAS with PCAP Audio Playback">
+  <!-- Receive INVITE -->
+  <recv request="INVITE" crlf="true">
+    <action>
+      <ereg regexp=".*" search_in="hdr" header="From" assign_to="remote_from"/>
+      <ereg regexp="sip:(.*)>.*" search_in="hdr" header="Contact" assign_to="trash,remote_contact"/>
+    </action>
+  </recv>
+
+  <!-- Reference unused variables -->
+  <Reference variables="trash"/>
+
+  <!-- Send 200 OK with SDP -->
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=user1 53655765 2353687637 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <!-- Receive ACK -->
+  <recv request="ACK" optional="true" crlf="true" />
+
+  <!-- Play audio from PCAP file for 2 seconds -->
+  <!-- Note: This requires SIPp to be invoked with the PCAP file -->
+  <nop>
+    <action>
+      <exec play_pcap_audio="apps/parrot_sip/test/sipp/pcap/g711a.pcap"/>
+    </action>
+  </nop>
+
+  <!-- Wait for media to be processed -->
+  <pause milliseconds="2000"/>
+
+  <!-- Wait for BYE or timeout -->
+  <recv request="BYE" timeout="5000" ontimeout="send_bye" />
+
+  <!-- Send 200 OK for BYE -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <nop>
+    <action>
+      <exec int_cmd="stop_now"/>
+    </action>
+  </nop>
+
+  <!-- If no BYE received, send BYE ourselves -->
+  <label id="send_bye"/>
+
+  <send retrans="500">
+    <![CDATA[
+      BYE [$remote_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: sipp <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag01[call_number]
+      To: [$remote_from]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK for BYE -->
+  <recv response="200" />
+</scenario>
