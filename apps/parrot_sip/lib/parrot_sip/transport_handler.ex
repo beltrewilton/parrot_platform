@@ -2,25 +2,97 @@ defmodule ParrotSip.TransportHandler do
   @moduledoc """
   Handles message-based communication between ParrotSip and transport layer.
 
-  This GenServer acts as a bridge between the SIP protocol layer and the 
+  This GenServer acts as a bridge between the SIP protocol layer and the
   transport layer (UDP/TCP/TLS). It receives raw packets from transport,
-  parses them into SIP messages, and routes them to the appropriate 
+  parses them into SIP messages, and routes them to the appropriate
   transaction/dialog handlers.
 
   For outgoing messages, it receives SIP messages from the protocol layer,
   serializes them, and sends them to the transport layer.
 
+  ## The Bridge Pattern
+
+  TransportHandler provides ONE HALF of the bridge needed for a complete SIP stack:
+
+  ### What TransportHandler Handles (Response Routing)
+  - **SIP Responses**: Automatically routes responses to client transactions via `client_response/2`
+  - **Transport Registration**: Tracks which transport sent which request for proper response routing
+  - **Serialization**: Converts SIP messages to wire format for outgoing packets
+
+  ### What TransportHandler Does NOT Handle (Request Routing)
+  - **SIP Requests**: Does NOT route to `TransactionStatem.server_process/2` automatically
+  - **Handler Dispatch**: Does NOT know which Handler should process incoming requests
+
+  ### Why Two Parts?
+
+  TransportHandler is intentionally limited to response routing because:
+  1. **B2BUA Support**: Applications may need custom request routing logic
+  2. **Handler Selection**: Different requests may need different handlers
+  3. **Application Control**: Request processing is application-specific
+
+  ### The Second Half: Request Bridge
+
+  You need a separate bridge process to:
+  1. Receive `{:incoming_packet, packet}` messages from transport
+  2. Parse the SIP message
+  3. Route requests to `TransactionStatem.server_process/2` with YOUR handler
+  4. Route responses to `TransactionStatem.client_response/2` (or let TransportHandler handle it)
+
+  See `ParrotSip.Stack` for a ready-to-use implementation of the complete bridge pattern.
+
   ## Message Flow
 
   ### Incoming (Transport → SIP):
-  1. Receives `{:packet_received, raw_data, source, metadata}` from transport
-  2. Parses raw data into SIP message
-  3. Routes to transaction layer
+  1. Transport sends `{:incoming_packet, packet}` to YOUR bridge
+  2. Your bridge parses raw data into SIP message
+  3. Your bridge routes requests to `TransactionStatem.server_process(msg, your_handler)`
+  4. TransportHandler routes responses to `TransactionStatem.client_response(via, raw_data)`
 
-  ### Outgoing (SIP → Transport):  
-  1. Receives `{:send_sip_message, message, destination}` from SIP layer
-  2. Serializes SIP message
-  3. Sends `{:send_packet, raw_data, destination}` to transport
+  ### Outgoing (SIP → Transport):
+  1. Transaction layer calls `TransportHandler.send_request/3` or `send_response/3`
+  2. TransportHandler serializes SIP message
+  3. TransportHandler sends raw data to appropriate transport
+
+  ## Quick Start
+
+  For most use cases, use `ParrotSip.Stack` instead of wiring this manually:
+
+      # Simple: Stack handles both halves of the bridge
+      {:ok, stack} = ParrotSip.Stack.start_link(
+        handler: my_handler,
+        transport: :udp,
+        port: 5060
+      )
+
+  ## Advanced Usage (Manual Wiring)
+
+  Only use TransportHandler directly if you need custom request routing:
+
+      # 1. Start TransportHandler (usually done by ParrotSip.Application)
+      {:ok, transport_handler} = TransportHandler.start_link(name: MyTransportHandler)
+
+      # 2. Create YOUR bridge process
+      {:ok, bridge} = MyBridge.start_link(handler: my_handler)
+
+      # 3. Start transport and register YOUR bridge
+      {:ok, listener} = ParrotTransport.start_listener(config)
+      ParrotTransport.register_handler(listener, bridge)  # Bridge receives packets
+
+      # 4. Register transport with TransportHandler for response routing
+      TransportHandler.register_transport(transport_handler, listener, :udp, ip, port)
+
+      # 5. In YOUR bridge, route requests
+      def handle_info({:incoming_packet, packet}, state) do
+        case Parser.parse(packet.data) do
+          {:ok, %{type: :request} = msg} ->
+            TransactionStatem.server_process(msg, state.handler)
+          {:ok, %{type: :response}} ->
+            # TransportHandler will handle this via its own registration
+            :ok
+        end
+      end
+
+  See `test/support/sip_stack_helper.ex` for a complete manual wiring example.
   """
 
   use GenServer
@@ -33,7 +105,8 @@ defmodule ParrotSip.TransportHandler do
   defstruct [
     :name,
     handlers: [],
-    transports: %{}  # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
+    # %{{:udp, {127,0,0,1}, 5060} => pid(), ...}
+    transports: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -179,12 +252,18 @@ defmodule ParrotSip.TransportHandler do
       {:udp, {:ok, pid}} ->
         Process.monitor(pid)
         result = :gen_statem.call(pid, {:register_handler, self()})
-        Logger.debug("[TransportHandler] Registered self (#{inspect(self())}) with UDP transport #{inspect(pid)}: #{inspect(result)}")
+
+        Logger.debug(
+          "[TransportHandler] Registered self (#{inspect(self())}) with UDP transport #{inspect(pid)}: #{inspect(result)}"
+        )
 
       {transport, {:ok, pid}} when transport in [:tcp, :tls, :websocket] ->
         # TCP/TLS/WebSocket listeners already have handler registered at creation
         Process.monitor(pid)
-        Logger.debug("[TransportHandler] Monitoring #{transport} transport #{inspect(pid)} (handler pre-registered)")
+
+        Logger.debug(
+          "[TransportHandler] Monitoring #{transport} transport #{inspect(pid)} (handler pre-registered)"
+        )
 
       {_, {:error, reason}} ->
         Logger.error("Failed to resolve transport: #{reason}")
@@ -238,6 +317,7 @@ defmodule ParrotSip.TransportHandler do
           # Look up the correct transport based on where the request came from
           key = {transport_type, local_ip, local_port}
           transport = Map.get(state.transports, key)
+          maybe_log_transport_mismatch(transport, key, state.transports)
           {remote, transport, conn}
 
         {host, port} ->
@@ -266,6 +346,7 @@ defmodule ParrotSip.TransportHandler do
       ) do
     key = {transport_type, local_ip, local_port}
     transport_ref = Map.get(state.transports, key)
+    maybe_log_transport_mismatch(transport_ref, key, state.transports)
     send_to_transport(request, destination, transport_ref, nil)
     {:noreply, state}
   end
@@ -338,6 +419,33 @@ defmodule ParrotSip.TransportHandler do
 
   # Private Functions
 
+  # Log helpful error when transport lookup fails due to key mismatch
+  defp maybe_log_transport_mismatch(nil, {transport_type, local_ip, local_port}, transports) do
+    registered_keys = Map.keys(transports)
+
+    Logger.error("""
+    [TransportHandler] Transport not found!
+
+    Requested: #{transport_type}://#{format_ip(local_ip)}:#{local_port}
+    Registered transports: #{inspect(registered_keys)}
+
+    This usually means the UA's local_host doesn't match the transport's bind address.
+
+    Fix: Ensure consistency between:
+      1. Transport bind IP (in ListenerConfig)
+      2. UA's local_host option (defaults to "127.0.0.1")
+
+    Example - if binding to all interfaces:
+      # When starting transport
+      config = %ListenerConfig{ip: {127, 0, 0, 1}, port: 5060, ...}
+
+    Or pass matching local_host to UA:
+      UA.start_link(Handler, args, port: 5060, local_host: "0.0.0.0")
+    """)
+  end
+
+  defp maybe_log_transport_mismatch(_transport_ref, _key, _transports), do: :ok
+
   defp send_to_transport(_message, nil, _transport_ref, _connection_pid) do
     Logger.debug("[TransportHandler] Skipping send (no destination) in test environment")
     :ok
@@ -389,7 +497,10 @@ defmodule ParrotSip.TransportHandler do
   end
 
   # Route SIP responses to client transactions (RFC 3261 Section 17.1.3)
-  defp route_message(%{type: :response, status_code: status, via: via, raw_data: raw_data} = message, state) do
+  defp route_message(
+         %{type: :response, status_code: status, via: via, raw_data: raw_data} = message,
+         state
+       ) do
     Logger.debug("Response received: #{status} - routing to client transaction")
 
     # Extract topmost Via header and route to client transaction

@@ -178,12 +178,13 @@ defmodule ParrotSip.UA.MessageBuilder do
   end
 
   defp build_via_header(%Config{} = config) do
-    via = Via.new_with_branch(
-      config.local_host,
-      config.transport,
-      config.local_port,
-      %{}
-    )
+    via =
+      Via.new_with_branch(
+        config.local_host,
+        config.transport,
+        config.local_port,
+        %{}
+      )
 
     {:ok, via}
   end

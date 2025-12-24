@@ -17,23 +17,19 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
 
     * `--port` - The SIP port to listen on (default: 5060)
     * `--module` - The module name to use (default: derived from app name)
-    * `--no-media` - Skip media handler implementation
-    * `--no-examples` - Skip example handlers
 
   The generator creates:
 
-    * A complete UAS application module implementing `Parrot.UasHandler`
-    * Optional `Parrot.MediaHandler` implementation
-    * Example SIP method handlers (INVITE, BYE, OPTIONS, etc.)
+    * A complete UAS application using ParrotSip.UA.Handler
+    * ParrotMedia.Handler implementation for audio playback
+    * Transport setup with SIP stack wiring
     * README with usage instructions
-    * Basic test file
 
   The generated application will:
 
-    * Answer incoming calls (INVITE)
-    * Play audio files when media is enabled
-    * Handle basic SIP methods
-    * Clean up resources properly
+    * Answer incoming SIP calls
+    * Negotiate SDP and play audio to callers
+    * Handle BYE/CANCEL gracefully
   """
 
   use Mix.Task
@@ -42,8 +38,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
   @switches [
     port: :integer,
     module: :string,
-    no_media: :boolean,
-    no_examples: :boolean
+    dev: :boolean
   ]
 
   @impl Mix.Task
@@ -62,38 +57,29 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
     app = to_app_name(app_name)
     module = opts[:module] || to_module_name(app_name)
     port = opts[:port] || 5060
-    include_media = !opts[:no_media]
-    include_examples = !opts[:no_examples]
+    dev = opts[:dev] || false
 
     binding = [
       app: app,
       module: module,
       port: port,
-      include_media: include_media,
-      include_examples: include_examples
+      dev: dev
     ]
 
     create_directory(path)
-    create_directory(Path.join(path, "lib"))
+    create_directory(Path.join(path, "lib/#{app}"))
+    create_directory(Path.join(path, "config"))
     create_directory(Path.join(path, "test"))
 
     create_file(Path.join(path, "mix.exs"), EEx.eval_string(mix_exs_template(), assigns: binding))
-
-    create_file(
-      Path.join(path, "README.md"),
-      EEx.eval_string(readme_template(), assigns: binding)
-    )
-
-    create_file(
-      Path.join(path, "lib/#{app}.ex"),
-      EEx.eval_string(app_module_template(), assigns: binding)
-    )
-
-    create_file(
-      Path.join(path, "test/#{app}_test.exs"),
-      EEx.eval_string(test_template(), assigns: binding)
-    )
-
+    create_file(Path.join(path, "config/config.exs"), EEx.eval_string(config_template(), assigns: binding))
+    create_file(Path.join(path, "README.md"), EEx.eval_string(readme_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}.ex"), EEx.eval_string(main_module_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/application.ex"), EEx.eval_string(application_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/server.ex"), EEx.eval_string(server_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/handler.ex"), EEx.eval_string(handler_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/media_handler.ex"), EEx.eval_string(media_handler_template(), assigns: binding))
+    create_file(Path.join(path, "test/#{app}_test.exs"), EEx.eval_string(test_template(), assigns: binding))
     create_file(Path.join(path, ".gitignore"), gitignore_template())
     create_file(Path.join(path, ".formatter.exs"), formatter_template())
 
@@ -107,12 +93,11 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
         mix deps.get
         iex -S mix
 
-    Then in iex:
-
-        iex> #{module}.start()
-
     Your SIP endpoint will be available at:
         sip:service@<your-ip>:#{port}
+
+    Test with a SIP client or SIPp:
+        sipp -sn uac 127.0.0.1:#{port} -m 1
 
     Check the README.md for more information.
     """)
@@ -133,7 +118,64 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
     |> Enum.join()
   end
 
-  # Template functions
+  # Templates
+
+  defp mix_exs_template do
+    ~S"""
+    defmodule <%= @module %>.MixProject do
+      use Mix.Project
+
+      def project do
+        [
+          app: :<%= @app %>,
+          version: "0.1.0",
+          elixir: "~> 1.16",
+          start_permanent: Mix.env() == :prod,
+          deps: deps()
+        ]
+      end
+
+      def application do
+        [
+          extra_applications: [:logger],
+          mod: {<%= @module %>.Application, []}
+        ]
+      end
+
+      defp deps do
+        <%= if @dev do %>
+        # Development dependencies - path to local parrot_platform
+        # Change these paths to match your local setup
+        [
+          {:parrot_sip, path: "../parrot_platform/apps/parrot_sip"},
+          {:parrot_transport, path: "../parrot_platform/apps/parrot_transport"},
+          {:parrot_media, path: "../parrot_platform/apps/parrot_media"}
+        ]
+        <% else %>
+        [
+          {:parrot_sip, "~> 0.0.1"},
+          {:parrot_transport, "~> 0.0.1"},
+          {:parrot_media, "~> 0.0.1"}
+        ]
+        <% end %>
+      end
+    end
+    """
+  end
+
+  defp config_template do
+    """
+    import Config
+
+    config :<%= @app %>,
+      port: String.to_integer(System.get_env("PORT") || "<%= @port %>"),
+      audio_file: System.get_env("AUDIO_FILE")
+
+    config :logger, :console,
+      format: "$time $metadata[$level] $message\\n",
+      metadata: [:file, :line]
+    """
+  end
 
   defp readme_template do
     """
@@ -143,545 +185,364 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
 
     ## Overview
 
-    This application implements a SIP UAS that:<%= if @include_media do %>
-    - Answers incoming calls
-    - Plays audio files to callers
-    - Handles media sessions<% else %>
-    - Answers incoming calls
-    - Responds to SIP requests<% end %><%= if @include_examples do %>
-    - Includes example handlers for common SIP methods<% end %>
+    This application:
+    - Listens for incoming SIP INVITE requests
+    - Answers calls with SDP negotiation
+    - Plays audio to callers using ParrotMedia
+    - Handles BYE/CANCEL gracefully
 
     ## Running the Application
 
-    ```elixir
+    ```bash
     # Start the application
-    <%= @module %>.start()
+    iex -S mix
 
-    # Or with custom port
-    <%= @module %>.start(port: <%= @port %>)
+    # Or on a specific port
+    PORT=5080 iex -S mix
+    ```
+
+    ## Testing
+
+    Use any SIP client (Twinkle, Linphone, Zoiper) or SIPp:
+
+    ```bash
+    # Test with SIPp
+    sipp -sn uac 127.0.0.1:<%= @port %> -m 1
     ```
 
     ## Configuration
 
-    The UAS listens on port <%= @port %> by default. Connect your SIP client to:
-    ```
-    sip:service@<your-ip>:<%= @port %>
-    ```
-
-    ## Features
-    <%= if @include_media do %>
-    ### Media Handling
-
-    The application implements `Parrot.MediaHandler` behaviour for:
-    - Automatic audio playback when calls connect
-    - Playlist support for multiple audio files
-    - Graceful error handling
-    <% end %>
-    ### SIP Methods
-
-    Handles the following SIP methods:
-    - INVITE - Accept incoming calls
-    - ACK - Acknowledge call setup
-    - BYE - End calls gracefully
-    - CANCEL - Cancel pending calls
-    - OPTIONS - Report capabilities<%= if @include_examples do %>
-    - REGISTER - Registration handling
-    - INFO - Information requests<% end %>
-
-    ## Customization
-
-    ### Audio Files<%= if @include_media do %>
-
-    By default, the application uses the Parrot Platform welcome audio file. To use your own audio files, modify the `audio_config` in `process_invite/2`:
-
-    ```elixir
-    audio_config = %{
-      welcome_file: "path/to/your/welcome.wav",
-      menu_file: "path/to/your/menu.wav",
-      music_file: "path/to/your/music.wav",
-      goodbye_file: "path/to/your/goodbye.wav"
-    }
-    ```
-
-    Note: Audio files must be in WAV format (PCM, 8000 Hz, mono).
-    <% end %>
-    ### SIP Behavior
-
-    Each SIP method handler can be customized. For example, to add authentication:
-
-    ```elixir
-    def handle_invite(request, state) do
-      if authenticated?(request) do
-        process_invite(request, state)
-      else
-        {:respond, 401, "Unauthorized", %{"WWW-Authenticate" => "..."}, ""}
-      end
-    end
-    ```
+    Environment variables:
+    - `PORT` - SIP listening port (default: <%= @port %>)
+    - `AUDIO_FILE` - Path to WAV file to play (default: parrot-welcome.wav)
 
     ## Architecture
 
-    The application uses:
-    - `Parrot.UasHandler` for SIP protocol handling<%= if @include_media do %>
-    - `Parrot.MediaHandler` for media session management<% end %>
-    - Registry for process discovery
-    - Supervised processes for reliability
-
-    ## Testing
-
-    Use any SIP client (like Linphone, Zoiper, or MicroSIP) to test:
-
-    1. Configure your SIP client:
-       - Username: `service` (or any username)
-       - Domain: `<server-ip>`
-       - Port: `<%= @port %>`
-       - No authentication required
-
-    2. Make a call to `sip:service@<server-ip>:<%= @port %>`
-
-    3. The UAS will answer and <%= if @include_media do %>play audio<% else %>accept the call<% end %>
-
-    ## Extending
-
-    To add new functionality:
-
-    1. Add new SIP method handlers
-    2. Implement additional media controls
-    3. Add authentication/authorization
-    4. Integrate with external systems
-
-    See the Parrot Platform documentation for more details.
+    - `<%= @module %>.Server` - Main GenServer managing UA and transport
+    - `<%= @module %>.Handler` - ParrotSip.UA.Handler for SIP events
+    - `<%= @module %>.MediaHandler` - ParrotMedia.Handler for media events
     """
   end
 
-  defp app_module_template do
+  defp main_module_template do
     """
     defmodule <%= @module %> do
       @moduledoc \"\"\"
-      A SIP User Agent Server (UAS) application built with Parrot Platform.
-      
-      This UAS answers incoming calls<%= if @include_media do %>, plays audio files,<% end %> and handles basic SIP operations.
+      <%= @module %> - A SIP User Agent Server (UAS) application.
+
+      This UAS answers incoming calls and plays audio to callers.
+
+      ## Usage
+
+          # The application starts automatically via Application callback
+          # To check active calls:
+          <%= @module %>.calls()
       \"\"\"
 
-      use Parrot.UasHandler<%= if @include_media do %>
-      @behaviour Parrot.MediaHandler<% end %>
+      @doc \"\"\"
+      Returns the current active calls.
+      \"\"\"
+      def calls do
+        <%= @module %>.Server.get_calls()
+      end
+    end
+    """
+  end
+
+  defp application_template do
+    """
+    defmodule <%= @module %>.Application do
+      @moduledoc false
+
+      use Application
       require Logger
 
-      @default_port <%= @port %>
+      @impl true
+      def start(_type, _args) do
+        port = Application.get_env(:<%= @app %>, :port, <%= @port %>)
+        audio_file = Application.get_env(:<%= @app %>, :audio_file, default_audio())
 
-      def start(opts \\\\ []) do
-        port = Keyword.get(opts, :port, @default_port)
-        
         Logger.info("Starting <%= @module %> on port \#{port}")
-        Logger.info("Connect your SIP client to sip:service@<your-ip>:\#{port}")
-        
-        # Start the SIP transport with our handler
-        # Handler configuration options:
-        # - log_level: Controls verbosity (:debug shows transaction states, :info is quieter)
-        # - sip_trace: When true, logs all SIP messages sent/received
-        handler = Parrot.Sip.Handler.new(
-          Parrot.Sip.HandlerAdapter.Core,
-          {__MODULE__, %{calls: %{}}},
-          log_level: :info,
-          sip_trace: true
-        )
-        
-        case Parrot.Sip.Transport.StateMachine.start_udp(%{
+
+        children = [
+          {<%= @module %>.Server, port: port, audio_file: audio_file}
+        ]
+
+        opts = [strategy: :one_for_one, name: <%= @module %>.Supervisor]
+        Supervisor.start_link(children, opts)
+      end
+
+      defp default_audio do
+        Path.join(:code.priv_dir(:parrot_media), "audio/parrot-welcome.wav")
+      end
+    end
+    """
+  end
+
+  defp server_template do
+    """
+    defmodule <%= @module %>.Server do
+      @moduledoc \"\"\"
+      Main server that manages the UA and transport.
+      \"\"\"
+
+      use GenServer
+      require Logger
+
+      alias ParrotSip.{UA, Stack}
+
+      # ==========================================================================
+      # Configuration - modify these for your environment
+      # ==========================================================================
+
+      # Listen address - used for SDP generation and transport binding
+      # Use {127, 0, 0, 1} for local dev, your actual IP for production
+      @listen_addr {127, 0, 0, 1}
+
+      # Transport protocol: :udp | :tcp | :tls
+      @transport :udp
+
+      # ==========================================================================
+
+      defstruct [:ua, :stack, :port, :audio_file, :calls]
+
+      def start_link(opts) do
+        GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+      end
+
+      def get_calls do
+        GenServer.call(__MODULE__, :get_calls)
+      end
+
+      @impl true
+      def init(opts) do
+        port = Keyword.get(opts, :port, <%= @port %>)
+        audio_file = Keyword.get(opts, :audio_file)
+
+        Logger.info("<%= @module %>.Server starting on port \#{port}")
+
+        # Start UA with handler
+        {:ok, ua} = UA.start_link(<%= @module %>.Handler, {self(), audio_file}, port: port)
+
+        # Start SIP stack (handles transport + routing automatically)
+        handler = UA.get_handler(ua)
+        {:ok, stack} = Stack.start_link(
           handler: handler,
-          listen_port: port
-        }) do
-          :ok ->
-            Logger.info("<%= @module %> started successfully!")
-            :ok
-          {:error, {:already_started, _pid}} = error ->
-            Logger.info("<%= @module %> already running on port \#{port}")
-            error
-        end
-      end
+          transport: @transport,
+          ip: @listen_addr,
+          port: port
+        )
 
-      # Transaction callbacks for INVITE state machine
-      @impl true
-      def handle_transaction_invite_trying(_request, _transaction, _state) do
-        Logger.info("[<%= @module %>] INVITE transaction: trying")
-        :noreply
-      end
+        actual_port = Stack.get_port(stack)
+        Logger.info("SIP stack started on port \#{actual_port}")
 
-      @impl true
-      def handle_transaction_invite_proceeding(request, _transaction, state) do
-        Logger.info("[<%= @module %>] INVITE transaction: proceeding")
-        process_invite(request, state)
-      end
+        state = %__MODULE__{
+          ua: ua,
+          stack: stack,
+          port: actual_port,
+          audio_file: audio_file,
+          calls: %{}
+        }
 
-      @impl true
-      def handle_transaction_invite_completed(_request, _transaction, _state) do
-        Logger.info("[<%= @module %>] INVITE transaction: completed")
-        :noreply
-      end
-
-      # Main SIP method handlers
-      @impl true
-      def handle_invite(request, state) do
-        Logger.info("[<%= @module %>] Direct INVITE handler called")
-        process_invite(request, state)
-      end
-
-      @impl true
-      def handle_ack(request, _state) when not is_nil(request) do
-        Logger.info("[<%= @module %>] ACK received")<%= if @include_media do %>
-        
-        dialog_id = Parrot.Sip.Dialog.from_message(request)
-        
-        # Find and start the media session
-        case Registry.lookup(Parrot.Registry, {:uas_media, dialog_id.call_id}) do
-          [{_pid, media_session_id}] ->
-            Logger.info("[<%= @module %>] Starting media playback for session: \#{media_session_id}")
-            Task.start(fn ->
-              Process.sleep(100)
-              Parrot.Media.MediaSession.start_media(media_session_id)
-            end)
-          [] ->
-            Logger.warning("[<%= @module %>] No media session found for call: \#{dialog_id.call_id}")
-        end<% end %>
-        
-        :noreply
-      end
-
-      def handle_ack(nil, _state), do: :noreply
-
-      @impl true
-      def handle_bye(request, _state) when not is_nil(request) do
-        Logger.info("[<%= @module %>] BYE received, ending call")<%= if @include_media do %>
-        
-        dialog_id = Parrot.Sip.Dialog.from_message(request)
-        
-        # Clean up media session
-        case Registry.lookup(Parrot.Registry, {:uas_media, dialog_id.call_id}) do
-          [{_pid, media_session_id}] ->
-            Logger.info("[<%= @module %>] Terminating media session: \#{media_session_id}")
-            try do
-              Parrot.Media.MediaSession.terminate_session(media_session_id)
-            rescue
-              RuntimeError ->
-                Logger.warning("[<%= @module %>] Media session \#{media_session_id} already terminated")
-            end
-            Registry.unregister(Parrot.Registry, {:uas_media, dialog_id.call_id})
-          [] ->
-            Logger.info("[<%= @module %>] No media session found for call: \#{dialog_id.call_id}")
-        end<% end %>
-        
-        {:respond, 200, "OK", %{}, ""}
-      end
-
-      def handle_bye(nil, _state), do: {:respond, 200, "OK", %{}, ""}
-
-      @impl true
-      def handle_cancel(_request, _state) do
-        Logger.info("[<%= @module %>] CANCEL received")
-        {:respond, 200, "OK", %{}, ""}
-      end
-
-      @impl true
-      def handle_options(_request, _state) do
-        Logger.info("[<%= @module %>] OPTIONS received")
-        allow_methods = "INVITE, ACK, BYE, CANCEL, OPTIONS<%= if @include_examples do %>, INFO, REGISTER<% end %>"
-        {:respond, 200, "OK", %{"Allow" => allow_methods}, ""}
-      end<%= if @include_examples do %>
-
-      @impl true
-      def handle_register(_request, _state) do
-        Logger.info("[<%= @module %>] REGISTER received")
-        {:respond, 200, "OK", %{}, ""}
-      end
-
-      @impl true
-      def handle_info(_request, _state) do
-        Logger.info("[<%= @module %>] INFO received")
-        {:respond, 200, "OK", %{}, ""}
-      end<% end %><%= if @include_media do %>
-
-      # MediaHandler callbacks - Message-based media control
-      
-      @impl Parrot.MediaHandler
-      def init(args) do
-        Logger.info("[<%= @module %> MediaHandler] Initializing with args: \#{inspect(args)}")
-        state = Map.merge(%{
-          welcome_file: nil,
-          menu_file: nil,
-          music_file: nil,
-          goodbye_file: nil,
-          current_state: :init,
-          audio_queue: [],
-          fork_urls: [],
-          call_stats: %{
-            packets_received: 0,
-            packets_lost: 0,
-            jitter: 0
-          }
-        }, args || %{})
-        
         {:ok, state}
       end
-      
-      # Pattern matching for media control messages
-      @impl Parrot.MediaHandler
-      def handle_info({:play_files, files, [loop: true]}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Playing files in loop mode")
-        {[{:play_loop, files}], %{state | audio_queue: files, current_state: :looping}}
+
+      @impl true
+      def handle_call(:get_calls, _from, state) do
+        {:reply, state.calls, state}
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:play_files, files, opts}, state) when is_list(opts) do
-        Logger.info("[<%= @module %> MediaHandler] Playing files in sequence")
-        {[{:play_sequence, files}], %{state | audio_queue: files, current_state: :playing}}
+
+      @impl true
+      def handle_cast({:call_started, entity, media_session}, state) do
+        call_info = %{entity: entity, media_session: media_session, started_at: DateTime.utc_now()}
+        {:noreply, %{state | calls: Map.put(state.calls, entity.id, call_info)}}
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:fork_audio, url, opts}, state) do
-        bidirectional = Keyword.get(opts, :bidirectional, false)
-        Logger.info("[<%= @module %> MediaHandler] Forking audio to \#{url} (bidirectional: \#{bidirectional})")
-        
-        actions = [{:fork_audio, url, bidirectional: bidirectional}]
-        new_fork_urls = [url | state.fork_urls] |> Enum.uniq()
-        {actions, %{state | fork_urls: new_fork_urls}}
+
+      @impl true
+      def handle_cast({:call_ended, entity_id}, state) do
+        {:noreply, %{state | calls: Map.delete(state.calls, entity_id)}}
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:received_audio, audio_data, %{source: source}}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Received audio from \#{source}")
-        Logger.info("  Data size: \#{byte_size(audio_data)} bytes")
-        
-        # Add your custom audio processing logic here
-        {:noreply, state}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:stop_playback}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Stopping playback")
-        {[:stop], %{state | current_state: :stopped, audio_queue: []}}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:pause_playback}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Pausing playback")
-        {[:pause], %{state | current_state: :paused}}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:resume_playback}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Resuming playback")
-        {[:resume], %{state | current_state: :playing}}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_info({:set_volume, level}, state) when is_float(level) and level >= 0.0 and level <= 1.0 do
-        Logger.info("[<%= @module %> MediaHandler] Setting volume to: \#{level}")
-        {[{:set_volume, level}], state}
-      end
-      
-      @impl Parrot.MediaHandler
+
+      @impl true
       def handle_info(msg, state) do
-        Logger.debug("[<%= @module %> MediaHandler] Unhandled message: \#{inspect(msg)}")
+        Logger.debug("<%= @module %>.Server received: \#{inspect(msg)}")
         {:noreply, state}
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_session_start(session_id, opts, state) do
-        Logger.info("[<%= @module %> MediaHandler] Session started: \#{session_id}")
-        Logger.info("  Options: \#{inspect(opts)}")
-        {:ok, Map.put(state, :session_id, session_id)}
+
+      @impl true
+      def terminate(_reason, state) do
+        if state.stack, do: Stack.stop(state.stack)
+        if state.ua && Process.alive?(state.ua), do: GenServer.stop(state.ua)
+        :ok
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_session_stop(session_id, reason, state) do
-        Logger.info("[<%= @module %> MediaHandler] Session stopped: \#{session_id}, reason: \#{inspect(reason)}")
-        Logger.info("  Final call stats: \#{inspect(state.call_stats)}")
-        {:ok, state}
+    end
+    """
+  end
+
+  defp handler_template do
+    """
+    defmodule <%= @module %>.Handler do
+      @moduledoc \"\"\"
+      UA Handler for SIP events.
+      \"\"\"
+
+      use ParrotSip.UA.Handler
+      require Logger
+
+      alias ParrotSip.UA
+      alias ParrotMedia.MediaSession
+
+      defstruct [:server_pid, :audio_file, :media_sessions]
+
+      @impl true
+      def init({server_pid, audio_file}) do
+        {:ok, %__MODULE__{server_pid: server_pid, audio_file: audio_file, media_sessions: %{}}}
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_offer(sdp, direction, state) do
-        Logger.info("[<%= @module %> MediaHandler] Received SDP offer (\#{direction})")
-        Logger.debug("  SDP: \#{String.trim(sdp)}")
-        {:noreply, state}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_answer(sdp, direction, state) do
-        Logger.info("[<%= @module %> MediaHandler] Received SDP answer (\#{direction})")
-        Logger.debug("  SDP: \#{String.trim(sdp)}")
-        {:noreply, state}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_codec_negotiation(offered_codecs, supported_codecs, state) do
-        Logger.info("[<%= @module %> MediaHandler] Negotiating codecs")
-        Logger.info("  Offered: \#{inspect(offered_codecs)}")
-        Logger.info("  Supported: \#{inspect(supported_codecs)}")
-        
-        codec = select_best_codec(offered_codecs, supported_codecs)
-        
-        case codec do
-          nil ->
-            Logger.error("  No common codec found!")
-            {:error, :no_common_codec, state}
-          _ ->
-            Logger.info("  Selected codec: \#{codec}")
-            {:ok, codec, state}
+
+      @impl true
+      def handle_incoming(ua, invite, entity, state) do
+        Logger.info("Incoming call from: \#{entity.remote_uri}")
+
+        session_id = "media_\#{entity.id}"
+
+        case start_media_session(session_id, entity, invite.body, state) do
+          {:ok, media_session, local_sdp} ->
+            UA.answer(ua, entity, sdp: local_sdp)
+            MediaSession.start_media(media_session)
+            media_sessions = Map.put(state.media_sessions, entity.id, media_session)
+            GenServer.cast(state.server_pid, {:call_started, entity, media_session})
+            {:ok, %{state | media_sessions: media_sessions}}
+
+          {:error, reason} ->
+            Logger.error("Failed to create media session: \#{inspect(reason)}")
+            UA.reject(ua, entity, 503, "Service Unavailable")
+            {:ok, state}
         end
       end
-      
-      defp select_best_codec(offered, supported) do
-        # Codec preference order
-        [:opus, :pcmu, :pcma]
-        |> Enum.find(&(&1 in offered and &1 in supported))
-        |> Kernel.||(Enum.find(offered, &(&1 in supported)))
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_negotiation_complete(_local_sdp, _remote_sdp, codec, state) do
-        Logger.info("[<%= @module %> MediaHandler] Negotiation complete with codec: \#{codec}")
-        {:ok, Map.put(state, :negotiated_codec, codec)}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_stream_start(session_id, direction, state) do
-        Logger.info("[<%= @module %> MediaHandler] Stream started for \#{session_id} (\#{direction})")
-        
-        # Don't auto-play - wait for messages from SIP handler
-        {:noreply, %{state | current_state: :ready}}
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_stream_stop(session_id, reason, state) do
-        Logger.info("[<%= @module %> MediaHandler] Stream stopped for \#{session_id}, reason: \#{inspect(reason)}")
+
+      @impl true
+      def handle_answered(_ua, _response, _entity, state) do
+        # Not used for UAS - we are the one sending the answer
         {:ok, state}
       end
-      
-      @impl Parrot.MediaHandler
+
+      @impl true
+      def handle_hangup(_ua, _message, entity, state) do
+        Logger.info("Call ended: \#{entity.call_id}")
+        cleanup_media(entity.id, state)
+        GenServer.cast(state.server_pid, {:call_ended, entity.id})
+        {:ok, %{state | media_sessions: Map.delete(state.media_sessions, entity.id)}}
+      end
+
+      @impl true
+      def handle_cancel(_ua, entity, state) do
+        Logger.info("Call cancelled: \#{entity.call_id}")
+        cleanup_media(entity.id, state)
+        GenServer.cast(state.server_pid, {:call_ended, entity.id})
+        {:ok, %{state | media_sessions: Map.delete(state.media_sessions, entity.id)}}
+      end
+
+      defp start_media_session(session_id, entity, remote_sdp, state) do
+        {:ok, media_session} = MediaSession.start_link(
+          id: session_id,
+          dialog_id: entity.call_id,
+          role: :uas,
+          media_handler: <%= @module %>.MediaHandler,
+          handler_args: %{entity_id: entity.id},
+          supported_codecs: [:pcma, :pcmu],
+          audio_file: state.audio_file
+        )
+
+        case MediaSession.process_offer(media_session, remote_sdp) do
+          {:ok, local_sdp} -> {:ok, media_session, local_sdp}
+          {:error, reason} ->
+            MediaSession.terminate_session(media_session)
+            {:error, reason}
+        end
+      end
+
+      defp cleanup_media(entity_id, state) do
+        case Map.get(state.media_sessions, entity_id) do
+          nil -> :ok
+          session -> MediaSession.terminate_session(session)
+        end
+      end
+    end
+    """
+  end
+
+  defp media_handler_template do
+    """
+    defmodule <%= @module %>.MediaHandler do
+      @moduledoc \"\"\"
+      Media handler for audio events.
+      \"\"\"
+
+      @behaviour ParrotMedia.Handler
+      require Logger
+
+      @impl true
+      def init(args), do: {:ok, args}
+
+      @impl true
+      def handle_session_start(session_id, _opts, state) do
+        Logger.info("Media session started: \#{session_id}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_session_stop(session_id, reason, state) do
+        Logger.info("Media session stopped: \#{session_id}, reason: \#{inspect(reason)}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_offer(_sdp, _direction, state), do: {:noreply, state}
+
+      @impl true
+      def handle_answer(_sdp, _direction, state), do: {:noreply, state}
+
+      @impl true
+      def handle_codec_negotiation(offered, supported, state) do
+        codec = Enum.find(offered, &(&1 in supported)) || hd(supported)
+        {:ok, codec, state}
+      end
+
+      @impl true
+      def handle_negotiation_complete(_local, _remote, codec, state) do
+        Logger.info("Codec negotiated: \#{codec}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_stream_start(session_id, direction, state) do
+        Logger.info("Stream started: \#{session_id}, direction: \#{direction}")
+        {:noreply, state}
+      end
+
+      @impl true
+      def handle_stream_stop(session_id, reason, state) do
+        Logger.info("Stream stopped: \#{session_id}, reason: \#{inspect(reason)}")
+        {:ok, state}
+      end
+
+      @impl true
       def handle_stream_error(session_id, error, state) do
-        Logger.error("[<%= @module %> MediaHandler] Stream error for \#{session_id}: \#{inspect(error)}")
+        Logger.error("Stream error: \#{session_id}, error: \#{inspect(error)}")
         {:continue, state}
       end
-      
-      @impl Parrot.MediaHandler
-      def handle_play_complete(file_path, %{current_state: :welcome} = state) do
-        Logger.info("[<%= @module %> MediaHandler] Playback completed: \#{file_path}")
-        handle_welcome_complete(state)
+
+      @impl true
+      def handle_play_complete(file, state) do
+        Logger.info("Playback complete: \#{file}")
+        {{:play, file}, state}  # Loop the audio
       end
-      
-      def handle_play_complete(file_path, %{current_state: :menu} = state) do
-        Logger.info("[<%= @module %> MediaHandler] Playback completed: \#{file_path}")
-        Logger.info("  Menu completed, stopping playback")
-        {:stop, %{state | current_state: :done}}
-      end
-      
-      def handle_play_complete(file_path, state) do
-        Logger.info("[<%= @module %> MediaHandler] Playback completed: \#{file_path}")
-        {:stop, state}
-      end
-      
-      defp handle_welcome_complete(%{menu_file: nil} = state) do
-        Logger.info("  No menu file, stopping playback")
-        {:stop, %{state | current_state: :done}}
-      end
-      
-      defp handle_welcome_complete(%{menu_file: menu_file} = state) do
-        if File.exists?(menu_file) do
-          Logger.info("  Playing menu file: \#{menu_file}")
-          {{:play, menu_file}, %{state | current_state: :menu}}
-        else
-          Logger.info("  Menu file not found, stopping playback")
-          {:stop, %{state | current_state: :done}}
-        end
-      end
-      
-      @impl Parrot.MediaHandler
-      def handle_media_request({:play_dtmf, digits}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Media request: play_dtmf")
-        Logger.info("  Playing DTMF digits: \#{digits}")
-        {:ok, :dtmf_played, state}
-      end
-      
-      def handle_media_request({:adjust_volume, level}, state) do
-        Logger.info("[<%= @module %> MediaHandler] Media request: adjust_volume")
-        Logger.info("  Adjusting volume to: \#{level}")
-        {:ok, :volume_adjusted, state}
-      end
-      
+
+      @impl true
       def handle_media_request(request, state) do
-        Logger.info("[<%= @module %> MediaHandler] Media request: \#{inspect(request)}")
-        Logger.warning("  Unknown media request")
-        {:error, :unknown_request, state}
-      end<% end %>
-
-      # Private functions
-
-      defp process_invite(nil, _state) do
-        Logger.error("[<%= @module %>] Cannot process nil INVITE")
-        {:respond, 500, "Internal Server Error", %{}, ""}
+        Logger.debug("Media request: \#{inspect(request)}")
+        {:noreply, state}
       end
-
-      defp process_invite(request, _state) do
-        from = request.headers["from"]
-        Logger.info("[<%= @module %>] Processing INVITE from: \#{from.display_name || from.uri.user}")<%= if @include_media do %>
-        
-        dialog_id = Parrot.Sip.Dialog.from_message(request)
-        dialog_id_str = Parrot.Sip.Dialog.to_string(dialog_id)
-        media_session_id = "media_\#{dialog_id_str}"
-        
-        # Configure audio files for this call
-        priv_dir = :code.priv_dir(:parrot_platform)
-        audio_config = %{
-          welcome_file: Path.join(priv_dir, "audio/parrot-welcome.wav"),
-          menu_file: Path.join(priv_dir, "audio/parrot-welcome.wav"),  # Using same file for demo
-          music_file: Path.join(priv_dir, "audio/parrot-welcome.wav"),
-          goodbye_file: Path.join(priv_dir, "audio/parrot-welcome.wav"),
-          current_state: :welcome
-        }
-        
-        # Start media session
-        case start_media_session(media_session_id, dialog_id_str, audio_config) do
-          {:ok, _pid} ->
-            # Process SDP offer and generate answer
-            case Parrot.Media.MediaSession.process_offer(media_session_id, request.body) do
-              {:ok, sdp_answer} ->
-                Logger.info("[<%= @module %>] Call accepted, SDP negotiated")
-                
-                # Register media session for later lookup
-                Registry.register(Parrot.Registry, {:uas_media, dialog_id.call_id}, media_session_id)
-                
-                {:respond, 200, "OK", %{}, sdp_answer}
-                
-              {:error, reason} ->
-                Logger.error("[<%= @module %>] SDP negotiation failed: \#{inspect(reason)}")
-                {:respond, 488, "Not Acceptable Here", %{}, ""}
-            end
-            
-          {:error, reason} ->
-            Logger.error("[<%= @module %>] Failed to create media session: \#{inspect(reason)}")
-            {:respond, 500, "Internal Server Error", %{}, ""}
-        end<% else %>
-        
-        # Simple response without media
-        {:respond, 200, "OK", %{}, ""}<% end %>
-      end<%= if @include_media do %>
-      
-      defp start_media_session(session_id, dialog_id, audio_config) do
-        Parrot.Media.MediaSessionSupervisor.start_session(
-          id: session_id,
-          dialog_id: dialog_id,
-          role: :uas,
-          owner: self(),
-          audio_file: audio_config.welcome_file,
-          media_handler: __MODULE__,
-          handler_args: audio_config,
-          supported_codecs: [:pcma],  # Only G.711 A-law for now (Opus send not implemented)
-          # IP configuration - defaults to auto-detect
-          # Uncomment and configure as needed:
-          # local_ip: :auto,  # or explicit IP like "192.168.1.100"
-          # advertised_ip: "203.0.113.1"  # for NAT scenarios
-        )
-      end<% end %>
     end
     """
   end
@@ -690,18 +551,9 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
     """
     defmodule <%= @module %>Test do
       use ExUnit.Case
-      
-      describe "<%= @module %>" do
-        test "module exists" do
-          assert function_exported?(<%= @module %>, :start, 0)
-          assert function_exported?(<%= @module %>, :start, 1)
-        end
-        
-        test "implements required behaviours" do
-          behaviours = <%= @module %>.__info__(:attributes)[:behaviour] || []
-          assert Parrot.UasHandler in behaviours<%= if @include_media do %>
-          assert Parrot.MediaHandler in behaviours<% end %>
-        end
+
+      test "module exists" do
+        assert function_exported?(<%= @module %>, :calls, 0)
       end
     end
     """
@@ -709,81 +561,21 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
 
   defp gitignore_template do
     """
-    # The directory Mix will write compiled artifacts to.
     /_build/
-
-    # If you run "mix test --cover", coverage assets end up here.
     /cover/
-
-    # The directory Mix downloads your dependencies sources to.
     /deps/
-
-    # Where 3rd-party dependencies like ExDoc output generated docs.
     /doc/
-
-    # Ignore .fetch files in case you like to edit your project deps locally.
     /.fetch
-
-    # If the VM crashes, it generates a dump, let's ignore it too.
     erl_crash.dump
-
-    # Also ignore archive artifacts (built via "mix archive.build").
     *.ez
-
-    # Ignore package tarball (built via "mix hex.build").
     *.tar
-
-    # Ignore Elixir Language Server files
     /.elixir_ls/
-
-    # Ignore OS files
     .DS_Store
-    Thumbs.db
-
-    # Ignore editor files
-    *.swp
-    *.swo
-    *~
-    .idea/
-    .vscode/
-    """
-  end
-
-  defp mix_exs_template do
-    """
-    defmodule <%= @module %>.MixProject do
-      use Mix.Project
-
-      def project do
-        [
-          app: :<%= @app %>,
-          version: "0.1.0",
-          elixir: "~> 1.14",
-          start_permanent: Mix.env() == :prod,
-          deps: deps()
-        ]
-      end
-
-      # Run "mix help compile.app" to learn about applications.
-      def application do
-        [
-          extra_applications: [:logger]
-        ]
-      end
-
-      # Run "mix help deps" to learn about dependencies.
-      defp deps do
-        [
-          {:parrot_platform, "~> 0.0.1-alpha.3"}
-        ]
-      end
-    end
     """
   end
 
   defp formatter_template do
     """
-    # Used by "mix format"
     [
       inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
     ]

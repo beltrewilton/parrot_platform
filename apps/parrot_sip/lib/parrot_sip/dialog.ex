@@ -141,7 +141,8 @@ defmodule ParrotSip.Dialog do
       :early
   """
   @spec create_from_invite(Message.t(), :uac | :uas) :: {:ok, String.t()} | {:error, term()}
-  def create_from_invite(%Message{method: :invite} = invite_message, role) when role in [:uac, :uas] do
+  def create_from_invite(%Message{method: :invite} = invite_message, role)
+      when role in [:uac, :uas] do
     call_id = invite_message.call_id
     from_tag = if invite_message.from, do: From.tag(invite_message.from), else: nil
     to_tag = if invite_message.to, do: To.tag(invite_message.to), else: nil

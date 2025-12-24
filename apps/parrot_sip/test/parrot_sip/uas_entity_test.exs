@@ -21,13 +21,17 @@ defmodule ParrotSip.UASEntityTest do
   end
 
   describe "UAS happy path" do
-    test "incoming -> ringing -> answering -> established", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+    test "incoming -> ringing -> answering -> established", %{
+      invite: invite,
+      notify_fun: notify_fun
+    } do
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -42,12 +46,13 @@ defmodule ParrotSip.UASEntityTest do
     end
 
     test "incoming -> answering (direct answer)", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -61,12 +66,13 @@ defmodule ParrotSip.UASEntityTest do
 
   describe "UAS rejection" do
     test "reject with 486 Busy", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -75,12 +81,13 @@ defmodule ParrotSip.UASEntityTest do
     end
 
     test "reject after ringing", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -94,12 +101,13 @@ defmodule ParrotSip.UASEntityTest do
 
   describe "UAS CANCEL handling" do
     test "CANCEL in incoming state", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -108,12 +116,13 @@ defmodule ParrotSip.UASEntityTest do
     end
 
     test "CANCEL in ringing state", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -127,12 +136,13 @@ defmodule ParrotSip.UASEntityTest do
 
   describe "UAS Timer H timeout" do
     test "timeout if no ACK received", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -146,12 +156,13 @@ defmodule ParrotSip.UASEntityTest do
 
   describe "UAS BYE handling" do
     test "receive BYE in established state", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -172,12 +183,13 @@ defmodule ParrotSip.UASEntityTest do
     end
 
     test "send BYE (hangup)", %{invite: invite, notify_fun: notify_fun} do
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 
@@ -195,12 +207,13 @@ defmodule ParrotSip.UASEntityTest do
 
       {:ok, _} = Registry.register(ParrotSip.Registry, dialog_id, %{})
 
-      {:ok, uas} = UAS.start_link(
-        invite: invite,
-        owner: self(),
-        notify_fun: notify_fun,
-        uas: :test_uas_ref
-      )
+      {:ok, uas} =
+        UAS.start_link(
+          invite: invite,
+          owner: self(),
+          notify_fun: notify_fun,
+          uas: :test_uas_ref
+        )
 
       assert_receive {:uas_event, {:uas_created, ^uas}}
 

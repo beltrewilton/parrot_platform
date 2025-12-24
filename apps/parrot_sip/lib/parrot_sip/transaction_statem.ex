@@ -615,7 +615,9 @@ defmodule ParrotSip.TransactionStatem do
               nil
           end
 
-        Logger.debug("[client_response] Method: #{inspect(method)}, CSeq: #{inspect(sip_msg.cseq)}")
+        Logger.debug(
+          "[client_response] Method: #{inspect(method)}, CSeq: #{inspect(sip_msg.cseq)}"
+        )
 
         trans_id =
           if branch && method do
@@ -630,7 +632,10 @@ defmodule ParrotSip.TransactionStatem do
         if trans_id do
           case Registry.lookup(ParrotSip.Registry, trans_id) do
             [{pid, _}] when is_pid(pid) ->
-              Logger.debug("[client_response] Found transaction pid: #{inspect(pid)}, casting :received")
+              Logger.debug(
+                "[client_response] Found transaction pid: #{inspect(pid)}, casting :received"
+              )
+
               :gen_statem.cast(pid, {:received, sip_msg})
 
             lookup_result ->
@@ -751,7 +756,17 @@ defmodule ParrotSip.TransactionStatem do
         options,
         callback
       ]) do
-    init_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback)
+    init_invite_client(
+      transaction,
+      transaction_id,
+      branch,
+      method,
+      initial_state,
+      sip_msg,
+      destination,
+      options,
+      callback
+    )
   end
 
   # Client transaction - INVITE (without source or remote)
@@ -767,7 +782,17 @@ defmodule ParrotSip.TransactionStatem do
         options,
         callback
       ]) do
-    init_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, nil, options, callback)
+    init_invite_client(
+      transaction,
+      transaction_id,
+      branch,
+      method,
+      initial_state,
+      sip_msg,
+      nil,
+      options,
+      callback
+    )
   end
 
   # Client transaction - non-INVITE (with source)
@@ -783,7 +808,17 @@ defmodule ParrotSip.TransactionStatem do
         options,
         callback
       ]) do
-    init_non_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback)
+    init_non_invite_client(
+      transaction,
+      transaction_id,
+      branch,
+      method,
+      initial_state,
+      sip_msg,
+      destination,
+      options,
+      callback
+    )
   end
 
   # Client transaction - non-INVITE (without source or remote)
@@ -799,7 +834,17 @@ defmodule ParrotSip.TransactionStatem do
         options,
         callback
       ]) do
-    init_non_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, nil, options, callback)
+    init_non_invite_client(
+      transaction,
+      transaction_id,
+      branch,
+      method,
+      initial_state,
+      sip_msg,
+      nil,
+      options,
+      callback
+    )
   end
 
   # Server transaction - all other transaction types
@@ -808,12 +853,30 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # INVITE client helper
-  defp init_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback) do
+  defp init_invite_client(
+         transaction,
+         transaction_id,
+         branch,
+         method,
+         initial_state,
+         sip_msg,
+         destination,
+         options,
+         callback
+       ) do
     registry = Map.get(options, :registry, ParrotSip.Registry)
     Registry.register(registry, transaction_id, nil)
 
-    Logger.metadata(trans_id: transaction_id, method: method, call_id: sip_msg.call_id, branch: branch)
-    Logger.debug("trans: client: #{method} #{sip_msg.request_uri}; call-id: #{sip_msg.call_id}; branch: #{branch}")
+    Logger.metadata(
+      trans_id: transaction_id,
+      method: method,
+      call_id: sip_msg.call_id,
+      branch: branch
+    )
+
+    Logger.debug(
+      "trans: client: #{method} #{sip_msg.request_uri}; call-id: #{sip_msg.call_id}; branch: #{branch}"
+    )
 
     send_via_transport_handler(:send_request, sip_msg, destination)
 
@@ -838,7 +901,12 @@ defmodule ParrotSip.TransactionStatem do
       },
       owner_mon: nil,
       timers: timers,
-      log: Map.get(options, :debug_log, Application.get_env(:parrot_sip, :transaction_debug_log, false)),
+      log:
+        Map.get(
+          options,
+          :debug_log,
+          Application.get_env(:parrot_sip, :transaction_debug_log, false)
+        ),
       logbranch: branch
     }
 
@@ -846,12 +914,30 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # Non-INVITE client helper
-  defp init_non_invite_client(transaction, transaction_id, branch, method, initial_state, sip_msg, destination, options, callback) do
+  defp init_non_invite_client(
+         transaction,
+         transaction_id,
+         branch,
+         method,
+         initial_state,
+         sip_msg,
+         destination,
+         options,
+         callback
+       ) do
     registry = Map.get(options, :registry, ParrotSip.Registry)
     Registry.register(registry, transaction_id, nil)
 
-    Logger.metadata(trans_id: transaction_id, method: method, call_id: sip_msg.call_id, branch: branch)
-    Logger.debug("trans: client: #{method} #{sip_msg.request_uri}; call-id: #{sip_msg.call_id}; branch: #{branch}")
+    Logger.metadata(
+      trans_id: transaction_id,
+      method: method,
+      call_id: sip_msg.call_id,
+      branch: branch
+    )
+
+    Logger.debug(
+      "trans: client: #{method} #{sip_msg.request_uri}; call-id: #{sip_msg.call_id}; branch: #{branch}"
+    )
 
     send_via_transport_handler(:send_request, sip_msg, destination)
 
@@ -876,7 +962,12 @@ defmodule ParrotSip.TransactionStatem do
       },
       owner_mon: nil,
       timers: timers,
-      log: Map.get(options, :debug_log, Application.get_env(:parrot_sip, :transaction_debug_log, false)),
+      log:
+        Map.get(
+          options,
+          :debug_log,
+          Application.get_env(:parrot_sip, :transaction_debug_log, false)
+        ),
       logbranch: branch
     }
 
@@ -1018,7 +1109,10 @@ defmodule ParrotSip.TransactionStatem do
           end
 
           action_result = process_actions(actions, new_state)
-          Logger.debug("[apply_state_transition] process_actions returned: #{inspect(action_result)}")
+
+          Logger.debug(
+            "[apply_state_transition] process_actions returned: #{inspect(action_result)}"
+          )
 
           case action_result do
             :stop ->
@@ -1026,7 +1120,10 @@ defmodule ParrotSip.TransactionStatem do
               {:stop, :normal, new_state}
 
             {:keep_state, result_state} ->
-              Logger.debug("[apply_state_transition] Returning {:next_state, #{new_state_atom}, ...}")
+              Logger.debug(
+                "[apply_state_transition] Returning {:next_state, #{new_state_atom}, ...}"
+              )
+
               {:next_state, new_state_atom, result_state}
 
             other ->
@@ -1042,7 +1139,10 @@ defmodule ParrotSip.TransactionStatem do
         end
 
       {:error, reason} ->
-        Logger.debug("[apply_state_transition] Transaction.next_state returned error: #{inspect(reason)}")
+        Logger.debug(
+          "[apply_state_transition] Transaction.next_state returned error: #{inspect(reason)}"
+        )
+
         {:keep_state, state}
     end
   end
@@ -1870,7 +1970,11 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # CANCEL for INVITE client transactions in proceeding
-  def proceeding(:cast, :cancel, %{type: :client, data: %{cancelled: false, outreq: out_req} = data} = state) do
+  def proceeding(
+        :cast,
+        :cancel,
+        %{type: :client, data: %{cancelled: false, outreq: out_req} = data} = state
+      ) do
     Logger.debug("trans: canceling client transaction in proceeding state")
     # Generate CANCEL request from original request
     cancel_req = %Message{
@@ -2408,7 +2512,13 @@ defmodule ParrotSip.TransactionStatem do
         :info,
         {:event, :a},
         :calling,
-        %{data: %{transaction: %{type: :invite_client}, outreq: %{source: %{remote: destination}} = request}, timers: timers} = state
+        %{
+          data: %{
+            transaction: %{type: :invite_client},
+            outreq: %{source: %{remote: destination}} = request
+          },
+          timers: timers
+        } = state
       ) do
     Logger.debug("trans: timer A fired, retransmitting INVITE request and rescheduling")
 
@@ -2444,7 +2554,13 @@ defmodule ParrotSip.TransactionStatem do
         :info,
         {:event, :e},
         :trying,
-        %{data: %{transaction: %{type: :non_invite_client}, outreq: %{source: %{remote: destination}} = request}, timers: timers} =
+        %{
+          data: %{
+            transaction: %{type: :non_invite_client},
+            outreq: %{source: %{remote: destination}} = request
+          },
+          timers: timers
+        } =
           state
       ) do
     Logger.debug("trans: timer E fired, retransmitting non-INVITE request and rescheduling")

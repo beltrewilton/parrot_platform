@@ -710,15 +710,16 @@ defmodule ParrotSip.Transaction do
     cseq_number = if request.cseq, do: request.cseq.number, else: 0
 
     # RFC 3261 Section 17.2.3: Compute branch from message fields
-    computed_branch = compute_rfc2543_branch(
-      request.request_uri,
-      from_tag,
-      to_tag,
-      request.call_id,
-      cseq_number,
-      via_host,
-      via_port
-    )
+    computed_branch =
+      compute_rfc2543_branch(
+        request.request_uri,
+        from_tag,
+        to_tag,
+        request.call_id,
+        cseq_number,
+        via_host,
+        via_port
+      )
 
     generate_transaction_id(type, computed_branch, request)
   end
@@ -1631,7 +1632,15 @@ defmodule ParrotSip.Transaction do
   # Compute RFC 2543 compatible branch from message fields
   # RFC 3261 Section 17.2.3: When branch parameter is missing,
   # compute transaction ID from Request-URI, To tag, From tag, Call-ID, CSeq, and top Via
-  defp compute_rfc2543_branch(request_uri, from_tag, to_tag, call_id, cseq_number, via_host, via_port) do
+  defp compute_rfc2543_branch(
+         request_uri,
+         from_tag,
+         to_tag,
+         call_id,
+         cseq_number,
+         via_host,
+         via_port
+       ) do
     [
       request_uri || "",
       from_tag,
@@ -1645,5 +1654,4 @@ defmodule ParrotSip.Transaction do
     |> Base.encode16(case: :lower)
     |> String.slice(0, 16)
   end
-
 end

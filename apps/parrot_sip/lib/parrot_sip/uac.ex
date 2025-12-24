@@ -115,10 +115,7 @@ defmodule ParrotSip.UAC do
       end)
 
     timer_ref = :erlang.start_timer(32_000, self(), :timer_b)
-    data = %{data |
-      transaction: transaction,
-      timers: Map.put(data.timers, :timer_b, timer_ref)
-    }
+    data = %{data | transaction: transaction, timers: Map.put(data.timers, :timer_b, timer_ref)}
 
     {:next_state, :calling, data}
   end
@@ -412,7 +409,10 @@ defmodule ParrotSip.UAC do
       method: :ack,
       request_uri: invite.request_uri,
       from: invite.from,
-      to: %{response.to | parameters: Map.put(response.to.parameters, "tag", response.to.parameters["tag"])},
+      to: %{
+        response.to
+        | parameters: Map.put(response.to.parameters, "tag", response.to.parameters["tag"])
+      },
       call_id: invite.call_id,
       cseq: CSeq.new(invite.cseq.number, :ack),
       via: [via],

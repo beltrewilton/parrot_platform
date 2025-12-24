@@ -10,138 +10,126 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
   ## Examples
 
       mix parrot.gen.uac my_uac_app
+      mix parrot.gen.uac my_uac_app --port 5070
       mix parrot.gen.uac my_uac_app --module MyCompany.UacApp
-      mix parrot.gen.uac my_uac_app --no-audio
 
   ## Options
 
+    * `--port` - The local SIP port to bind (default: 5070)
     * `--module` - The module name to use (default: derived from app name)
-    * `--no-audio` - Skip audio device support (SIP signaling only)
 
   The generator creates:
 
-    * A complete UAC application module using GenServer
-    * Integration with system audio devices via PortAudio
-    * SIP outbound calling functionality
-    * Response handler for processing SIP responses
+    * A complete UAC application using ParrotSip.UA.Handler
+    * ParrotMedia.Handler implementation for audio handling
+    * Transport setup with SIP stack wiring
     * README with usage instructions
-    * Basic test file
 
   The generated application will:
 
     * Make outbound SIP calls
-    * Use system microphone for outbound audio
-    * Play received audio through system speakers
-    * Support G.711 A-law (PCMA) codec
-    * Provide interactive call control
+    * Negotiate SDP and stream audio to callees
+    * Handle call progress (ringing, answered, rejected)
+    * Handle BYE gracefully
   """
 
   use Mix.Task
   import Mix.Generator
 
   @switches [
-    module: :string,
-    no_audio: :boolean
+    port: :integer,
+    module: :string
   ]
 
   @impl Mix.Task
   def run(args) do
-    case OptionParser.parse(args, switches: @switches) do
-      {opts, [app_name], _} ->
+    case OptionParser.parse!(args, switches: @switches) do
+      {opts, [app_name]} ->
         generate(app_name, opts)
-        
-      _ ->
-        Mix.raise """
-        Invalid arguments. Usage: mix parrot.gen.uac APP_NAME [OPTIONS]
-        
-        Example: mix parrot.gen.uac my_uac_app --module MyCompany.UacApp
-        """
+
+      {_, _} ->
+        Mix.raise("Expected exactly one argument (the application name)")
     end
   end
 
   defp generate(app_name, opts) do
-    # Clean up app name using same logic as UAS generator
+    path = Path.expand(app_name)
     app = to_app_name(app_name)
-    module_name = opts[:module] || to_module_name(app_name)
-    include_audio = !opts[:no_audio]
-    
-    assigns = [
-      app_name: app,
-      module: module_name,
-      include_audio: include_audio
+    module = opts[:module] || to_module_name(app_name)
+    port = opts[:port] || 5070
+
+    binding = [
+      app: app,
+      module: module,
+      port: port
     ]
-    
-    create_directory(app_name)
-    create_directory(Path.join(app_name, "lib"))
-    create_directory(Path.join(app_name, "test"))
-    
-    create_file(
-      Path.join([app_name, "mix.exs"]),
-      mix_exs_template(assigns)
-    )
-    
-    create_file(
-      Path.join([app_name, "lib", "#{app}.ex"]),
-      app_template(assigns)
-    )
-    
-    create_file(
-      Path.join([app_name, "README.md"]),
-      readme_template(assigns)
-    )
-    
-    create_file(
-      Path.join([app_name, "test", "#{app}_test.exs"]),
-      test_template(assigns)
-    )
-    
-    create_file(
-      Path.join([app_name, ".formatter.exs"]),
-      formatter_template()
-    )
-    
-    create_file(
-      Path.join([app_name, ".gitignore"]),
-      gitignore_template()
-    )
-    
+
+    create_directory(path)
+    create_directory(Path.join(path, "lib/#{app}"))
+    create_directory(Path.join(path, "config"))
+    create_directory(Path.join(path, "test"))
+
+    create_file(Path.join(path, "mix.exs"), EEx.eval_string(mix_exs_template(), assigns: binding))
+    create_file(Path.join(path, "config/config.exs"), EEx.eval_string(config_template(), assigns: binding))
+    create_file(Path.join(path, "README.md"), EEx.eval_string(readme_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}.ex"), EEx.eval_string(main_module_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/application.ex"), EEx.eval_string(application_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/client.ex"), EEx.eval_string(client_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/handler.ex"), EEx.eval_string(handler_template(), assigns: binding))
+    create_file(Path.join(path, "lib/#{app}/media_handler.ex"), EEx.eval_string(media_handler_template(), assigns: binding))
+    create_file(Path.join(path, "test/#{app}_test.exs"), EEx.eval_string(test_template(), assigns: binding))
+    create_file(Path.join(path, ".gitignore"), gitignore_template())
+    create_file(Path.join(path, ".formatter.exs"), formatter_template())
+
     Mix.shell().info("""
-    
+
     Your Parrot UAC application has been generated!
-    
+
     To get started:
-    
+
         cd #{app_name}
         mix deps.get
-        mix compile
-        
-    To make a test call:
-    
-        # Start your UAC in one terminal
         iex -S mix
-        iex> #{module_name}.start()
-        #{if include_audio do
-          "iex> #{module_name}.list_audio_devices()  # Optional: see available devices"
-        else
-          ""
-        end}
-        iex> #{module_name}.call("sip:service@127.0.0.1:5060")
-        
-        # Press Enter to hang up
-        
+
+    To make a call:
+
+        iex> #{module}.dial("sip:service@127.0.0.1:5060")
+
+    To hang up:
+
+        iex> #{module}.hangup("call_id")
+
+    Check the README.md for more information.
     """)
   end
-  
-  defp mix_exs_template(assigns) do
+
+  defp to_app_name(name) do
+    name
+    |> Path.basename()
+    |> String.downcase()
+    |> String.replace(~r/[^\w]/, "_")
+    |> String.trim("_")
+  end
+
+  defp to_module_name(name) do
+    name
+    |> String.split(~r/[^a-zA-Z0-9]/)
+    |> Enum.map(&String.capitalize/1)
+    |> Enum.join()
+  end
+
+  # Templates
+
+  defp mix_exs_template do
     """
     defmodule <%= @module %>.MixProject do
       use Mix.Project
 
       def project do
         [
-          app: :<%= @app_name %>,
+          app: :<%= @app %>,
           version: "0.1.0",
-          elixir: "~> 1.14",
+          elixir: "~> 1.16",
           start_permanent: Mix.env() == :prod,
           deps: deps()
         ]
@@ -156,784 +144,528 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
 
       defp deps do
         [
-          {:parrot_platform, "~> 0.0.1-alpha.3"}
+          {:parrot_sip, "~> 0.0.1"},
+          {:parrot_transport, "~> 0.0.1"},
+          {:parrot_media, "~> 0.0.1"}
         ]
       end
     end
     """
-    |> EEx.eval_string(assigns: assigns)
   end
-  
-  defp app_template(assigns) do
+
+  defp config_template do
     """
-    defmodule <%= @module %> do
-      @moduledoc \"\"\"
-      <%= @module %> - A Parrot UAC (User Agent Client) application.
-      
-      This application demonstrates:
-      - Making outbound SIP calls
-      <%= if @include_audio do %>- Using system microphone for outbound audio
-      - Playing received audio through system speakers
-      - Bidirectional G.711 A-law audio streaming<% else %>- SIP signaling without media<% end %>
-      - Proper call lifecycle management
-      
-      ## Usage
-      
-          # Start the UAC
-          <%= @module %>.start()
-          <%= if @include_audio do %>
-          # List available audio devices
-          <%= @module %>.list_audio_devices()
-          
-          # Make a call using default audio devices
-          <%= @module %>.call("sip:service@127.0.0.1:5060")
-          
-          # Make a call with specific audio devices
-          <%= @module %>.call("sip:service@127.0.0.1:5060", input_device: 1, output_device: 2)
-          <% else %>
-          # Make a call
-          <%= @module %>.call("sip:service@127.0.0.1:5060")
-          <% end %>
-          # Hang up the current call
-          <%= @module %>.hangup()
-      \"\"\"
-      
-      use GenServer
-      require Logger
-      
-      alias Parrot.Sip.{UAC, Message}
-      alias Parrot.Sip.Headers.{From, To, CSeq, CallId, Contact, Via}<%= if @include_audio do %>
-      alias Parrot.Media.{MediaSession, MediaSessionSupervisor, AudioDevices}<% end %>
-      
-      @server_name {:via, Registry, {Parrot.Registry, __MODULE__}}
-      
-      defmodule State do
-        @moduledoc false
-        defstruct [
-          :transport_ref,
-          :current_call,<%= if @include_audio do %>
-          :media_session,<% end %>
-          :dialog_id,
-          :call_id,
-          :local_tag,
-          :remote_tag<%= if @include_audio do %>,
-          :input_device_id,
-          :output_device_id<% end %>
-        ]
-      end
-      
-      # Client API
-      
-      @doc \"\"\"
-      Starts the UAC application.
-      \"\"\"
-      def start(opts \\\\ []) do
-        case GenServer.start_link(__MODULE__, opts, name: @server_name) do
-          {:ok, pid} ->
-            Logger.info("<%= @module %> started successfully")
-            {:ok, pid}
-          {:error, {:already_started, pid}} ->
-            Logger.info("<%= @module %> already running")
-            {:ok, pid}
-          error ->
-            error
-        end
-      end
-      <%= if @include_audio do %>
-      @doc \"\"\"
-      Lists available audio devices.
-      \"\"\"
-      def list_audio_devices do
-        IO.puts("\\n")
-        AudioDevices.print_devices()
-        IO.puts("\\nNote: Use the device IDs shown above when calling <%= @module %>.call/2")
-        IO.puts("Example: <%= @module %>.call(\\"sip:service@127.0.0.1:5060\\", input_device: 1, output_device: 2)")
-        :ok
-      end
-      <% end %>
-      @doc \"\"\"
-      Makes an outbound call.
-      <%= if @include_audio do %>
-      Options:
-        - :input_device - Audio input device ID (defaults to system default)
-        - :output_device - Audio output device ID (defaults to system default)
-      <% end %>\"\"\"
-      def call(uri, opts \\\\ []) do
-        GenServer.call(@server_name, {:make_call, uri, opts})
-      end
-      
-      @doc \"\"\"
-      Hangs up the current call.
-      \"\"\"
-      def hangup do
-        GenServer.call(@server_name, :hangup)
-      end
-      
-      @doc \"\"\"
-      Gets the current call status.
-      \"\"\"
-      def status do
-        GenServer.call(@server_name, :status)
-      end
-      
-      # Server Callbacks
-      
-      @impl true
-      def init(opts) do
-        Logger.info("Initializing <%= @module %>")
-        <%= if @include_audio do %>
-        # Get default audio devices
-        input_device = case opts[:input_device] || AudioDevices.get_default_input() do
-          {:ok, device_id} -> device_id
-          _ -> nil
-        end
-        
-        output_device = case opts[:output_device] || AudioDevices.get_default_output() do
-          {:ok, device_id} -> device_id  
-          _ -> nil
-        end
-        <% end %>
-        # Start transport
-        transport_opts = Keyword.get(opts, :transport, %{})
-        
-        case start_transport(transport_opts) do
-          {:ok, ref} ->
-            state = %State{
-              transport_ref: ref<%= if @include_audio do %>,
-              input_device_id: input_device,
-              output_device_id: output_device<% end %>
-            }
-            
-            {:ok, state}
-            
-          {:error, reason} ->
-            {:stop, {:transport_error, reason}}
-        end
-      end
-      
-      @impl true
-      def handle_call({:make_call, uri, opts}, _from, state) do
-        if state.current_call do
-          {:reply, {:error, :call_in_progress}, state}
-        else<%= if @include_audio do %>
-          # Override default devices if specified
-          input_device = opts[:input_device] || state.input_device_id
-          output_device = opts[:output_device] || state.output_device_id
-          
-          case do_make_call(uri, input_device, output_device, state) do<% else %>
-          case do_make_call(uri, state) do<% end %>
-            {:ok, new_state} ->
-              {:reply, :ok, new_state}
-              
-            {:error, reason} = error ->
-              Logger.error("Failed to make call: \#{inspect(reason)}")
-              {:reply, error, state}
-          end
-        end
-      end
-      
-      @impl true
-      def handle_call(:hangup, _from, state) do
-        if state.current_call do
-          new_state = do_hangup(state)
-          {:reply, :ok, new_state}
-        else
-          {:reply, {:error, :no_active_call}, state}
-        end
-      end
-      
-      @impl true
-      def handle_call(:status, _from, state) do
-        status = %{
-          active_call: state.current_call != nil,
-          call_id: state.call_id,
-          dialog_id: state.dialog_id<%= if @include_audio do %>,
-          media_active: state.media_session != nil<% end %>
-        }
-        
-        {:reply, status, state}
-      end
-      
-      @impl true
-      def handle_info({:uac_response, response}, state) do
-        new_state = handle_uac_response(response, state)
-        {:noreply, new_state}
-      end
-      
-      @impl true
-      def handle_info(msg, state) do
-        Logger.debug("Unhandled message: \#{inspect(msg)}")
-        {:noreply, state}
-      end
-      
-      # Private Functions
-      
-      defp start_transport(opts) do
-        listen_port = opts[:listen_port] || 0  # Use ephemeral port
-        
-        # Create a simple handler for receiving responses
-        handler = Parrot.Sip.Handler.new(
-          __MODULE__.ResponseHandler,
-          self(),
-          log_level: :debug,
-          sip_trace: true
-        )
-        
-        case Parrot.Sip.Transport.StateMachine.start_udp(%{
-          handler: handler,
-          listen_port: listen_port
-        }) do
-          :ok ->
-            {:ok, make_ref()}
-          error ->
-            error
-        end
-      end
-      
-      defp do_make_call(uri, <%= if @include_audio do %>input_device, output_device, <% end %>state) do
-        # Generate call parameters
-        call_id = "uac-\#{:rand.uniform(1000000)}@\#{get_local_ip()}"
-        local_tag = generate_tag()
-        dialog_id = "\#{call_id}-\#{local_tag}"
-        <%= if @include_audio do %>
-        # Step 1: Start MediaSession directly
-        Logger.debug("Starting UAC media session...")
-        {:ok, media_pid} = MediaSessionSupervisor.start_session(
-          id: "uac-media-\#{call_id}",
-          dialog_id: dialog_id,
-          role: :uac,
-          media_handler: <%= @module %>.MediaHandler,
-          handler_args: %{},
-          supported_codecs: [:pcma]  # G.711 A-law
-        )
-        
-        case MediaSession.generate_offer(media_pid) do
-          {:ok, sdp_offer} ->
-            Logger.debug("Generated SDP offer")
-            
-            # Step 2: Create INVITE with the SDP<% else %>
-        # Create INVITE without SDP<% end %>
-            headers = %{
-              "via" => [Via.new(get_local_ip(), "udp", 5060)],
-              "from" => From.new("sip:uac@\#{get_local_ip()}", "<%= @module %>", local_tag),
-              "to" => To.new(uri),
-              "call-id" => CallId.new(call_id),
-              "cseq" => CSeq.new(1, :invite),
-              "contact" => Contact.new("sip:uac@\#{get_local_ip()}:5060"),<%= if @include_audio do %>
-              "content-type" => "application/sdp",<% end %>
-              "allow" => "INVITE, ACK, BYE, CANCEL, OPTIONS, INFO",
-              "supported" => "replaces, timer"
-            }
-            
-            invite = Message.new_request(:invite, uri, headers)<%= if @include_audio do %>
-            |> Message.set_body(sdp_offer)<% end %>
-            
-            # Create UAC handler callback
-            callback = create_uac_callback(self())
-            
-            # Step 3: Send INVITE
-            {:uac_id, transaction} = UAC.request(invite, callback)
-            Logger.info("INVITE sent, transaction: \#{inspect(transaction)}")
-            
-            # Store session info for later
-            new_state = %{state |
-              current_call: uri,
-              call_id: call_id,
-              local_tag: local_tag<%= if @include_audio do %>,
-              media_session: media_pid<% end %>
-            }
-            
-            {:ok, new_state}<%= if @include_audio do %>
-            
-          {:error, reason} ->
-            Logger.error("Failed to prepare UAC session: \#{inspect(reason)}")
-            {:error, reason}
-        end<% end %>
-      end
-      
-      defp create_uac_callback(pid) do
-        fn response ->
-          send(pid, {:uac_response, response})
-        end
-      end
-      
-      defp handle_uac_response({:response, response}, state) do
-        case response.status_code do
-          code when code >= 100 and code < 200 ->
-            # Provisional response
-            Logger.info("Call progress: \#{code} \#{response.reason_phrase}")
-            
-            if code == 180 do
-              IO.puts("\\n🔔 Ringing...")
-            end
-            
-            state
-            
-          200 ->
-            # Success - check if this is for INVITE or other method
-            case response.headers["cseq"] do
-              %{method: :invite} ->
-                # Success - call answered
-                Logger.info("Call answered!")
-                IO.puts("\\n✅ Call connected!<%= if @include_audio do %> Audio devices active.<% end %>")
-                <%= if @include_audio do %>IO.puts("🎤 Speaking through microphone...")
-                IO.puts("🔊 Listening through speakers...")
-                <% end %>IO.puts("\\nPress Enter to hang up")
-                
-                # Extract remote tag and create dialog ID
-                remote_tag = case response.headers["to"] do
-                  %{parameters: %{"tag" => tag}} -> tag
-                  _ -> nil
-                end
-                Logger.debug("Remote tag: \#{inspect(remote_tag)}")
-                
-                dialog_id = %{
-                  call_id: state.call_id,
-                  local_tag: state.local_tag,
-                  remote_tag: remote_tag
-                }
-                
-                # Send ACK immediately after receiving 200 OK for INVITE
-                Logger.info("Sending ACK for 200 OK...")
-                send_ack(state, response)
-                <%= if @include_audio do %>
-                # Extract SDP answer from response
-                sdp_answer = response.body
-                Logger.debug("Completing UAC setup with SDP answer...")
-                
-                # Process SDP answer and start media
-                case MediaSession.process_answer(state.media_session, sdp_answer) do
-                  :ok ->
-                    MediaSession.start_media(state.media_session)
-                    
-                    # Send device configuration
-                    send(state.media_session, {:use_audio_devices, [
-                      input: state.input_device_id,
-                      output: state.output_device_id
-                    ]})
-                    
-                    Logger.info("UAC setup completed successfully, media is flowing")
-                    <% else %>
-                Logger.info("Call connected (signaling only)")
-                <% end %>
-                    # Start a task to wait for Enter key
-                    Task.start(fn ->
-                      IO.gets("")
-                      GenServer.call(@server_name, :hangup)
-                    end)
-                    
-                    %{state |
-                      dialog_id: dialog_id,
-                      remote_tag: remote_tag
-                    }<%= if @include_audio do %>
-                    
-                  {:error, reason} ->
-                    Logger.error("Failed to complete UAC setup: \#{inspect(reason)}")
-                    IO.puts("\\n❌ Failed to establish media: \#{inspect(reason)}")
-                    # TODO: Send BYE to terminate the call
-                    state
-                end<% end %>
-              
-              %{method: :bye} ->
-                # Success response to BYE - no ACK needed
-                Logger.info("BYE acknowledged")
-                # Clean up already done in do_hangup
-                state
-                
-              _ ->
-                # Other successful response
-                Logger.debug("Success response for \#{inspect(response.headers["cseq"])}")
-                state
-            end
-            
-          code when code >= 300 and code < 400 ->
-            # Redirect
-            Logger.info("Call redirected: \#{code} \#{response.reason_phrase}")
-            IO.puts("\\n↪️  Call redirected: \#{response.reason_phrase}")
-            state
-            
-          code when code >= 400 ->
-            # Error
-            Logger.error("Call failed: \#{code} \#{response.reason_phrase}")
-            IO.puts("\\n❌ Call failed: \#{response.reason_phrase}")
-            
-            # Clean up
-            Process.delete({:call_context, state.call_id})
-            
-            %{state |
-              current_call: nil,
-              call_id: nil,
-              local_tag: nil
-            }
-        end
-      end
-      
-      defp handle_uac_response({:error, reason}, state) do
-        Logger.error("UAC error: \#{inspect(reason)}")
-        IO.puts("\\n❌ Call error: \#{inspect(reason)}")
-        <%= if @include_audio do %>
-        # Clean up
-        if state.media_session do
-          MediaSession.terminate_session(state.media_session)
-        end
-        <% end %>
-        Process.delete({:call_context, state.call_id})
-        
-        %{state |
-          current_call: nil,
-          call_id: nil,
-          local_tag: nil<%= if @include_audio do %>,
-          media_session: nil<% end %>,
-          dialog_id: nil,
-          remote_tag: nil
-        }
-      end
-      
-      defp send_ack(state, response) do
-        # Extract remote tag from response
-        remote_tag = case response.headers["to"] do
-          %{parameters: %{"tag" => tag}} -> tag
-          _ -> state.remote_tag
-        end
-        
-        headers = %{
-          "via" => [Via.new(get_local_ip(), "udp", 5060)],
-          "from" => From.new("sip:uac@\#{get_local_ip()}", "<%= @module %>", state.local_tag),
-          "to" => To.new(state.current_call, nil, %{"tag" => remote_tag}),
-          "call-id" => CallId.new(state.call_id),
-          "cseq" => CSeq.new(1, :ack),
-          "contact" => Contact.new("sip:uac@\#{get_local_ip()}:5060")
-        }
-        
-        ack = Message.new_request(:ack, state.current_call, headers)
-        
-        # ACK is sent without expecting a response
-        UAC.ack_request(ack)
-        Logger.info("ACK sent to \#{state.current_call}")
-      end
-      
-      defp do_hangup(state) do
-        Logger.info("Hanging up call")
-        
-        # Send BYE
-        headers = %{
-          "via" => [Via.new(get_local_ip(), "udp", 5060)],
-          "from" => From.new("sip:uac@\#{get_local_ip()}", "<%= @module %>", state.local_tag),
-          "to" => To.new(state.current_call, nil, %{"tag" => state.remote_tag}),
-          "call-id" => CallId.new(state.call_id),
-          "cseq" => CSeq.new(2, :bye),
-          "contact" => Contact.new("sip:uac@\#{get_local_ip()}:5060")
-        }
-        
-        bye = Message.new_request(:bye, state.current_call, headers)
-        
-        callback = create_uac_callback(self())
-        UAC.request(bye, callback)
-        <%= if @include_audio do %>
-        # Stop media session
-        if state.media_session do
-          MediaSession.terminate_session(state.media_session)
-        end
-        <% end %>
-        # Clean up
-        Process.delete({:call_context, state.call_id})
-        
-        IO.puts("\\n📞 Call ended")
-        
-        %{state |
-          current_call: nil,
-          call_id: nil,
-          local_tag: nil,
-          remote_tag: nil<%= if @include_audio do %>,
-          media_session: nil<% end %>,
-          dialog_id: nil
-        }
-      end
-      
-      defp generate_tag do
-        :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
-      end
-      
-      defp get_local_ip do
-        {:ok, addrs} = :inet.getifaddrs()
-        
-        addrs
-        |> Enum.flat_map(fn {_iface, opts} ->
-          opts
-          |> Enum.filter(fn {:addr, addr} -> tuple_size(addr) == 4 and addr != {127, 0, 0, 1}
-                           _ -> false end)
-          |> Enum.map(fn {:addr, addr} -> addr end)
-        end)
-        |> List.first()
-        |> case do
-          nil -> {127, 0, 0, 1}
-          addr -> addr
-        end
-        |> Tuple.to_list()
-        |> Enum.join(".")
-      end
-      
-      # Response Handler Module
-      defmodule ResponseHandler do
-        @moduledoc false
-        require Logger
-        
-        # Simple handler that forwards responses to the parent process
-        
-        def transp_request(_msg, _owner_pid) do
-          # We only handle responses in UAC
-          :ignore
-        end
-        
-        def transp_response(msg, owner_pid) do
-          # Forward responses to the GenServer for logging/debugging
-          send(owner_pid, {:uac_response, {:response, msg}})
-          :consume
-        end
-        
-        def transp_error(error, _reason, owner_pid) do
-          send(owner_pid, {:uac_response, {:error, error}})
-          :ok
-        end
-        
-        # Required callbacks we don't use
-        def process_ack(_msg, _state), do: :ignore
-        def transaction(_event, _id, _state), do: :ignore
-        def transaction_stop(_event, _id, _state), do: :ignore
-        def uas_cancel(_msg, _state), do: :ignore
-        def uas_request(_msg, _dialog_id, _state), do: :ignore
-      end
-    end
-    
-    defmodule <%= @module %>.Application do
-      @moduledoc false
-      
-      use Application
-      
-      @impl true
-      def start(_type, _args) do
-        children = [
-          # Add any application-specific children here
-        ]
-        
-        opts = [strategy: :one_for_one, name: <%= @module %>.Supervisor]
-        Supervisor.start_link(children, opts)
-      end
-    end
+    import Config
+
+    config :<%= @app %>,
+      port: String.to_integer(System.get_env("PORT") || "<%= @port %>"),
+      audio_file: System.get_env("AUDIO_FILE")
+
+    config :logger, :console,
+      format: "$time $metadata[$level] $message\\n",
+      metadata: [:file, :line]
     """
-    |> EEx.eval_string(assigns: assigns)
   end
-  
-  defp readme_template(assigns) do
+
+  defp readme_template do
     """
-    # <%= @module %>
+    # <%= @module %> - Parrot UAC Application
 
-    A Parrot UAC (User Agent Client) application for making outbound SIP calls.
+    A SIP User Agent Client (UAC) application built with Parrot Platform.
 
-    ## Features
+    ## Overview
 
-    - Make outbound SIP calls to any SIP endpoint
-    <%= if @include_audio do %>- System audio integration (microphone and speakers)
-    - G.711 A-law (PCMA) audio codec support
-    - Audio device selection and listing<% else %>- SIP signaling (no media)<% end %>
-    - Interactive call control
+    This application:
+    - Makes outbound SIP calls
+    - Negotiates SDP and streams audio
+    - Handles call progress (ringing, answered, rejected)
+    - Handles BYE gracefully
 
-    ## Usage
+    ## Running the Application
 
-    ### Starting the Application
+    ```bash
+    # Start the application
+    iex -S mix
 
-    ```elixir
-    iex> <%= @module %>.start()
-    {:ok, #PID<0.123.0>}
+    # Or on a specific port
+    PORT=5080 iex -S mix
     ```
-    <%= if @include_audio do %>
-    ### Listing Audio Devices
+
+    ## Making Calls
 
     ```elixir
-    iex> <%= @module %>.list_audio_devices()
+    # Make a call
+    iex> <%= @module %>.dial("sip:service@192.168.1.100:5060")
+    {:ok, "call_abc123"}
 
-    Input Devices:
-    0: Built-in Microphone (2 channels, 48000 Hz)
-    
-    Output Devices:
-    1: Built-in Output (2 channels, 48000 Hz)
+    # List active calls
+    iex> <%= @module %>.calls()
+    %{"call_abc123" => %{...}}
 
+    # Hang up a call
+    iex> <%= @module %>.hangup("call_abc123")
     :ok
-    ```
-    <% end %>
-    ### Making a Call
-
-    ```elixir
-    # Call using default audio devices
-    iex> <%= @module %>.call("sip:service@192.168.1.100:5060")
-    :ok
-
-    🔔 Ringing...
-    ✅ Call connected!<%= if @include_audio do %> Audio devices active.
-    🎤 Speaking through microphone...
-    🔊 Listening through speakers...<% end %>
-
-    Press Enter to hang up
-    ```
-    <%= if @include_audio do %>
-    ### Making a Call with Specific Audio Devices
-
-    ```elixir
-    iex> <%= @module %>.call("sip:service@192.168.1.100:5060", input_device: 0, output_device: 1)
-    :ok
-    ```
-    <% end %>
-    ### Checking Call Status
-
-    ```elixir
-    iex> <%= @module %>.status()
-    %{
-      active_call: true,
-      call_id: "uac-123456@192.168.1.50",
-      dialog_id: %{...}<%= if @include_audio do %>,
-      media_active: true<% end %>
-    }
-    ```
-
-    ### Hanging Up
-
-    ```elixir
-    iex> <%= @module %>.hangup()
-    :ok
-
-    📞 Call ended
     ```
 
     ## Configuration
 
-    The UAC can be configured when starting:
+    Environment variables:
+    - `PORT` - Local SIP port to bind (default: <%= @port %>)
+    - `AUDIO_FILE` - Path to WAV file to stream (default: parrot-welcome.wav)
 
-    ```elixir
-    <%= @module %>.start(transport: %{listen_port: 5070})
-    ```
+    ## Architecture
 
-    ## Testing with a UAS
-
-    To test your UAC, you need a UAS (User Agent Server) to receive calls:
-
-    1. Generate a UAS application:
-       ```bash
-       mix parrot.gen.uas my_uas_app
-       cd my_uas_app
-       mix deps.get
-       iex -S mix
-       ```
-
-    2. In another terminal, start your UAC and make a call:
-       ```bash
-       cd <%= @app_name %>
-       iex -S mix
-       iex> <%= @module %>.start()
-       iex> <%= @module %>.call("sip:service@127.0.0.1:5060")
-       ```
-
-    ## Troubleshooting
-
-    - **Connection Refused**: Ensure the target SIP endpoint is running
-    - **No Audio**: Check audio device permissions and selection
-    - **Call Fails**: Check network connectivity and SIP URI format
-
-    ## License
-
-    See LICENSE file for details.
+    - `<%= @module %>.Client` - Main GenServer managing UA and transport
+    - `<%= @module %>.Handler` - ParrotSip.UA.Handler for call events
+    - `<%= @module %>.MediaHandler` - ParrotMedia.Handler for media events
     """
-    |> EEx.eval_string(assigns: assigns)
   end
-  
-  defp test_template(assigns) do
-    """
-    defmodule <%= @module %>Test do
-      use ExUnit.Case
-      doctest <%= @module %>
 
-      describe "start/1" do
-        test "starts the UAC application" do
-          assert {:ok, _pid} = <%= @module %>.start()
-        end
-        
-        test "returns already started when called twice" do
-          {:ok, _pid} = <%= @module %>.start()
-          assert {:ok, _pid} = <%= @module %>.start()
+  defp main_module_template do
+    """
+    defmodule <%= @module %> do
+      @moduledoc \"\"\"
+      <%= @module %> - A SIP User Agent Client (UAC) application.
+
+      This UAC makes outbound calls and streams audio to callees.
+
+      ## Usage
+
+          # Make a call
+          <%= @module %>.dial("sip:service@127.0.0.1:5060")
+
+          # List active calls
+          <%= @module %>.calls()
+
+          # Hang up a call
+          <%= @module %>.hangup("call_id")
+      \"\"\"
+
+      @doc \"\"\"
+      Make an outbound call to the given SIP URI.
+      \"\"\"
+      defdelegate dial(uri), to: <%= @module %>.Client
+
+      @doc \"\"\"
+      Hang up an active call by ID.
+      \"\"\"
+      defdelegate hangup(call_id), to: <%= @module %>.Client
+
+      @doc \"\"\"
+      List all active calls.
+      \"\"\"
+      defdelegate calls(), to: <%= @module %>.Client
+    end
+    """
+  end
+
+  defp application_template do
+    """
+    defmodule <%= @module %>.Application do
+      @moduledoc false
+
+      use Application
+      require Logger
+
+      @impl true
+      def start(_type, _args) do
+        port = Application.get_env(:<%= @app %>, :port, <%= @port %>)
+        audio_file = Application.get_env(:<%= @app %>, :audio_file, default_audio())
+
+        Logger.info("Starting <%= @module %> on port \#{port}")
+
+        children = [
+          {<%= @module %>.Client, port: port, audio_file: audio_file}
+        ]
+
+        opts = [strategy: :one_for_one, name: <%= @module %>.Supervisor]
+        Supervisor.start_link(children, opts)
+      end
+
+      defp default_audio do
+        Path.join(:code.priv_dir(:parrot_media), "audio/parrot-welcome.wav")
+      end
+    end
+    """
+  end
+
+  defp client_template do
+    """
+    defmodule <%= @module %>.Client do
+      @moduledoc \"\"\"
+      UAC client that makes outbound SIP calls.
+      \"\"\"
+
+      use GenServer
+      require Logger
+
+      alias ParrotSip.{UA, Stack, SDP}
+
+      # ==========================================================================
+      # Configuration - modify these for your environment
+      # ==========================================================================
+
+      # Listen address - used for SDP generation and transport binding
+      # Use {127, 0, 0, 1} for local dev, your actual IP for production
+      @listen_addr {127, 0, 0, 1}
+
+      # Transport protocol: :udp | :tcp | :tls
+      @transport :udp
+
+      # ==========================================================================
+
+      defstruct [:ua, :stack, :port, :audio_file, :calls]
+
+      def start_link(opts) do
+        GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+      end
+
+      def dial(uri) do
+        GenServer.call(__MODULE__, {:dial, uri})
+      end
+
+      def hangup(call_id) do
+        GenServer.call(__MODULE__, {:hangup, call_id})
+      end
+
+      def calls do
+        GenServer.call(__MODULE__, :get_calls)
+      end
+
+      @impl true
+      def init(opts) do
+        port = Keyword.get(opts, :port, <%= @port %>)
+        audio_file = Keyword.get(opts, :audio_file)
+
+        Logger.info("<%= @module %>.Client starting on port \#{port}")
+
+        # Start UA with handler
+        {:ok, ua} = UA.start_link(<%= @module %>.Handler, {self(), audio_file}, port: port)
+        Logger.info("UA started: \#{inspect(ua)}")
+
+        # Start SIP stack (handles transport + routing automatically)
+        handler = UA.get_handler(ua)
+        {:ok, stack} = Stack.start_link(
+          handler: handler,
+          transport: @transport,
+          ip: @listen_addr,
+          port: port
+        )
+
+        actual_port = Stack.get_port(stack)
+        Logger.info("SIP stack started on port \#{actual_port}")
+
+        state = %__MODULE__{
+          ua: ua,
+          stack: stack,
+          port: actual_port,
+          audio_file: audio_file,
+          calls: %{}
+        }
+
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_call({:dial, uri}, _from, state) do
+        Logger.info("Dialing: \#{uri}")
+
+        # Generate random RTP port for media
+        local_port = Enum.random(20000..30000)
+
+        # Build SDP offer using helper
+        sdp = SDP.audio_offer(
+          host: @listen_addr,
+          port: local_port,
+          codecs: [:pcma, :pcmu],
+          session_name: "<%= @module %>"
+        )
+
+        case UA.dial(state.ua, uri, sdp: sdp) do
+          {:ok, entity} ->
+            call_info = %{
+              entity: entity,
+              local_port: local_port,
+              started_at: DateTime.utc_now()
+            }
+
+            calls = Map.put(state.calls, entity.id, call_info)
+            {:reply, {:ok, entity.id}, %{state | calls: calls}}
+
+          error ->
+            {:reply, error, state}
         end
       end
 
-      describe "status/0" do
-        setup do
-          {:ok, _pid} = <%= @module %>.start()
-          :ok
+      def handle_call({:hangup, call_id}, _from, state) do
+        case Map.get(state.calls, call_id) do
+          nil ->
+            {:reply, {:error, :not_found}, state}
+
+          call_info ->
+            UA.hangup(state.ua, call_info.entity)
+            calls = Map.delete(state.calls, call_id)
+            {:reply, :ok, %{state | calls: calls}}
         end
-        
-        test "returns idle status when no call active" do
-          status = <%= @module %>.status()
-          assert status.active_call == false
-          assert status.call_id == nil
+      end
+
+      def handle_call(:get_calls, _from, state) do
+        {:reply, state.calls, state}
+      end
+
+      @impl true
+      def handle_cast({:call_answered, entity, remote_sdp}, state) do
+        Logger.info("Call answered: \#{entity.id}")
+
+        case Map.get(state.calls, entity.id) do
+          nil ->
+            {:noreply, state}
+
+          call_info ->
+            case start_media_session(call_info, remote_sdp, state) do
+              {:ok, media_session} ->
+                call_info = Map.put(call_info, :media_session, media_session)
+                calls = Map.put(state.calls, entity.id, call_info)
+                {:noreply, %{state | calls: calls}}
+
+              {:error, reason} ->
+                Logger.error("Failed to start media: \#{inspect(reason)}")
+                {:noreply, state}
+            end
+        end
+      end
+
+      @impl true
+      def handle_cast({:call_ended, entity_id}, state) do
+        case Map.get(state.calls, entity_id) do
+          nil ->
+            {:noreply, state}
+
+          call_info ->
+            if call_info[:media_session] do
+              ParrotMedia.MediaSession.terminate_session(call_info.media_session)
+            end
+
+            calls = Map.delete(state.calls, entity_id)
+            {:noreply, %{state | calls: calls}}
+        end
+      end
+
+      @impl true
+      def handle_info(msg, state) do
+        Logger.debug("<%= @module %>.Client received: \#{inspect(msg)}")
+        {:noreply, state}
+      end
+
+      @impl true
+      def terminate(_reason, state) do
+        Logger.info("<%= @module %>.Client terminating")
+        if state.stack, do: Stack.stop(state.stack)
+        if state.ua && Process.alive?(state.ua), do: GenServer.stop(state.ua)
+        :ok
+      end
+
+      defp start_media_session(call_info, remote_sdp, state) do
+        session_id = "media_\#{call_info.entity.id}"
+
+        {:ok, media_session} = ParrotMedia.MediaSession.start_link(
+          id: session_id,
+          dialog_id: call_info.entity.call_id,
+          role: :uac,
+          media_handler: <%= @module %>.MediaHandler,
+          handler_args: %{entity_id: call_info.entity.id},
+          supported_codecs: [:pcma, :pcmu],
+          audio_file: state.audio_file
+        )
+
+        case ParrotMedia.MediaSession.process_answer(media_session, remote_sdp) do
+          {:ok, _} ->
+            ParrotMedia.MediaSession.start_media(media_session)
+            {:ok, media_session}
+
+          error ->
+            ParrotMedia.MediaSession.terminate_session(media_session)
+            error
         end
       end
     end
     """
-    |> EEx.eval_string(assigns: assigns)
   end
-  
-  defp formatter_template do
+
+  defp handler_template do
     """
-    [
-      import_deps: [:parrot_platform],
-      inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
-    ]
+    defmodule <%= @module %>.Handler do
+      @moduledoc \"\"\"
+      UA Handler for outbound call events.
+      \"\"\"
+
+      use ParrotSip.UA.Handler
+      require Logger
+
+      defstruct [:client_pid, :audio_file]
+
+      @impl true
+      def init({client_pid, audio_file}) do
+        Logger.info("<%= @module %>.Handler initialized")
+        {:ok, %__MODULE__{client_pid: client_pid, audio_file: audio_file}}
+      end
+
+      @impl true
+      def handle_incoming(_ua, _invite, _entity, state) do
+        # UAC doesn't handle incoming calls
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_ringing(_ua, _response, entity, state) do
+        Logger.info("Call ringing: \#{entity.id}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_answered(_ua, response, entity, state) do
+        Logger.info("Call answered: \#{entity.id}")
+
+        remote_sdp = response.body
+        GenServer.cast(state.client_pid, {:call_answered, entity, remote_sdp})
+
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_rejected(_ua, response, entity, state) do
+        Logger.info("Call rejected: \#{entity.id}, status: \#{response.status_code}")
+        GenServer.cast(state.client_pid, {:call_ended, entity.id})
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_hangup(_ua, _message, entity, state) do
+        Logger.info("Call ended: \#{entity.id}")
+        GenServer.cast(state.client_pid, {:call_ended, entity.id})
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_cancel(_ua, entity, state) do
+        Logger.info("Call cancelled: \#{entity.id}")
+        GenServer.cast(state.client_pid, {:call_ended, entity.id})
+        {:ok, state}
+      end
+    end
     """
   end
-  
+
+  defp media_handler_template do
+    """
+    defmodule <%= @module %>.MediaHandler do
+      @moduledoc \"\"\"
+      Media handler for audio events.
+      \"\"\"
+
+      @behaviour ParrotMedia.Handler
+      require Logger
+
+      @impl true
+      def init(args), do: {:ok, args}
+
+      @impl true
+      def handle_session_start(session_id, _opts, state) do
+        Logger.info("Media session started: \#{session_id}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_session_stop(session_id, reason, state) do
+        Logger.info("Media session stopped: \#{session_id}, reason: \#{inspect(reason)}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_offer(_sdp, _direction, state), do: {:noreply, state}
+
+      @impl true
+      def handle_answer(_sdp, _direction, state), do: {:noreply, state}
+
+      @impl true
+      def handle_codec_negotiation(offered, supported, state) do
+        codec = Enum.find(offered, &(&1 in supported)) || hd(supported)
+        {:ok, codec, state}
+      end
+
+      @impl true
+      def handle_negotiation_complete(_local, _remote, codec, state) do
+        Logger.info("Codec negotiated: \#{codec}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_stream_start(session_id, direction, state) do
+        Logger.info("Stream started: \#{session_id}, direction: \#{direction}")
+        {:noreply, state}
+      end
+
+      @impl true
+      def handle_stream_stop(session_id, reason, state) do
+        Logger.info("Stream stopped: \#{session_id}, reason: \#{inspect(reason)}")
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_stream_error(session_id, error, state) do
+        Logger.error("Stream error: \#{session_id}, error: \#{inspect(error)}")
+        {:continue, state}
+      end
+
+      @impl true
+      def handle_play_complete(file, state) do
+        Logger.info("Playback complete: \#{file}")
+        {:stop, state}
+      end
+
+      @impl true
+      def handle_media_request(request, state) do
+        Logger.debug("Media request: \#{inspect(request)}")
+        {:noreply, state}
+      end
+    end
+    """
+  end
+
+  defp test_template do
+    """
+    defmodule <%= @module %>Test do
+      use ExUnit.Case
+
+      test "module exists" do
+        assert function_exported?(<%= @module %>, :dial, 1)
+        assert function_exported?(<%= @module %>, :hangup, 1)
+        assert function_exported?(<%= @module %>, :calls, 0)
+      end
+    end
+    """
+  end
+
   defp gitignore_template do
     """
-    # The directory Mix will write compiled artifacts to.
     /_build/
-
-    # If you run "mix test --cover", coverage assets end up here.
     /cover/
-
-    # The directory Mix downloads your dependencies sources to.
     /deps/
-
-    # Where third-party dependencies like ExDoc output generated docs.
     /doc/
-
-    # Ignore .fetch files in case you like to edit your project deps locally.
     /.fetch
-
-    # If the VM crashes, it generates a dump, let's ignore it too.
     erl_crash.dump
-
-    # Also ignore archive artifacts (built via "mix archive.build").
     *.ez
-
-    # Ignore package tarball (built via "mix hex.build").
     *.tar
-
-    # Temporary files, for example, from tests.
-    /tmp/
-
-    # Ignore .DS_Store files on macOS
+    /.elixir_ls/
     .DS_Store
     """
   end
-  
-  defp to_app_name(name) do
-    name
-    |> Path.basename()
-    |> String.downcase()
-    |> String.replace(~r/[^\w]/, "_")
-    |> String.trim("_")
-  end
-  
-  defp to_module_name(name) do
-    name
-    |> String.split(~r/[^a-zA-Z0-9]/)
-    |> Enum.map(&String.capitalize/1)
-    |> Enum.join()
+
+  defp formatter_template do
+    """
+    [
+      inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
+    ]
+    """
   end
 end
