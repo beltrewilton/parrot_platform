@@ -52,50 +52,33 @@ defmodule ParrotMedia.AlawPipeline do
       |> get_child(:rtp)
     ]
 
-    # Create sending pipeline components
-    send_children_spec =
+    # Create sending pipeline components and links using SwitchableFileSource
+    send_spec =
       if has_audio? do
         [
-          # Source - read WAV file
-          child(:file_source, %Membrane.File.Source{
-            location: opts.audio_file
-          }),
-          # Parse WAV file
-          child(:wav_parser, Membrane.WAV.Parser),
-          # Convert to G.711 A-law
-          child(:g711_encoder, Membrane.G711.Encoder),
-          # Chunk G.711 data into RTP-sized packets
-          child(:g711_chunker, %ParrotMedia.AudioChunker{
+          child(:audio_source, %ParrotMedia.SwitchableFileSource{
+            initial_file: opts.audio_file,
+            media_handler: opts.media_handler,
+            handler_state: opts.handler_state,
+            session_id: opts.session_id
+          })
+          |> child(:g711_encoder, Membrane.G711.Encoder)
+          |> child(:g711_chunker, %ParrotMedia.AudioChunker{
             # 20ms packets at 8kHz = 160 samples
             chunk_duration_ms: 20,
             sample_rate: 8000
-          }),
-          # Add realtimer to pace the audio
-          child(:realtimer, Membrane.Realtimer),
-          # RTP packet logger
-          child(:rtp_debug, %ParrotMedia.RTPPacketLogger{
-            dest_info: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}"
           })
-        ]
-      else
-        []
-      end
-
-    # Sending pipeline links
-    send_links_spec =
-      if has_audio? do
-        [
-          get_child(:file_source)
-          |> get_child(:wav_parser)
-          |> get_child(:g711_encoder)
-          |> get_child(:g711_chunker)
-          |> get_child(:realtimer)
+          |> child(:realtimer, Membrane.Realtimer)
           |> via_in(Pad.ref(:input, ssrc),
             options: [payloader: Membrane.RTP.G711.Payloader]
           )
-          |> get_child(:rtp)
+          |> get_child(:rtp),
+          # RTP output to UDP endpoint
+          get_child(:rtp)
           |> via_out(Pad.ref(:rtp_output, ssrc), options: [encoding: :PCMA])
-          |> get_child(:rtp_debug)
+          |> child(:rtp_debug, %ParrotMedia.RTPPacketLogger{
+            dest_info: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}"
+          })
           |> get_child(:udp_endpoint)
         ]
       else
@@ -103,16 +86,13 @@ defmodule ParrotMedia.AlawPipeline do
       end
 
     structure =
-      [udp_endpoint_spec, rtp_session_spec] ++
-        receive_spec ++ send_children_spec ++ send_links_spec
+      [udp_endpoint_spec, rtp_session_spec, receive_spec] ++ send_spec
 
     {[spec: structure],
      %{
        session_id: opts.session_id,
-       media_handler: opts.media_handler,
-       handler_state: opts.handler_state,
-       audio_file: opts.audio_file,
-       udp_sink_config: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}"
+       udp_sink_config: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}",
+       ssrc: ssrc
      }}
   end
 
@@ -127,13 +107,8 @@ defmodule ParrotMedia.AlawPipeline do
         Logger.info("AlawPipeline #{state.session_id}: Started streaming")
         Logger.info("  Streaming RTP to #{inspect(get_in(state, [:udp_sink_config]))}")
 
-      # Note: We could call a handler callback here when playback starts,
-      # but our MediaHandler behaviour doesn't define this callback yet
-
-      :file_source ->
-        Logger.info(
-          "AlawPipeline #{state.session_id}: File source started reading #{state.audio_file}"
-        )
+      :audio_source ->
+        Logger.info("AlawPipeline #{state.session_id}: Audio source started")
 
       :realtimer ->
         Logger.debug(
@@ -156,8 +131,8 @@ defmodule ParrotMedia.AlawPipeline do
 
     # Log specific elements for debugging
     case element do
-      :file_source ->
-        Logger.info("AlawPipeline #{state.session_id}: File source finished reading")
+      :audio_source ->
+        Logger.info("AlawPipeline #{state.session_id}: Audio source finished (file switching handled internally)")
         {[], state}
 
       :realtimer ->
@@ -166,35 +141,12 @@ defmodule ParrotMedia.AlawPipeline do
 
       :udp_endpoint ->
         Logger.info("AlawPipeline #{state.session_id}: Finished streaming")
-
-        # The MediaHandler behaviour uses handle_play_complete, not handle_playback_completed
-        if state.media_handler do
-          case state.media_handler.handle_play_complete(state.audio_file, state.handler_state) do
-            {{:play, next_file}, new_handler_state} ->
-              Logger.info(
-                "AlawPipeline #{state.session_id}: Handler requested next file: #{next_file}"
-              )
-
-              # TODO: Implement dynamic file switching
-              {[terminate: :normal], %{state | handler_state: new_handler_state}}
-
-            {:stop, new_handler_state} ->
-              Logger.info("AlawPipeline #{state.session_id}: Handler requested stop")
-              {[terminate: :normal], %{state | handler_state: new_handler_state}}
-
-            _ ->
-              {[terminate: :normal], state}
-          end
-        else
-          {[terminate: :normal], state}
-        end
+        {[terminate: :normal], state}
 
       element_name ->
-        # Handle end of stream for other elements
         Logger.debug(
           "AlawPipeline #{state.session_id}: End of stream for #{inspect(element_name)}"
         )
-
         {[], state}
     end
   end
@@ -227,6 +179,4 @@ defmodule ParrotMedia.AlawPipeline do
   def handle_child_notification(_notification, _child, _ctx, state) do
     {[], state}
   end
-
-  # IP utilities are now imported from PipelineHelpers
 end

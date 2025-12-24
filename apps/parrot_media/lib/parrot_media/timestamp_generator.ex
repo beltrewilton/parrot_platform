@@ -50,7 +50,7 @@ defmodule ParrotMedia.TimestampGenerator do
 
   # Private functions with pattern matching
 
-  defp add_timestamp_and_update_state(buffer, %{stream_format: nil} = state) do
+  defp add_timestamp_and_update_state(%Buffer{} = buffer, %{stream_format: nil} = state) do
     # No stream format yet - can't calculate timestamp
     {%Buffer{buffer | pts: 0, dts: 0}, state}
   end
