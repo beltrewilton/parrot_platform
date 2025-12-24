@@ -37,7 +37,6 @@ defmodule ParrotSip.TransportHandlerTest do
       GenServer.stop(pid)
     end
 
-
     test "registers in ParrotSip.Registry with name" do
       name = :registry_test_handler
       {:ok, pid} = TransportHandler.start_link(name: name)
@@ -62,7 +61,14 @@ defmodule ParrotSip.TransportHandlerTest do
           mock_transport_loop([])
         end)
 
-      assert :ok = TransportHandler.register_transport(handler, mock_transport, :udp, {192, 168, 1, 1}, 5060)
+      assert :ok =
+               TransportHandler.register_transport(
+                 handler,
+                 mock_transport,
+                 :udp,
+                 {192, 168, 1, 1},
+                 5060
+               )
 
       # Verify by sending a message through
       test_message = build_test_request()
@@ -78,8 +84,23 @@ defmodule ParrotSip.TransportHandlerTest do
       transport1 = spawn_link(fn -> mock_transport_loop([]) end)
       transport2 = spawn_link(fn -> mock_transport_loop([]) end)
 
-      assert :ok = TransportHandler.register_transport(handler, transport1, :udp, {127, 0, 0, 1}, 5060)
-      assert :ok = TransportHandler.register_transport(handler, transport2, :tcp, {127, 0, 0, 1}, 5061)
+      assert :ok =
+               TransportHandler.register_transport(
+                 handler,
+                 transport1,
+                 :udp,
+                 {127, 0, 0, 1},
+                 5060
+               )
+
+      assert :ok =
+               TransportHandler.register_transport(
+                 handler,
+                 transport2,
+                 :tcp,
+                 {127, 0, 0, 1},
+                 5061
+               )
 
       Process.exit(transport1, :normal)
       Process.exit(transport2, :normal)
@@ -305,13 +326,14 @@ defmodule ParrotSip.TransportHandlerTest do
       local_ip = {10, 0, 0, 1}
       local_port = 5060
 
-      packet = build_incoming_packet(
-        raw_sip,
-        {remote_ip, remote_port},
-        local_ip: local_ip,
-        local_port: local_port,
-        transport: :tcp
-      )
+      packet =
+        build_incoming_packet(
+          raw_sip,
+          {remote_ip, remote_port},
+          local_ip: local_ip,
+          local_port: local_port,
+          transport: :tcp
+        )
 
       send(handler, {:incoming_packet, packet})
 
@@ -370,6 +392,82 @@ defmodule ParrotSip.TransportHandlerTest do
 
       send(handler, {:incoming_packet, packet})
 
+      Process.sleep(50)
+      assert Process.alive?(handler)
+    end
+  end
+
+  describe "transport lookup behavior" do
+    setup %{handler: handler} do
+      test_pid = self()
+
+      # Create mock transport process
+      udp_transport =
+        spawn_link(fn ->
+          Process.put(:test_pid, test_pid)
+          mock_transport_loop([])
+        end)
+
+      # Register transport with specific IP
+      :ok =
+        TransportHandler.register_transport(handler, udp_transport, :udp, {127, 0, 0, 1}, 5060)
+
+      %{handler: handler, udp_transport: udp_transport}
+    end
+
+    test "exact match returns correct transport", %{handler: handler, udp_transport: _udp} do
+      # Request with exact match to registered transport
+      request =
+        build_test_request()
+        |> Map.put(:source, %Source{
+          transport: :udp,
+          local: {{127, 0, 0, 1}, 5060},
+          remote: {{192, 168, 1, 100}, 5060}
+        })
+
+      # Send request (should find exact match)
+      TransportHandler.send_request(handler, request, {"192.168.1.100", 5060})
+
+      # Should receive the packet
+      assert_receive {:send_packet, _data, _dest}, 100
+    end
+
+    test "mismatched IP logs helpful error", %{handler: handler} do
+      # Request with IP that doesn't match registered transport
+      request =
+        build_test_request()
+        |> Map.put(:source, %Source{
+          transport: :udp,
+          # Doesn't match registered 127.0.0.1
+          local: {{0, 0, 0, 0}, 5060},
+          remote: {{192, 168, 1, 100}, 5060}
+        })
+
+      # Send request (should log error about mismatch)
+      TransportHandler.send_request(handler, request, {"192.168.1.100", 5060})
+
+      # Should not crash
+      Process.sleep(50)
+      assert Process.alive?(handler)
+
+      # Message is not sent (transport not found), but process doesn't crash
+    end
+
+    test "no transport match doesn't crash", %{handler: handler} do
+      # Request with transport type that doesn't exist
+      request =
+        build_test_request()
+        |> Map.put(:source, %Source{
+          # Not registered
+          transport: :websocket,
+          local: {{127, 0, 0, 1}, 5060},
+          remote: {{192, 168, 1, 100}, 5060}
+        })
+
+      # Send request (should fail gracefully, not crash)
+      TransportHandler.send_request(handler, request, {"192.168.1.100", 5060})
+
+      # Should not crash
       Process.sleep(50)
       assert Process.alive?(handler)
     end

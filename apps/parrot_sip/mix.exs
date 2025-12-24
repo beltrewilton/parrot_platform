@@ -29,8 +29,7 @@ defmodule ParrotSip.MixProject do
   defp deps do
     [
       {:nimble_parsec, "~> 1.3"},
-      # Test dependencies for SIPp integration tests
-      {:parrot_transport, in_umbrella: true, only: :test}
+      {:parrot_transport, in_umbrella: true}
     ]
   end
 

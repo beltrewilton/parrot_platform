@@ -112,7 +112,6 @@ defmodule ParrotSip.TransactionTest do
 
       refute invite_id == register_id
     end
-
   end
 
   describe "generate_transaction_id/3" do
@@ -1406,5 +1405,4 @@ defmodule ParrotSip.TransactionTest do
       other_headers: %{}
     }
   end
-
 end

@@ -61,7 +61,6 @@ defmodule ParrotSip.UA.Config do
     transport: :udp
   ]
 
-
   @doc """
   Validates the configuration.
 

@@ -5,6 +5,10 @@ defmodule SippTest.SipStackHelper do
   Follows the integration pattern from CORRECT_INTEGRATION.md to properly
   connect the transport and SIP layers.
 
+  > **Note**: For production use, consider `ParrotSip.Stack` instead, which provides
+  > a simpler API and is the recommended public interface. This module remains for
+  > testing purposes where more control over the bridge process is needed.
+
   ## Usage
 
       # Start a complete SIP stack on UDP
@@ -15,6 +19,21 @@ defmodule SippTest.SipStackHelper do
 
       # Stop when done
       :ok = SipStackHelper.stop(stack)
+
+  ## How It Works
+
+  This module implements the "complete bridge pattern" for SIP:
+
+  1. **Response Routing**: Handled by `ParrotSip.TransportHandler` (registered via `register_transport/5`)
+  2. **Request Routing**: Handled by this bridge process (implemented in `handle_info/2`)
+
+  The bridge process:
+  - Receives `{:incoming_packet, packet}` from the transport listener
+  - Parses the SIP message
+  - Routes requests to `TransactionStatem.server_process/2` with the configured handler
+  - Routes responses to `TransactionStatem.client_response/2`
+
+  See `ParrotSip.Stack` for a production-ready implementation of this pattern.
   """
 
   use GenServer

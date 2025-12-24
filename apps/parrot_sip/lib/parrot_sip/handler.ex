@@ -29,7 +29,8 @@ defmodule ParrotSip.Handler do
   @callback handle_bye(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
   @callback handle_cancel(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
   @callback handle_register(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
-  @callback handle_subscribe(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  @callback handle_subscribe(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) ::
+              :ok
   @callback handle_notify(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
   @callback handle_message(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
   @callback handle_info(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok

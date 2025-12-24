@@ -97,14 +97,12 @@ defmodule ParrotSip.UA.Handler do
       @impl true
       def handle_registration_failed(_ua, _response, _reg_id, state), do: {:ok, state}
 
-      defoverridable [
-        handle_ringing: 4,
-        handle_rejected: 4,
-        handle_hangup: 4,
-        handle_cancel: 3,
-        handle_registered: 4,
-        handle_registration_failed: 4
-      ]
+      defoverridable handle_ringing: 4,
+                     handle_rejected: 4,
+                     handle_hangup: 4,
+                     handle_cancel: 3,
+                     handle_registered: 4,
+                     handle_registration_failed: 4
     end
   end
 end

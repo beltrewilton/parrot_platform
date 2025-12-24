@@ -31,7 +31,8 @@ defmodule ParrotSip.Transaction.Client do
     destination =
       case Uri.parse(nexthop) do
         {:ok, %Uri{host: host, port: port}} -> {host, port || 5060}
-        {:error, _} -> {nexthop, 5060}  # Assume it's already host:port or just host
+        # Assume it's already host:port or just host
+        {:error, _} -> {nexthop, 5060}
       end
 
     sip_msg = %{sip_msg | source: %Source{remote: destination}}

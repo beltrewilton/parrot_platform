@@ -20,7 +20,6 @@ defmodule ParrotSip.UA.Client do
       ParrotSip.UA.Client.bye(ua, dialog_id)
   """
 
-
   @doc """
   Sends an INVITE request to establish a call.
 
