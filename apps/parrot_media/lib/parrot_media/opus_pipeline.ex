@@ -52,52 +52,35 @@ defmodule ParrotMedia.OpusPipeline do
       |> get_child(:rtp)
     ]
 
-    # Create sending pipeline components
-    send_children_spec =
+    # Create sending pipeline components and links using SwitchableFileSource
+    send_spec =
       if has_audio? do
         [
-          # Source - read WAV file
-          child(:file_source, %Membrane.File.Source{
-            location: opts.audio_file
-          }),
-          # Parse WAV file
-          child(:wav_parser, Membrane.WAV.Parser),
-          # Resample to 48kHz for Opus BEFORE adding timestamps
-          child(:resampler, %Membrane.FFmpeg.SWResample.Converter{
+          child(:audio_source, %ParrotMedia.SwitchableFileSource{
+            initial_file: opts.audio_file,
+            media_handler: opts.media_handler,
+            handler_state: opts.handler_state,
+            session_id: opts.session_id
+          })
+          |> child(:resampler, %Membrane.FFmpeg.SWResample.Converter{
             output_stream_format: %Membrane.RawAudio{
               sample_format: :s16le,
               sample_rate: 48000,
               channels: 2
             }
-          }),
-          # Add timestamps AFTER resampling so they match the 48kHz rate
-          child(:timestamp_generator, ParrotMedia.TimestampGenerator),
-          # Encode to Opus
-          child(:opus_encoder, %Membrane.Opus.Encoder{
+          })
+          |> child(:timestamp_generator, ParrotMedia.TimestampGenerator)
+          |> child(:opus_encoder, %Membrane.Opus.Encoder{
             application: :voip,
             bitrate: 32_000
-          }),
-          # Add realtimer to pace the audio
-          child(:realtimer, Membrane.Realtimer)
-        ]
-      else
-        []
-      end
-
-    # Sending pipeline links
-    send_links_spec =
-      if has_audio? do
-        [
-          get_child(:file_source)
-          |> get_child(:wav_parser)
-          |> get_child(:resampler)
-          |> get_child(:timestamp_generator)
-          |> get_child(:opus_encoder)
-          |> get_child(:realtimer)
+          })
+          |> child(:realtimer, Membrane.Realtimer)
           |> via_in(Pad.ref(:input, ssrc),
             options: [payloader: Membrane.RTP.Opus.Payloader]
           )
-          |> get_child(:rtp)
+          |> get_child(:rtp),
+          # RTP output to UDP endpoint
+          get_child(:rtp)
           |> via_out(Pad.ref(:rtp_output, ssrc), options: [payload_type: 111])
           |> get_child(:udp_endpoint)
         ]
@@ -106,16 +89,13 @@ defmodule ParrotMedia.OpusPipeline do
       end
 
     structure =
-      [udp_endpoint_spec, rtp_session_spec] ++
-        receive_spec ++ send_children_spec ++ send_links_spec
+      [udp_endpoint_spec, rtp_session_spec, receive_spec] ++ send_spec
 
     {[spec: structure],
      %{
        session_id: opts.session_id,
-       media_handler: opts.media_handler,
-       handler_state: opts.handler_state,
-       audio_file: opts.audio_file,
-       udp_sink_config: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}"
+       udp_sink_config: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}",
+       ssrc: ssrc
      }}
   end
 
@@ -130,10 +110,8 @@ defmodule ParrotMedia.OpusPipeline do
         Logger.info("OpusPipeline #{state.session_id}: Started streaming")
         Logger.info("  Streaming RTP to #{inspect(get_in(state, [:udp_sink_config]))}")
 
-      :file_source ->
-        Logger.info(
-          "OpusPipeline #{state.session_id}: File source started reading #{state.audio_file}"
-        )
+      :audio_source ->
+        Logger.info("OpusPipeline #{state.session_id}: Audio source started")
 
       :realtimer ->
         Logger.debug(
@@ -156,8 +134,8 @@ defmodule ParrotMedia.OpusPipeline do
 
     # Log specific elements for debugging
     case element do
-      :file_source ->
-        Logger.info("OpusPipeline #{state.session_id}: File source finished reading")
+      :audio_source ->
+        Logger.info("OpusPipeline #{state.session_id}: Audio source finished (file switching handled internally)")
         {[], state}
 
       :realtimer ->
@@ -166,35 +144,12 @@ defmodule ParrotMedia.OpusPipeline do
 
       :udp_endpoint ->
         Logger.info("OpusPipeline #{state.session_id}: Finished streaming")
-
-        # The MediaHandler behaviour uses handle_play_complete
-        if state.media_handler do
-          case state.media_handler.handle_play_complete(state.audio_file, state.handler_state) do
-            {{:play, next_file}, new_handler_state} ->
-              Logger.info(
-                "OpusPipeline #{state.session_id}: Handler requested next file: #{next_file}"
-              )
-
-              # TODO: Implement dynamic file switching
-              {[terminate: :normal], %{state | handler_state: new_handler_state}}
-
-            {:stop, new_handler_state} ->
-              Logger.info("OpusPipeline #{state.session_id}: Handler requested stop")
-              {[terminate: :normal], %{state | handler_state: new_handler_state}}
-
-            _ ->
-              {[terminate: :normal], state}
-          end
-        else
-          {[terminate: :normal], state}
-        end
+        {[terminate: :normal], state}
 
       element_name ->
-        # Handle end of stream for other elements
         Logger.debug(
           "OpusPipeline #{state.session_id}: End of stream for #{inspect(element_name)}"
         )
-
         {[], state}
     end
   end
@@ -227,6 +182,4 @@ defmodule ParrotMedia.OpusPipeline do
   def handle_child_notification(_notification, _child, _ctx, state) do
     {[], state}
   end
-
-  # IP utilities are now imported from PipelineHelpers
 end
