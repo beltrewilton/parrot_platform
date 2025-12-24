@@ -1070,21 +1070,14 @@ defmodule ParrotMedia.MediaSession do
     Logger.info("MediaSession #{data.id}: Pipeline init args: #{inspect(init_arg)}")
 
     # Use the dynamically selected pipeline module based on negotiated codec
-    pipeline_module = data.pipeline_module || ParrotMedia.RtpPipeline
+    pipeline_module = data.pipeline_module
 
     Logger.info(
       "MediaSession #{data.id}: Using pipeline module: #{inspect(pipeline_module)} for codec: #{inspect(data.selected_codec)}"
     )
 
-    # Start the pipeline based on the module type
-    start_result =
-      if pipeline_module == ParrotMedia.RtpPipeline do
-        # RtpPipeline is a GenServer
-        GenServer.start_link(pipeline_module, init_arg)
-      else
-        # AlawPipeline uses Membrane.Pipeline
-        Membrane.Pipeline.start_link(pipeline_module, init_arg)
-      end
+    # Start the pipeline
+    start_result = Membrane.Pipeline.start_link(pipeline_module, init_arg)
 
     case start_result do
       {:ok, pipeline_pid} ->
@@ -1372,21 +1365,13 @@ defmodule ParrotMedia.MediaSession do
   # Fallback for any other format
   defp normalize_ip(_), do: {127, 0, 0, 1}
 
-  defp ensure_pipeline_termination(pipeline_pid, pipeline_module) when is_pid(pipeline_pid) do
+  defp ensure_pipeline_termination(pipeline_pid, _pipeline_module) when is_pid(pipeline_pid) do
     ref = Process.monitor(pipeline_pid)
 
     termination_result =
-      if pipeline_module == ParrotMedia.RtpPipeline do
-        try do
-          GenServer.stop(pipeline_pid, :normal, 5_000)
-        catch
-          :exit, _ -> :ok
-        end
-      else
-        case Membrane.Pipeline.terminate(pipeline_pid, force?: true) do
-          :ok -> :ok
-          error -> error
-        end
+      case Membrane.Pipeline.terminate(pipeline_pid, force?: true) do
+        :ok -> :ok
+        error -> error
       end
 
     case termination_result do
