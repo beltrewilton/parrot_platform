@@ -48,40 +48,52 @@ defmodule ParrotMedia.OpusPipeline do
     # Receiving pipeline: UDP -> RTP -> Decoder
     receive_spec = [
       get_child(:udp_endpoint)
+      |> via_out(:output)
       |> via_in(Pad.ref(:rtp_input, make_ref()))
       |> get_child(:rtp)
     ]
 
-    # Create sending pipeline components and links using SwitchableFileSource
+    # Create sending pipeline following working PortAudioPipeline pattern:
+    # 1. Define children separately (not chained)
+    # 2. TimestampGenerator for proper buffer timestamps
+    # 3. Link with get_child() references
+    # 4. Realtimer AFTER RTP output for proper packet pacing
     send_spec =
       if has_audio? do
         [
+          # Child definitions (creates elements but doesn't link them)
           child(:audio_source, %ParrotMedia.SwitchableFileSource{
             initial_file: opts.audio_file,
             media_handler: opts.media_handler,
             handler_state: opts.handler_state,
             session_id: opts.session_id
-          })
-          |> child(:resampler, %Membrane.FFmpeg.SWResample.Converter{
+          }),
+          child(:resampler, %Membrane.FFmpeg.SWResample.Converter{
             output_stream_format: %Membrane.RawAudio{
               sample_format: :s16le,
               sample_rate: 48000,
               channels: 2
             }
-          })
-          |> child(:timestamp_generator, ParrotMedia.TimestampGenerator)
-          |> child(:opus_encoder, %Membrane.Opus.Encoder{
+          }),
+          child(:timestamp_generator, ParrotMedia.TimestampGenerator),
+          child(:opus_encoder, %Membrane.Opus.Encoder{
             application: :voip,
             bitrate: 32_000
-          })
-          |> child(:realtimer, Membrane.Realtimer)
+          }),
+          child(:realtimer, Membrane.Realtimer),
+
+          # Links (using get_child to connect defined elements)
+          get_child(:audio_source)
+          |> get_child(:resampler)
+          |> get_child(:timestamp_generator)
+          |> get_child(:opus_encoder)
           |> via_in(Pad.ref(:input, ssrc),
             options: [payloader: Membrane.RTP.Opus.Payloader]
           )
-          |> get_child(:rtp),
-          # RTP output to UDP endpoint
-          get_child(:rtp)
+          |> get_child(:rtp)
           |> via_out(Pad.ref(:rtp_output, ssrc), options: [payload_type: 111])
+          |> get_child(:realtimer)
+          |> via_in(:input)
           |> get_child(:udp_endpoint)
         ]
       else

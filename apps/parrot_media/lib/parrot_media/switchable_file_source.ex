@@ -132,9 +132,10 @@ defmodule ParrotMedia.SwitchableFileSource do
   end
 
   @impl true
-  def handle_demand(:output, size, :buffers, _ctx, state) do
-    # Calculate bytes to read based on demand
-    bytes_to_read = min(size * state.chunk_size, state.remaining_bytes || state.chunk_size)
+  def handle_demand(:output, _size, :buffers, _ctx, state) do
+    # Read ONE chunk per demand to allow proper pacing through the pipeline.
+    # Don't multiply by size - let downstream control the pace by sending more demands.
+    bytes_to_read = min(state.chunk_size, state.remaining_bytes || state.chunk_size)
 
     case IO.binread(state.fd, bytes_to_read) do
       :eof ->
@@ -162,7 +163,9 @@ defmodule ParrotMedia.SwitchableFileSource do
           # File complete, handle next action
           handle_file_complete(%{new_state | remaining_bytes: 0})
         else
-          # Continue reading - send buffer and redemand for more
+          # Send buffer - downstream will demand more when ready.
+          # Using redemand here is safe because we only read one chunk at a time,
+          # and downstream pacing (via Realtimer) controls the actual flow rate.
           {[buffer: {:output, buffer}, redemand: :output], new_state}
         end
 
@@ -485,7 +488,9 @@ defmodule ParrotMedia.SwitchableFileSource do
     # Open new file
     case open_file(new_file, %{state | current_file: new_file}) do
       {:ok, new_state} ->
-        # Send new stream format if it changed, then redemand to start reading
+        # Send new stream format if it changed, then redemand to continue reading.
+        # This is safe because handle_demand now only reads ONE chunk at a time,
+        # and the Realtimer downstream paces the actual output rate.
         actions =
           if new_state.audio_format != state.audio_format do
             [stream_format: {:output, new_state.audio_format}, redemand: :output]
