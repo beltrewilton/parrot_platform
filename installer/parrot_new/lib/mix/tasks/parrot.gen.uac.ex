@@ -12,11 +12,13 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       mix parrot.gen.uac my_uac_app
       mix parrot.gen.uac my_uac_app --port 5070
       mix parrot.gen.uac my_uac_app --module MyCompany.UacApp
+      mix parrot.gen.uac my_uac_app --dev
 
   ## Options
 
     * `--port` - The local SIP port to bind (default: 5070)
     * `--module` - The module name to use (default: derived from app name)
+    * `--dev` - Use path dependencies for local development (for contributors)
 
   The generator creates:
 
@@ -38,7 +40,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
 
   @switches [
     port: :integer,
-    module: :string
+    module: :string,
+    dev: :boolean
   ]
 
   @impl Mix.Task
@@ -57,11 +60,13 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
     app = to_app_name(app_name)
     module = opts[:module] || to_module_name(app_name)
     port = opts[:port] || 5070
+    dev = opts[:dev] || false
 
     binding = [
       app: app,
       module: module,
-      port: port
+      port: port,
+      dev: dev
     ]
 
     create_directory(path)
@@ -121,7 +126,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
   # Templates
 
   defp mix_exs_template do
-    """
+    ~S"""
     defmodule <%= @module %>.MixProject do
       use Mix.Project
 
@@ -143,11 +148,21 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       end
 
       defp deps do
+        <%= if @dev do %>
+        # Development dependencies - path to local parrot_platform
+        # Change these paths to match your local setup
+        [
+          {:parrot_sip, path: "../parrot_platform/apps/parrot_sip"},
+          {:parrot_transport, path: "../parrot_platform/apps/parrot_transport"},
+          {:parrot_media, path: "../parrot_platform/apps/parrot_media"}
+        ]
+        <% else %>
         [
           {:parrot_sip, "~> 0.0.1"},
           {:parrot_transport, "~> 0.0.1"},
           {:parrot_media, "~> 0.0.1"}
         ]
+        <% end %>
       end
     end
     """
@@ -159,6 +174,11 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
 
     config :<%= @app %>,
       port: String.to_integer(System.get_env("PORT") || "<%= @port %>"),
+      # PortAudio device IDs - use ParrotMedia.PortAudio.list_devices() to find yours
+      # Set to nil to use system defaults
+      input_device_id: nil,
+      output_device_id: nil,
+      # Alternative: audio file mode (update client.ex to use audio_file instead of devices)
       audio_file: System.get_env("AUDIO_FILE")
 
     config :logger, :console,
@@ -177,7 +197,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
 
     This application:
     - Makes outbound SIP calls
-    - Negotiates SDP and streams audio
+    - Uses your microphone and speaker for real-time audio (PortAudio)
     - Handles call progress (ringing, answered, rejected)
     - Handles BYE gracefully
 
@@ -207,11 +227,39 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
     :ok
     ```
 
+    ## Audio Device Configuration
+
+    By default, the UAC uses your system's default microphone and speaker.
+    To use specific audio devices, find your device IDs:
+
+    ```elixir
+    iex> ParrotMedia.PortAudio.list_devices()
+    [
+      %{id: 0, name: "Built-in Microphone", ...},
+      %{id: 1, name: "Built-in Output", ...},
+      ...
+    ]
+    ```
+
+    Then configure in `config/config.exs`:
+
+    ```elixir
+    config :<%= @app %>,
+      input_device_id: 0,   # Your microphone device ID
+      output_device_id: 1   # Your speaker device ID
+    ```
+
+    ## Alternative: Audio File Mode
+
+    To play an audio file instead of using mic/speaker, edit `lib/<%= @app %>/client.ex`
+    and swap the commented MediaSession configuration blocks.
+
     ## Configuration
 
-    Environment variables:
     - `PORT` - Local SIP port to bind (default: <%= @port %>)
-    - `AUDIO_FILE` - Path to WAV file to stream (default: parrot-welcome.wav)
+    - `input_device_id` - PortAudio input device ID (nil = system default)
+    - `output_device_id` - PortAudio output device ID (nil = system default)
+    - `AUDIO_FILE` - Path to WAV file (only used in audio file mode)
 
     ## Architecture
 
@@ -270,12 +318,18 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       @impl true
       def start(_type, _args) do
         port = Application.get_env(:<%= @app %>, :port, <%= @port %>)
+        input_device_id = Application.get_env(:<%= @app %>, :input_device_id)
+        output_device_id = Application.get_env(:<%= @app %>, :output_device_id)
         audio_file = Application.get_env(:<%= @app %>, :audio_file, default_audio())
 
         Logger.info("Starting <%= @module %> on port \#{port}")
 
         children = [
-          {<%= @module %>.Client, port: port, audio_file: audio_file}
+          {<%= @module %>.Client,
+            port: port,
+            input_device_id: input_device_id,
+            output_device_id: output_device_id,
+            audio_file: audio_file}
         ]
 
         opts = [strategy: :one_for_one, name: <%= @module %>.Supervisor]
@@ -299,7 +353,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       use GenServer
       require Logger
 
-      alias ParrotSip.{UA, Stack, SDP}
+      alias ParrotSip.{UA, Stack}
+      alias ParrotMedia.MediaSession
 
       # ==========================================================================
       # Configuration - modify these for your environment
@@ -314,7 +369,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
 
       # ==========================================================================
 
-      defstruct [:ua, :stack, :port, :audio_file, :calls]
+      defstruct [:ua, :stack, :port, :audio_file, :input_device_id, :output_device_id, :calls]
 
       def start_link(opts) do
         GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -336,6 +391,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       def init(opts) do
         port = Keyword.get(opts, :port, <%= @port %>)
         audio_file = Keyword.get(opts, :audio_file)
+        input_device_id = Keyword.get(opts, :input_device_id)
+        output_device_id = Keyword.get(opts, :output_device_id)
 
         Logger.info("<%= @module %>.Client starting on port \#{port}")
 
@@ -360,6 +417,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
           stack: stack,
           port: actual_port,
           audio_file: audio_file,
+          input_device_id: input_device_id,
+          output_device_id: output_device_id,
           calls: %{}
         }
 
@@ -370,43 +429,67 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       def handle_call({:dial, uri}, _from, state) do
         Logger.info("Dialing: \#{uri}")
 
-        # Generate random RTP port for media
-        local_port = Enum.random(20000..30000)
+        # Generate a unique session ID
+        session_id = "media_\#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
-        # Build SDP offer using helper
-        sdp = SDP.audio_offer(
-          host: @listen_addr,
-          port: local_port,
-          codecs: [:pcma, :pcmu],
-          session_name: "<%= @module %>"
+        # Create MediaSession first (for UAC, we generate the offer)
+        # PortAudio mode (default) - use system mic/speaker for real calls
+        {:ok, media_session} = MediaSession.start_link(
+          id: session_id,
+          dialog_id: session_id,  # Will be updated when we have real dialog_id
+          role: :uac,
+          media_handler: <%= @module %>.MediaHandler,
+          handler_args: %{},
+          supported_codecs: [:pcma, :pcmu],
+          audio_source: :device,
+          audio_sink: :device,
+          input_device_id: state.input_device_id,
+          output_device_id: state.output_device_id
         )
 
-        case UA.dial(state.ua, uri, sdp: sdp) do
-          {:ok, entity} ->
-            call_info = %{
-              entity: entity,
-              local_port: local_port,
-              started_at: DateTime.utc_now()
-            }
+        # Alternative: Audio file mode - uncomment below and comment out PortAudio block above
+        # {:ok, media_session} = MediaSession.start_link(
+        #   id: session_id,
+        #   dialog_id: session_id,
+        #   role: :uac,
+        #   media_handler: <%= @module %>.MediaHandler,
+        #   handler_args: %{},
+        #   supported_codecs: [:pcma, :pcmu],
+        #   audio_file: state.audio_file
+        # )
 
-            calls = Map.put(state.calls, entity.id, call_info)
-            {:reply, {:ok, entity.id}, %{state | calls: calls}}
+        # Generate SDP offer via MediaSession (transitions to :negotiating state)
+        {:ok, sdp} = MediaSession.generate_offer(media_session)
 
-          error ->
-            {:reply, error, state}
-        end
+        result = UA.dial(state.ua, uri, sdp: sdp)
+        handle_dial_result(result, media_session, state)
       end
 
-      def handle_call({:hangup, call_id}, _from, state) do
-        case Map.get(state.calls, call_id) do
-          nil ->
-            {:reply, {:error, :not_found}, state}
+      defp handle_dial_result({:ok, entity}, media_session, %{calls: calls} = state) do
+        call_info = %{
+          entity: entity,
+          media_session: media_session,
+          started_at: DateTime.utc_now()
+        }
+        {:reply, {:ok, entity.id}, %{state | calls: Map.put(calls, entity.id, call_info)}}
+      end
 
-          call_info ->
-            UA.hangup(state.ua, call_info.entity)
-            calls = Map.delete(state.calls, call_id)
-            {:reply, :ok, %{state | calls: calls}}
-        end
+      defp handle_dial_result(error, media_session, state) do
+        MediaSession.terminate_session(media_session)
+        {:reply, error, state}
+      end
+
+      def handle_call({:hangup, call_id}, _from, %{calls: calls} = state) do
+        do_hangup(call_id, Map.get(calls, call_id), state)
+      end
+
+      defp do_hangup(_call_id, nil, state) do
+        {:reply, {:error, :not_found}, state}
+      end
+
+      defp do_hangup(call_id, %{entity: entity}, %{ua: ua, calls: calls} = state) do
+        UA.hangup(ua, entity)
+        {:reply, :ok, %{state | calls: Map.delete(calls, call_id)}}
       end
 
       def handle_call(:get_calls, _from, state) do
@@ -414,41 +497,47 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       end
 
       @impl true
-      def handle_cast({:call_answered, entity, remote_sdp}, state) do
+      def handle_cast({:call_answered, entity, remote_sdp}, %{calls: calls} = state) do
         Logger.info("Call answered: \#{entity.id}")
+        do_call_answered(Map.get(calls, entity.id), remote_sdp, state)
+      end
 
-        case Map.get(state.calls, entity.id) do
-          nil ->
-            {:noreply, state}
+      defp do_call_answered(nil, _remote_sdp, state) do
+        {:noreply, state}
+      end
 
-          call_info ->
-            case start_media_session(call_info, remote_sdp, state) do
-              {:ok, media_session} ->
-                call_info = Map.put(call_info, :media_session, media_session)
-                calls = Map.put(state.calls, entity.id, call_info)
-                {:noreply, %{state | calls: calls}}
+      defp do_call_answered(%{media_session: media_session}, remote_sdp, state) do
+        # Process the answer (MediaSession is already in :negotiating state)
+        process_answer_result(MediaSession.process_answer(media_session, remote_sdp), media_session, state)
+      end
 
-              {:error, reason} ->
-                Logger.error("Failed to start media: \#{inspect(reason)}")
-                {:noreply, state}
-            end
-        end
+      defp process_answer_result(:ok, media_session, state) do
+        MediaSession.start_media(media_session)
+        {:noreply, state}
+      end
+
+      defp process_answer_result({:error, reason}, _media_session, state) do
+        Logger.error("Failed to process answer: \#{inspect(reason)}")
+        {:noreply, state}
       end
 
       @impl true
-      def handle_cast({:call_ended, entity_id}, state) do
-        case Map.get(state.calls, entity_id) do
-          nil ->
-            {:noreply, state}
+      def handle_cast({:call_ended, entity_id}, %{calls: calls} = state) do
+        do_call_ended(entity_id, Map.get(calls, entity_id), state)
+      end
 
-          call_info ->
-            if call_info[:media_session] do
-              ParrotMedia.MediaSession.terminate_session(call_info.media_session)
-            end
+      defp do_call_ended(_entity_id, nil, state) do
+        {:noreply, state}
+      end
 
-            calls = Map.delete(state.calls, entity_id)
-            {:noreply, %{state | calls: calls}}
-        end
+      defp do_call_ended(entity_id, %{media_session: media_session}, %{calls: calls} = state) do
+        MediaSession.terminate_session(media_session)
+        {:noreply, %{state | calls: Map.delete(calls, entity_id)}}
+      end
+
+      defp do_call_ended(entity_id, %{}, %{calls: calls} = state) do
+        # No media session to clean up
+        {:noreply, %{state | calls: Map.delete(calls, entity_id)}}
       end
 
       @impl true
@@ -460,34 +549,19 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
       @impl true
       def terminate(_reason, state) do
         Logger.info("<%= @module %>.Client terminating")
-        if state.stack, do: Stack.stop(state.stack)
-        if state.ua && Process.alive?(state.ua), do: GenServer.stop(state.ua)
+        stop_stack(state.stack)
+        stop_ua(state.ua)
         :ok
       end
 
-      defp start_media_session(call_info, remote_sdp, state) do
-        session_id = "media_\#{call_info.entity.id}"
+      defp stop_stack(nil), do: :ok
+      defp stop_stack(stack), do: Stack.stop(stack)
 
-        {:ok, media_session} = ParrotMedia.MediaSession.start_link(
-          id: session_id,
-          dialog_id: call_info.entity.call_id,
-          role: :uac,
-          media_handler: <%= @module %>.MediaHandler,
-          handler_args: %{entity_id: call_info.entity.id},
-          supported_codecs: [:pcma, :pcmu],
-          audio_file: state.audio_file
-        )
-
-        case ParrotMedia.MediaSession.process_answer(media_session, remote_sdp) do
-          {:ok, _} ->
-            ParrotMedia.MediaSession.start_media(media_session)
-            {:ok, media_session}
-
-          error ->
-            ParrotMedia.MediaSession.terminate_session(media_session)
-            error
-        end
+      defp stop_ua(nil), do: :ok
+      defp stop_ua(ua) do
+        if Process.alive?(ua), do: GenServer.stop(ua), else: :ok
       end
+
     end
     """
   end
