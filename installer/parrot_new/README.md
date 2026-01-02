@@ -42,12 +42,41 @@ iex -S mix
 
 Both generators support options:
 
+- `--port` - Specify the SIP port (default: 5060 for UAS, 5070 for UAC)
 - `--module` - Specify the module name (default: derived from app name)
-- `--no-audio` - Skip audio device support (SIP signaling only)
+- `--dev` - Use path dependencies for local development (see Development section)
 
 Example:
 ```bash
-mix parrot.gen.uac my_app --module MyCompany.VoiceApp --no-audio
+mix parrot.gen.uac my_app --module MyCompany.VoiceApp --port 5080
+```
+
+## Development
+
+For contributors working on the parrot_platform source code, use the `--dev` flag to generate apps with path dependencies instead of Hex dependencies:
+
+```bash
+# Generate app next to your parrot_platform checkout
+cd /path/to/your/projects
+mix parrot.gen.uas my_test_uas --dev
+
+# The generated mix.exs will use:
+# {:parrot_sip, path: "../parrot_platform/apps/parrot_sip"}
+# instead of:
+# {:parrot_sip, "~> 0.0.1"}
+```
+
+**Important:** The `--dev` flag assumes parrot_platform is in a sibling directory. Adjust the paths in the generated `mix.exs` if your directory structure differs.
+
+### Rebuilding the Archive
+
+After making changes to the generators:
+
+```bash
+cd installer/parrot_new
+mix archive.uninstall parrot_new
+mix archive.build
+mix archive.install
 ```
 
 ## About

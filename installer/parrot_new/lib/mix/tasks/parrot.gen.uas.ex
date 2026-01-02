@@ -12,11 +12,13 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
       mix parrot.gen.uas my_uas_app
       mix parrot.gen.uas my_uas_app --port 5080
       mix parrot.gen.uas my_uas_app --module MyCompany.UasApp
+      mix parrot.gen.uas my_uas_app --dev
 
   ## Options
 
     * `--port` - The SIP port to listen on (default: 5060)
     * `--module` - The module name to use (default: derived from app name)
+    * `--dev` - Use path dependencies for local development (for contributors)
 
   The generator creates:
 
@@ -70,6 +72,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
     create_directory(Path.join(path, "lib/#{app}"))
     create_directory(Path.join(path, "config"))
     create_directory(Path.join(path, "test"))
+    create_directory(Path.join(path, "priv/audio"))
 
     create_file(Path.join(path, "mix.exs"), EEx.eval_string(mix_exs_template(), assigns: binding))
     create_file(Path.join(path, "config/config.exs"), EEx.eval_string(config_template(), assigns: binding))
@@ -82,6 +85,9 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
     create_file(Path.join(path, "test/#{app}_test.exs"), EEx.eval_string(test_template(), assigns: binding))
     create_file(Path.join(path, ".gitignore"), gitignore_template())
     create_file(Path.join(path, ".formatter.exs"), formatter_template())
+
+    # Copy audio file from parrot_new priv to generated app
+    copy_audio_file(path)
 
     Mix.shell().info("""
 
@@ -116,6 +122,19 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
     |> String.split(~r/[^a-zA-Z0-9]/)
     |> Enum.map(&String.capitalize/1)
     |> Enum.join()
+  end
+
+  defp copy_audio_file(path) do
+    source = Path.join(:code.priv_dir(:parrot_new), "audio/parrot-welcome.wav")
+    dest = Path.join(path, "priv/audio/parrot-welcome.wav")
+
+    case File.copy(source, dest) do
+      {:ok, _} ->
+        Mix.shell().info("* copying priv/audio/parrot-welcome.wav")
+
+      {:error, reason} ->
+        Mix.shell().info("* warning: could not copy audio file: #{reason}")
+    end
   end
 
   # Templates
@@ -260,7 +279,8 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
       @impl true
       def start(_type, _args) do
         port = Application.get_env(:<%= @app %>, :port, <%= @port %>)
-        audio_file = Application.get_env(:<%= @app %>, :audio_file, default_audio())
+        # Use default audio if config is nil (env var not set)
+        audio_file = Application.get_env(:<%= @app %>, :audio_file) || default_audio()
 
         Logger.info("Starting <%= @module %> on port \#{port}")
 
@@ -273,7 +293,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
       end
 
       defp default_audio do
-        Path.join(:code.priv_dir(:parrot_media), "audio/parrot-welcome.wav")
+        Path.join(:code.priv_dir(:<%= @app %>), "audio/parrot-welcome.wav")
       end
     end
     """
@@ -371,9 +391,17 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
 
       @impl true
       def terminate(_reason, state) do
-        if state.stack, do: Stack.stop(state.stack)
-        if state.ua && Process.alive?(state.ua), do: GenServer.stop(state.ua)
+        stop_stack(state.stack)
+        stop_ua(state.ua)
         :ok
+      end
+
+      defp stop_stack(nil), do: :ok
+      defp stop_stack(stack), do: Stack.stop(stack)
+
+      defp stop_ua(nil), do: :ok
+      defp stop_ua(ua) do
+        if Process.alive?(ua), do: GenServer.stop(ua), else: :ok
       end
     end
     """
@@ -402,22 +430,23 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
       @impl true
       def handle_incoming(ua, invite, entity, state) do
         Logger.info("Incoming call from: \#{entity.remote_uri}")
-
         session_id = "media_\#{entity.id}"
+        result = start_media_session(session_id, entity, invite.body, state)
+        do_handle_incoming(result, ua, entity, state)
+      end
 
-        case start_media_session(session_id, entity, invite.body, state) do
-          {:ok, media_session, local_sdp} ->
-            UA.answer(ua, entity, sdp: local_sdp)
-            MediaSession.start_media(media_session)
-            media_sessions = Map.put(state.media_sessions, entity.id, media_session)
-            GenServer.cast(state.server_pid, {:call_started, entity, media_session})
-            {:ok, %{state | media_sessions: media_sessions}}
+      defp do_handle_incoming({:ok, media_session, local_sdp}, ua, entity, state) do
+        UA.answer(ua, entity, sdp: local_sdp)
+        MediaSession.start_media(media_session)
+        media_sessions = Map.put(state.media_sessions, entity.id, media_session)
+        GenServer.cast(state.server_pid, {:call_started, entity, media_session})
+        {:ok, %{state | media_sessions: media_sessions}}
+      end
 
-          {:error, reason} ->
-            Logger.error("Failed to create media session: \#{inspect(reason)}")
-            UA.reject(ua, entity, 503, "Service Unavailable")
-            {:ok, state}
-        end
+      defp do_handle_incoming({:error, reason}, ua, entity, state) do
+        Logger.error("Failed to create media session: \#{inspect(reason)}")
+        UA.reject(ua, entity, 503, "Service Unavailable")
+        {:ok, state}
       end
 
       @impl true
@@ -453,20 +482,25 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
           audio_file: state.audio_file
         )
 
-        case MediaSession.process_offer(media_session, remote_sdp) do
-          {:ok, local_sdp} -> {:ok, media_session, local_sdp}
-          {:error, reason} ->
-            MediaSession.terminate_session(media_session)
-            {:error, reason}
-        end
+        result = MediaSession.process_offer(media_session, remote_sdp)
+        handle_process_offer_result(result, media_session)
       end
 
-      defp cleanup_media(entity_id, state) do
-        case Map.get(state.media_sessions, entity_id) do
-          nil -> :ok
-          session -> MediaSession.terminate_session(session)
-        end
+      defp handle_process_offer_result({:ok, local_sdp}, media_session) do
+        {:ok, media_session, local_sdp}
       end
+
+      defp handle_process_offer_result({:error, reason}, media_session) do
+        MediaSession.terminate_session(media_session)
+        {:error, reason}
+      end
+
+      defp cleanup_media(entity_id, %{media_sessions: sessions}) do
+        do_cleanup_media(Map.get(sessions, entity_id))
+      end
+
+      defp do_cleanup_media(nil), do: :ok
+      defp do_cleanup_media(session), do: MediaSession.terminate_session(session)
     end
     """
   end
