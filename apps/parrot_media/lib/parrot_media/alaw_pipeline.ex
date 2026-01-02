@@ -48,37 +48,52 @@ defmodule ParrotMedia.AlawPipeline do
     # Receiving pipeline: UDP -> RTP -> Decoder
     receive_spec = [
       get_child(:udp_endpoint)
+      |> via_out(:output)
       |> via_in(Pad.ref(:rtp_input, make_ref()))
       |> get_child(:rtp)
     ]
 
-    # Create sending pipeline components and links using SwitchableFileSource
+    # Create sending pipeline following working PortAudioPipeline pattern:
+    # 1. Define children separately (not chained)
+    # 2. Add TimestampGenerator for proper buffer timestamps
+    # 3. Use TimestampPreservingG711Encoder (preserves timestamps through encoding)
+    # 4. Link with get_child() references
+    # 5. Realtimer AFTER RTP output for proper packet pacing
     send_spec =
       if has_audio? do
         [
+          # Child definitions (creates elements but doesn't link them)
           child(:audio_source, %ParrotMedia.SwitchableFileSource{
             initial_file: opts.audio_file,
             media_handler: opts.media_handler,
             handler_state: opts.handler_state,
             session_id: opts.session_id
-          })
-          |> child(:g711_encoder, Membrane.G711.Encoder)
-          |> child(:g711_chunker, %ParrotMedia.AudioChunker{
+          }),
+          child(:timestamp_generator, ParrotMedia.TimestampGenerator),
+          child(:g711_encoder, ParrotMedia.TimestampPreservingG711Encoder),
+          child(:g711_chunker, %ParrotMedia.AudioChunker{
             # 20ms packets at 8kHz = 160 samples
             chunk_duration_ms: 20,
             sample_rate: 8000
-          })
-          |> child(:realtimer, Membrane.Realtimer)
+          }),
+          child(:rtp_debug, %ParrotMedia.RTPPacketLogger{
+            dest_info: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}"
+          }),
+          child(:realtimer, Membrane.Realtimer),
+
+          # Links (using get_child to connect defined elements)
+          get_child(:audio_source)
+          |> get_child(:timestamp_generator)
+          |> get_child(:g711_encoder)
+          |> get_child(:g711_chunker)
           |> via_in(Pad.ref(:input, ssrc),
             options: [payloader: Membrane.RTP.G711.Payloader]
           )
-          |> get_child(:rtp),
-          # RTP output to UDP endpoint
-          get_child(:rtp)
+          |> get_child(:rtp)
           |> via_out(Pad.ref(:rtp_output, ssrc), options: [encoding: :PCMA])
-          |> child(:rtp_debug, %ParrotMedia.RTPPacketLogger{
-            dest_info: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}"
-          })
+          |> get_child(:rtp_debug)
+          |> get_child(:realtimer)
+          |> via_in(:input)
           |> get_child(:udp_endpoint)
         ]
       else
