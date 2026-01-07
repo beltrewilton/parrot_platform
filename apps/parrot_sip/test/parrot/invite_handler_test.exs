@@ -41,7 +41,8 @@ defmodule Parrot.InviteHandlerTest do
         {:handle_hangup, 1}
       ]
 
-      assert length(optional) == length(expected_optional)
+      assert length(optional) == length(expected_optional),
+             "Expected #{length(expected_optional)} optional callbacks, got #{length(optional)}: #{inspect(optional)}"
 
       for callback <- expected_optional do
         assert callback in optional,
