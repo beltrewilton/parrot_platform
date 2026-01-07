@@ -21,8 +21,12 @@ defmodule Parrot.Call do
 
   ## Fields
 
+  * `:id` - Unique identifier for this call session
+  * `:handler` - The module implementing `Parrot.InviteHandler` for this call
   * `:from` - The SIP From URI (caller)
   * `:to` - The SIP To URI (callee)
+  * `:call_id` - SIP Call-ID header value
+  * `:state` - Current call state (`:incoming`, `:ringing`, `:answered`, `:terminated`)
   * `:method` - The SIP method (typically "INVITE")
   * `:assigns` - Per-call state storage (map)
   * `:__operations__` - Internal list of operations to execute (do not modify directly)
@@ -53,16 +57,26 @@ defmodule Parrot.Call do
   * `fork/2`, `fork/3` - Fork call to multiple endpoints
   """
 
+  @type call_state :: :incoming | :ringing | :answered | :terminated
+
   @type t :: %__MODULE__{
+          id: String.t() | nil,
+          handler: module() | nil,
           from: String.t() | nil,
           to: String.t() | nil,
+          call_id: String.t() | nil,
+          state: call_state(),
           method: String.t() | nil,
           assigns: map(),
           __operations__: list()
         }
 
-  defstruct from: nil,
+  defstruct id: nil,
+            handler: nil,
+            from: nil,
             to: nil,
+            call_id: nil,
+            state: :incoming,
             method: nil,
             assigns: %{},
             __operations__: []
@@ -72,8 +86,11 @@ defmodule Parrot.Call do
 
   ## Options
 
+  * `:id` - Unique call ID (auto-generated if not provided)
+  * `:handler` - Handler module implementing `Parrot.InviteHandler`
   * `:from` - The SIP From URI
   * `:to` - The SIP To URI
+  * `:call_id` - SIP Call-ID header
   * `:method` - The SIP method
 
   ## Examples
@@ -84,12 +101,30 @@ defmodule Parrot.Call do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
+      id: Keyword.get(opts, :id) || generate_id(),
+      handler: Keyword.get(opts, :handler),
       from: Keyword.get(opts, :from),
       to: Keyword.get(opts, :to),
+      call_id: Keyword.get(opts, :call_id),
+      state: Keyword.get(opts, :state, :incoming),
       method: Keyword.get(opts, :method),
-      assigns: %{},
+      assigns: Keyword.get(opts, :assigns, %{}),
       __operations__: []
     }
+  end
+
+  @doc """
+  Generates a unique call ID.
+
+  ## Examples
+
+      iex> id = Parrot.Call.generate_id()
+      iex> is_binary(id) and String.length(id) > 0
+      true
+  """
+  @spec generate_id() :: String.t()
+  def generate_id do
+    Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
   # ---------------------------------------------------------------------------

@@ -576,4 +576,5 @@ defmodule Parrot.TestTest do
     end
   end
 end
+
 # Test helper handlers are defined in test/support/test_handlers.ex
