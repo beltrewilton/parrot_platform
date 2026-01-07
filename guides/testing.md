@@ -4,10 +4,163 @@ This guide covers testing strategies for applications using the Parrot Framework
 
 ## Prerequisites
 
-- Elixir 1.15 or later
+- Elixir 1.16 or later
 - SIPp (Session Initiation Protocol performance testing tool)
 - ffmpeg (for audio file conversions)
 - A SIP client for manual testing (e.g., Linphone, MicroSIP, Zoiper)
+
+---
+
+## Testing Parrot DSL Handlers
+
+The `Parrot.Test` module provides a comprehensive testing framework for Parrot-based VoIP applications. It supports three levels of testing:
+
+1. **Unit Tests** - Direct handler function testing
+2. **Flow Tests** - Simulated call sequences
+3. **SIPp Integration Tests** - Real SIP protocol testing
+
+### Quick Start
+
+```elixir
+defmodule MyApp.IVRHandlerTest do
+  use ExUnit.Case
+  use Parrot.Test
+
+  test "plays welcome message on answer" do
+    call = call_fixture(assigns: %{menu: :main})
+    result = MyApp.IVRHandler.handle_dtmf("1", call)
+
+    assert_played(result, "sales-menu.wav")
+    assert_assign(result, :menu, :sales)
+  end
+end
+```
+
+### Creating Test Fixtures
+
+Use `call_fixture/1` to create test call structures:
+
+```elixir
+# Basic fixture with defaults
+call = call_fixture()
+
+# Custom configuration
+call = call_fixture(
+  from: "sip:alice@example.com",
+  to: "sip:sales@company.com",
+  assigns: %{menu: :main, retries: 0},
+  handler: MyApp.IVRHandler
+)
+```
+
+### Assertion Helpers
+
+Import assertions with `use Parrot.Test`:
+
+```elixir
+# Assert file was played (exact match)
+assert_played(call, "welcome.wav")
+
+# Assert file was played (regex match)
+assert_played(call, ~r/menu/)
+
+# Assert call was bridged
+assert_bridged(call, "sip:sales@internal")
+assert_bridged(call, ~r/sales/)
+
+# Assert call state
+assert_answered(call)
+assert_rejected(call, 486)
+assert_hung_up(call)
+
+# Assert assigns
+assert_assign(call, :menu, :main)
+
+# Assert other actions
+assert_collecting_dtmf(call)
+assert_prompted(call, "enter-pin.wav")
+assert_recording(call, "recording.wav")
+```
+
+### Simulation Helpers
+
+Simulate events during a call flow:
+
+```elixir
+# Simulate DTMF input
+call = simulate_dtmf(call, "1")
+call = simulate_dtmf(call, :timeout)
+
+# Simulate playback completion
+call = simulate_play_complete(call, "welcome.wav")
+
+# Simulate bridge results
+call = simulate_bridge_result(call, :answered)
+call = simulate_bridge_result(call, {:failed, :busy})
+call = simulate_bridge_result(call, {:failed, :no_answer})
+
+# Simulate other events
+call = simulate_prompt_complete(call, "enter-pin.wav", "1234")
+call = simulate_record_complete(call, "recording.wav", 30_000)
+call = simulate_hangup(call)
+```
+
+### Complete Flow Test Example
+
+```elixir
+defmodule MyApp.IVRFlowTest do
+  use ExUnit.Case
+  use Parrot.Test
+
+  test "complete IVR flow to sales" do
+    # Start with a call fixture and handler
+    call = call_fixture(handler: MyApp.IVRHandler)
+
+    # Invoke the initial INVITE handler
+    call = invoke_handle_invite(call)
+    assert_played(call, "welcome.wav")
+
+    # Simulate welcome message completing
+    call = simulate_play_complete(call, "welcome.wav")
+    assert_played(call, "main-menu.wav")
+
+    # Simulate user pressing 1 for sales
+    call = simulate_dtmf(call, "1")
+    assert_bridged(call, ~r/sales/)
+
+    # Simulate successful bridge
+    call = simulate_bridge_result(call, :answered)
+    assert_assign(call, :bridge_answered, true)
+  end
+
+  test "handles DTMF timeout" do
+    call = call_fixture(handler: MyApp.IVRHandler)
+    call = invoke_handle_invite(call)
+    call = simulate_play_complete(call, "welcome.wav")
+
+    # Simulate timeout (no DTMF received)
+    call = simulate_dtmf(call, :timeout)
+    assert_played(call, "goodbye.wav")
+  end
+end
+```
+
+### Using simulate_call/1
+
+For simpler flow tests, use `simulate_call/1` to create a call and invoke `handle_invite` in one step:
+
+```elixir
+test "simple flow test" do
+  {:ok, call} = Parrot.Test.simulate_call(
+    handler: MyApp.IVRHandler,
+    to: "sip:100@local"
+  )
+
+  assert_played(call, "welcome.wav")
+end
+```
+
+---
 
 ## Running Tests
 

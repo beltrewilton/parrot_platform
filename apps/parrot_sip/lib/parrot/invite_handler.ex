@@ -16,9 +16,13 @@ defmodule Parrot.InviteHandler do
 
   - `handle_play_complete/2` - Called when audio playback finishes
   - `handle_dtmf/2` - Called when DTMF digits are collected or timeout occurs
+  - `handle_prompt_complete/3` - Called when play+collect operation completes
   - `handle_bridge_complete/2` - Called when a bridged call ends
   - `handle_fork_complete/2` - Called when a forked dial attempt completes
   - `handle_record_complete/3` - Called when recording finishes
+  - `handle_conference_join/2` - Called when participant joins conference
+  - `handle_conference_leave/3` - Called when participant leaves conference
+  - `handle_fork_media_connected/2` - Called when media fork is established
   - `handle_hangup/1` - Called when the caller hangs up
 
   ## Example
@@ -154,6 +158,28 @@ defmodule Parrot.InviteHandler do
   """
   @callback handle_dtmf(digits :: String.t() | :timeout, call :: map()) ::
               callback_return()
+
+  @doc """
+  Called when a prompt (play + collect DTMF) operation completes.
+
+  Invoked after a combined play-and-collect operation finishes. This is used
+  when you want to play an audio prompt and collect DTMF digits in one operation.
+
+  ## Parameters
+
+  - `filename` - The audio file that was played as the prompt
+  - `digits` - The collected DTMF digits as a string, or `:timeout`
+  - `call` - Current call state
+
+  ## Returns
+
+  Updated call map or `{:noreply, call}` to take no automatic action.
+  """
+  @callback handle_prompt_complete(
+              filename :: String.t(),
+              digits :: String.t() | :timeout,
+              call :: map()
+            ) :: callback_return()
 
   @doc """
   Called when a bridged call completes.
