@@ -397,11 +397,12 @@ defmodule Parrot.Call do
   """
   @spec get_operations(t()) :: list()
   def get_operations(%__MODULE__{__operations__: operations}) do
-    operations
+    Enum.reverse(operations)
   end
 
   # Private helper to add an operation to the list
+  # Operations are stored in reverse order for O(1) prepend, reversed on read
   defp add_operation(%__MODULE__{__operations__: operations} = call, operation) do
-    %{call | __operations__: operations ++ [operation]}
+    %{call | __operations__: [operation | operations]}
   end
 end
