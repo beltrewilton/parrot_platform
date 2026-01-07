@@ -160,7 +160,7 @@ defmodule Parrot.Call.ServerTest do
       assert call.assigns[:invite_handled] == true
     end
 
-    test "extracts pending actions from handle_invite result" do
+    test "processes pipeline operations from handle_invite result" do
       invite_data = %{
         from: "sip:alice@example.com",
         to: "sip:bob@example.com"
@@ -170,8 +170,10 @@ defmodule Parrot.Call.ServerTest do
       call = Server.get_call(pid)
 
       # TestHandler.handle_invite calls answer() and play("welcome.wav")
-      assert call.__answered__ == true
-      assert call.__play__ == ["welcome.wav"]
+      # Operations are processed and cleared, state transitions to :answered
+      assert call.state == :answered
+      assert call.__operations__ == []
+      assert call.assigns[:invite_handled] == true
     end
 
     test "accepts optional name for registration" do
@@ -297,22 +299,24 @@ defmodule Parrot.Call.ServerTest do
   end
 
   describe "action execution" do
-    test "detects answer action from call map" do
+    test "processes answer operation and transitions to :answered state" do
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
       {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
 
       call = Server.get_call(pid)
-      # TestHandler.handle_invite calls answer()
-      assert call.__answered__ == true
+      # TestHandler.handle_invite calls answer() which transitions to :answered
+      assert call.state == :answered
     end
 
-    test "detects play action from call map" do
+    test "processes operations and clears them after processing" do
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
       {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
 
       call = Server.get_call(pid)
-      # TestHandler.handle_invite calls play("welcome.wav")
-      assert call.__play__ == ["welcome.wav"]
+      # Operations are processed and cleared
+      assert call.__operations__ == []
+      # Handler assigns are preserved
+      assert call.assigns[:invite_handled] == true
     end
 
     test "updates state to :answered when answer action is present" do
