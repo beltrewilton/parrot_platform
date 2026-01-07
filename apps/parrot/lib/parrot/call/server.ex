@@ -150,12 +150,9 @@ defmodule Parrot.Call.Server do
       assigns: Map.get(invite, :assigns, %{})
     )
 
-    # Build the callback map for handle_invite
-    # InviteHandler expects a plain map, not the Call struct
-    callback_map = call_to_callback_map(call, invite)
-
-    # Invoke handle_invite/1
-    result = handler.handle_invite(callback_map)
+    # Invoke handle_invite/1 with the Call struct
+    # Handlers use pipeline operations (answer, play, etc.) on the struct
+    result = handler.handle_invite(call)
 
     # Process the result
     call = process_callback_result(call, result)
@@ -225,12 +222,9 @@ defmodule Parrot.Call.Server do
   defp invoke_callback(callback, args, state) do
     %{call: call, handler: handler} = state
 
-    # Build callback map from current call state
-    # InviteHandler callbacks expect plain maps
-    callback_map = call_to_callback_map(call, %{})
-
-    # Invoke the callback with args + callback_map
-    result = apply(handler, callback, args ++ [callback_map])
+    # Invoke the callback with args + Call struct
+    # Handlers use pipeline operations on the struct
+    result = apply(handler, callback, args ++ [call])
 
     # Process the result
     call = process_callback_result(call, result)
@@ -242,22 +236,38 @@ defmodule Parrot.Call.Server do
   # Helper Functions
   # ===========================================================================
 
-  # Convert Call struct to a map for InviteHandler callbacks
-  # The handler expects a plain map it can modify with pipeline operations
-  defp call_to_callback_map(%Call{} = call, extra_data) do
-    call
-    |> Map.from_struct()
-    |> Map.merge(extra_data, fn _k, call_v, _extra_v -> call_v end)
+  # Process the result from a callback
+  # Handles Call structs, {:noreply, call}, and legacy map returns
+  defp process_callback_result(_call, {:noreply, %Call{} = result_call}) do
+    process_operations(result_call)
   end
 
-  # Process the result from a callback
-  # Handles both `call_map` and `{:noreply, call_map}` returns
+  defp process_callback_result(_call, %Call{} = result_call) do
+    process_operations(result_call)
+  end
+
   defp process_callback_result(%Call{} = call, {:noreply, result_map}) when is_map(result_map) do
     update_call_from_result(call, result_map)
   end
 
   defp process_callback_result(%Call{} = call, result_map) when is_map(result_map) do
     update_call_from_result(call, result_map)
+  end
+
+  # Process pipeline operations from the Call struct
+  defp process_operations(%Call{} = call) do
+    operations = call.__operations__
+
+    # Apply operations to determine state transitions
+    call = Enum.reduce(operations, call, fn
+      {:answer, _opts}, acc -> %{acc | state: :answered}
+      {:reject, _code, _opts}, acc -> %{acc | state: :terminated}
+      {:hangup, _opts}, acc -> %{acc | state: :terminated}
+      _op, acc -> acc
+    end)
+
+    # Clear operations after processing (they've been captured)
+    %{call | __operations__: []}
   end
 
   # Update the Call struct from the callback result map
