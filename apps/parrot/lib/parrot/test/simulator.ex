@@ -63,25 +63,7 @@ defmodule Parrot.Test.Simulator do
   end
 
   def simulate_dtmf(%CallState{handler: handler} = call, digits) do
-    if function_exported?(handler, :handle_dtmf, 2) do
-      case handler.handle_dtmf(digits, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        # Handle pipeline-style returns where the call is wrapped
-        result when is_tuple(result) ->
-          # Extract call from various return formats
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_dtmf, [digits, call], call)
   end
 
   @doc """
@@ -101,24 +83,7 @@ defmodule Parrot.Test.Simulator do
 
   def simulate_play_complete(%CallState{handler: handler} = call, filename) do
     call = CallState.clear_pending_action(call)
-
-    if function_exported?(handler, :handle_play_complete, 2) do
-      case handler.handle_play_complete(filename, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_play_complete, [filename, call], call)
   end
 
   @doc """
@@ -150,24 +115,7 @@ defmodule Parrot.Test.Simulator do
 
   def simulate_bridge_result(%CallState{handler: handler} = call, result) do
     call = CallState.clear_pending_action(call)
-
-    if function_exported?(handler, :handle_bridge_complete, 2) do
-      case handler.handle_bridge_complete(result, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_bridge_complete, [result, call], call)
   end
 
   @doc """
@@ -184,31 +132,15 @@ defmodule Parrot.Test.Simulator do
       call = simulate_prompt_complete(call, "enter-pin.wav", :timeout)
 
   """
-  @spec simulate_prompt_complete(CallState.t(), String.t(), String.t() | :timeout) :: CallState.t()
+  @spec simulate_prompt_complete(CallState.t(), String.t(), String.t() | :timeout) ::
+          CallState.t()
   def simulate_prompt_complete(%CallState{handler: nil} = call, _filename, _digits) do
     call |> CallState.clear_pending_action()
   end
 
   def simulate_prompt_complete(%CallState{handler: handler} = call, filename, digits) do
     call = CallState.clear_pending_action(call)
-
-    if function_exported?(handler, :handle_prompt_complete, 3) do
-      case handler.handle_prompt_complete(filename, digits, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_prompt_complete, [filename, digits, call], call)
   end
 
   @doc """
@@ -228,24 +160,7 @@ defmodule Parrot.Test.Simulator do
 
   def simulate_record_complete(%CallState{handler: handler} = call, filename, duration) do
     call = CallState.clear_pending_action(call)
-
-    if function_exported?(handler, :handle_record_complete, 3) do
-      case handler.handle_record_complete(filename, duration, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_record_complete, [filename, duration, call], call)
   end
 
   @doc """
@@ -265,24 +180,7 @@ defmodule Parrot.Test.Simulator do
 
   def simulate_hangup(%CallState{handler: handler} = call) do
     call = %{call | status: :hangup}
-
-    if function_exported?(handler, :handle_hangup, 1) do
-      case handler.handle_hangup(call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_hangup, [call], call)
   end
 
   @doc """
@@ -301,23 +199,7 @@ defmodule Parrot.Test.Simulator do
   end
 
   def simulate_conference_join(%CallState{handler: handler} = call, room) do
-    if function_exported?(handler, :handle_conference_join, 2) do
-      case handler.handle_conference_join(room, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_conference_join, [room, call], call)
   end
 
   @doc """
@@ -337,23 +219,7 @@ defmodule Parrot.Test.Simulator do
   end
 
   def simulate_conference_leave(%CallState{handler: handler} = call, room, reason) do
-    if function_exported?(handler, :handle_conference_leave, 3) do
-      case handler.handle_conference_leave(room, reason, call) do
-        %CallState{} = updated_call ->
-          updated_call
-
-        {:noreply, %CallState{} = updated_call} ->
-          updated_call
-
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
-
-        _other ->
-          call
-      end
-    else
-      call
-    end
+    call_handler_callback(handler, :handle_conference_leave, [room, reason, call], call)
   end
 
   @doc """
@@ -373,28 +239,47 @@ defmodule Parrot.Test.Simulator do
   end
 
   def invoke_handle_invite(%CallState{handler: handler} = call) do
-    if function_exported?(handler, :handle_invite, 1) do
-      case handler.handle_invite(call) do
-        %CallState{} = updated_call ->
-          updated_call
+    call_handler_callback(handler, :handle_invite, [call], call)
+  end
 
-        result when is_tuple(result) ->
-          extract_call_from_result(result, call)
+  # ============================================================================
+  # Private Helpers
+  # ============================================================================
 
-        _other ->
-          call
-      end
-    else
-      call
+  # Safely calls a handler callback, handling UndefinedFunctionError gracefully.
+  # This is more robust than function_exported?/3 because it works even when
+  # the module is defined in test support files that may be loaded lazily.
+  defp call_handler_callback(handler, callback, args, default_call) do
+    # Ensure the module is loaded
+    Code.ensure_loaded(handler)
+
+    try do
+      result = apply(handler, callback, args)
+      normalize_callback_result(result, default_call)
+    rescue
+      UndefinedFunctionError ->
+        # Callback not defined, return default
+        default_call
+
+      FunctionClauseError ->
+        # No matching clause for the given args, return default
+        default_call
     end
   end
 
-  # Helper to extract CallState from various return formats
-  defp extract_call_from_result({:play, _filename, %CallState{} = call}, _default), do: call
-  defp extract_call_from_result({:play, _filename, _opts, %CallState{} = call}, _default), do: call
-  defp extract_call_from_result({:bridge, _target, %CallState{} = call}, _default), do: call
-  defp extract_call_from_result({:bridge, _target, _opts, %CallState{} = call}, _default), do: call
-  defp extract_call_from_result({:hangup, %CallState{} = call}, _default), do: call
-  defp extract_call_from_result({:noreply, %CallState{} = call}, _default), do: call
-  defp extract_call_from_result(_, default), do: default
+  # Normalizes various return formats from handler callbacks
+  defp normalize_callback_result(%CallState{} = call, _default), do: call
+  defp normalize_callback_result({:noreply, %CallState{} = call}, _default), do: call
+  defp normalize_callback_result({:play, _filename, %CallState{} = call}, _default), do: call
+
+  defp normalize_callback_result({:play, _filename, _opts, %CallState{} = call}, _default),
+    do: call
+
+  defp normalize_callback_result({:bridge, _target, %CallState{} = call}, _default), do: call
+
+  defp normalize_callback_result({:bridge, _target, _opts, %CallState{} = call}, _default),
+    do: call
+
+  defp normalize_callback_result({:hangup, %CallState{} = call}, _default), do: call
+  defp normalize_callback_result(_, default), do: default
 end

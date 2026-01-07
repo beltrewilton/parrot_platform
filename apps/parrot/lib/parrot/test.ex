@@ -207,6 +207,9 @@ defmodule Parrot.Test do
 
     call = call_fixture(call_opts)
 
+    # Ensure the module is loaded before checking
+    Code.ensure_loaded(handler)
+
     if function_exported?(handler, :handle_invite, 1) do
       updated_call = Parrot.Test.Simulator.invoke_handle_invite(call)
       {:ok, updated_call}
