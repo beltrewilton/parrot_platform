@@ -35,3 +35,6 @@ installer/parrot_new/_build/
 *.log
 
 .DS_Store
+
+# Git worktrees for isolated development
+.worktrees/
