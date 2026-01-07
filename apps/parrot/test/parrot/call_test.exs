@@ -378,7 +378,7 @@ defmodule Parrot.CallTest do
                {:answer, []},
                {:play, "welcome.wav", []},
                {:collect_dtmf, [max: 1, timeout: 10_000]}
-             ] = call.__operations__
+             ] = Call.get_operations(call)
     end
 
     test "complex IVR flow" do
@@ -399,7 +399,7 @@ defmodule Parrot.CallTest do
                {:answer, []},
                {:play, "welcome.wav", []},
                {:prompt, "main-menu.wav", [collect: [max: 1, timeout: 10_000]]}
-             ] = call.__operations__
+             ] = Call.get_operations(call)
     end
 
     test "reject flow" do
@@ -423,7 +423,7 @@ defmodule Parrot.CallTest do
                {:record, "call-recording.wav", [beep: false]},
                {:bridge, "sip:agent@call-center", []},
                {:stop_record, []}
-             ] = call.__operations__
+             ] = Call.get_operations(call)
     end
   end
 
