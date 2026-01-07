@@ -31,11 +31,12 @@ defmodule Parrot.CallTest do
 
   describe "new/1" do
     test "creates a call from keyword options" do
-      call = Call.new(
-        from: "sip:alice@example.com",
-        to: "sip:bob@example.com",
-        method: "INVITE"
-      )
+      call =
+        Call.new(
+          from: "sip:alice@example.com",
+          to: "sip:bob@example.com",
+          method: "INVITE"
+        )
 
       assert call.from == "sip:alice@example.com"
       assert call.to == "sip:bob@example.com"
@@ -288,18 +289,24 @@ defmodule Parrot.CallTest do
 
     test "adds bridge operation with all options" do
       headers = %{"X-Custom" => "value"}
-      call = %Call{} |> Call.bridge("sip:dest@somewhere",
-        timeout: 30_000,
-        headers: headers,
-        handler: SomeBLegHandler
-      )
+
+      call =
+        %Call{}
+        |> Call.bridge("sip:dest@somewhere",
+          timeout: 30_000,
+          headers: headers,
+          handler: SomeBLegHandler
+        )
 
       assert [operation] = call.__operations__
-      assert operation == {:bridge, "sip:dest@somewhere", [
-        timeout: 30_000,
-        headers: headers,
-        handler: SomeBLegHandler
-      ]}
+
+      assert operation ==
+               {:bridge, "sip:dest@somewhere",
+                [
+                  timeout: 30_000,
+                  headers: headers,
+                  handler: SomeBLegHandler
+                ]}
     end
   end
 
@@ -309,6 +316,7 @@ defmodule Parrot.CallTest do
         {"sip:alice@device1", handler: Handler1},
         {"sip:alice@device2", handler: Handler2}
       ]
+
       call = %Call{} |> Call.fork(destinations)
 
       assert [operation] = call.__operations__
@@ -322,6 +330,7 @@ defmodule Parrot.CallTest do
         {"sip:alice@device1", []},
         {"sip:alice@device2", []}
       ]
+
       call = %Call{} |> Call.fork(destinations, strategy: :first_answer)
 
       assert [operation] = call.__operations__
@@ -333,6 +342,7 @@ defmodule Parrot.CallTest do
         {"sip:alice@device1", []},
         {"sip:alice@device2", []}
       ]
+
       call = %Call{} |> Call.fork(destinations, timeout: 30_000)
 
       assert [operation] = call.__operations__
@@ -344,6 +354,7 @@ defmodule Parrot.CallTest do
         {"sip:alice@device1", handler: Handler1},
         {"sip:alice@device2", handler: Handler2}
       ]
+
       call = %Call{} |> Call.fork(destinations, strategy: :first_answer, timeout: 30_000)
 
       assert [operation] = call.__operations__
@@ -364,10 +375,10 @@ defmodule Parrot.CallTest do
 
       # Operations should be in order they were added
       assert [
-        {:answer, []},
-        {:play, "welcome.wav", []},
-        {:collect_dtmf, [max: 1, timeout: 10_000]}
-      ] = call.__operations__
+               {:answer, []},
+               {:play, "welcome.wav", []},
+               {:collect_dtmf, [max: 1, timeout: 10_000]}
+             ] = call.__operations__
     end
 
     test "complex IVR flow" do
@@ -385,10 +396,10 @@ defmodule Parrot.CallTest do
       assert call.assigns == %{menu: :main, retries: 0}
 
       assert [
-        {:answer, []},
-        {:play, "welcome.wav", []},
-        {:prompt, "main-menu.wav", [collect: [max: 1, timeout: 10_000]]}
-      ] = call.__operations__
+               {:answer, []},
+               {:play, "welcome.wav", []},
+               {:prompt, "main-menu.wav", [collect: [max: 1, timeout: 10_000]]}
+             ] = call.__operations__
     end
 
     test "reject flow" do
@@ -408,11 +419,11 @@ defmodule Parrot.CallTest do
         |> Call.stop_record()
 
       assert [
-        {:answer, []},
-        {:record, "call-recording.wav", [beep: false]},
-        {:bridge, "sip:agent@call-center", []},
-        {:stop_record, []}
-      ] = call.__operations__
+               {:answer, []},
+               {:record, "call-recording.wav", [beep: false]},
+               {:bridge, "sip:agent@call-center", []},
+               {:stop_record, []}
+             ] = call.__operations__
     end
   end
 
@@ -427,10 +438,10 @@ defmodule Parrot.CallTest do
       operations = Call.get_operations(call)
 
       assert operations == [
-        {:answer, []},
-        {:play, "welcome.wav", []},
-        {:hangup, []}
-      ]
+               {:answer, []},
+               {:play, "welcome.wav", []},
+               {:hangup, []}
+             ]
     end
 
     test "returns empty list for call with no operations" do
