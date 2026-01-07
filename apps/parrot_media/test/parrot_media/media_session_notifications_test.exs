@@ -27,7 +27,10 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
     @impl true
     def handle_info({:play_files, files, opts}, state) do
       Logger.info("NotificationTestHandler: play_files #{inspect(files)}")
-      action = if Keyword.get(opts, :loop, false), do: {:play_loop, files}, else: {:play_sequence, files}
+
+      action =
+        if Keyword.get(opts, :loop, false), do: {:play_loop, files}, else: {:play_sequence, files}
+
       {[action], state}
     end
 
@@ -175,7 +178,8 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
       send(pid, {:pipeline_event, :record_complete, "/tmp/recording.wav", 5000})
 
       # Should receive notification with filename and duration
-      assert_receive {:media_event, ^session_id, {:record_complete, "/tmp/recording.wav", 5000}}, 1000
+      assert_receive {:media_event, ^session_id, {:record_complete, "/tmp/recording.wav", 5000}},
+                     1000
 
       MediaSession.terminate_session(pid)
     end
@@ -203,7 +207,8 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
       send(pid, {:dtmf, "1"})
       send(pid, {:dtmf, "2"})
       send(pid, {:dtmf, "3"})
-      send(pid, {:dtmf, "#"})  # terminator
+      # terminator
+      send(pid, {:dtmf, "#"})
 
       # Should receive collected digits
       assert_receive {:media_event, ^session_id, {:dtmf_collected, "123"}}, 1000
