@@ -100,6 +100,10 @@ defmodule ParrotMedia.MediaSession do
       # IP configuration for SDP
       :local_ip,
       :advertised_ip,
+      # Process to notify of media events (play_complete, record_complete, dtmf_collected)
+      :notify_pid,
+      # DTMF collection state: %{max: int, terminators: list, timeout: int, digits: string, timer_ref: ref}
+      :dtmf_collection,
       # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
       direction: :sendrecv
     ]
@@ -131,6 +135,8 @@ defmodule ParrotMedia.MediaSession do
             output_device_id: non_neg_integer() | nil,
             local_ip: :auto | String.t() | tuple() | nil,
             advertised_ip: String.t() | tuple() | nil,
+            notify_pid: pid() | nil,
+            dtmf_collection: map() | nil,
             direction: :sendrecv | :sendonly | :recvonly | :inactive
           }
   end
@@ -151,6 +157,7 @@ defmodule ParrotMedia.MediaSession do
 
   - `:handler_args` - Arguments to pass to media handler init (defaults to %{})
   - `:owner` - Owner process PID (defaults to caller)
+  - `:notify_pid` - Process to receive media event notifications (play_complete, record_complete, dtmf_collected)
   - `:audio_file` - Path to audio file to play (used when audio_source is :file)
   - `:audio_source` - Source of audio: `:file` | `:device` | `:silence` (defaults to :file if audio_file provided)
   - `:audio_sink` - Destination for received audio: `:none` | `:device` | `:file` (defaults to :none)
@@ -160,6 +167,15 @@ defmodule ParrotMedia.MediaSession do
   - `:supported_codecs` - List of supported codecs in preference order (defaults to [:pcma])
   - `:local_ip` - Local IP address for media: `:auto` | IP string | IP tuple (defaults to :auto)
   - `:advertised_ip` - IP to advertise in SDP if different from local_ip (for NAT scenarios)
+
+  ## Notifications
+
+  When `notify_pid` is set, the following messages will be sent to that process:
+
+  - `{:media_event, session_id, {:play_complete, filename}}` - When audio file playback completes
+  - `{:media_event, session_id, {:record_complete, filename, duration_ms}}` - When recording completes
+  - `{:media_event, session_id, {:dtmf_collected, digits}}` - When DTMF collection completes
+  - `{:media_event, session_id, {:dtmf_timeout, partial_digits}}` - When DTMF collection times out
   """
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(opts) do
@@ -312,6 +328,9 @@ defmodule ParrotMedia.MediaSession do
     local_ip = Keyword.get(opts, :local_ip, :auto)
     advertised_ip = Keyword.get(opts, :advertised_ip)
 
+    # Notification configuration
+    notify_pid = Keyword.get(opts, :notify_pid)
+
     # Monitor the owner process
     owner_monitor = Process.monitor(owner_pid)
 
@@ -334,7 +353,9 @@ defmodule ParrotMedia.MediaSession do
       output_device_id: output_device_id,
       local_rtp_port: local_rtp_port,
       local_ip: local_ip,
-      advertised_ip: advertised_ip
+      advertised_ip: advertised_ip,
+      notify_pid: notify_pid,
+      dtmf_collection: nil
     }
 
     # Initialize media handler (required)
