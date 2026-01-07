@@ -677,6 +677,106 @@ defmodule ParrotMedia.MediaSession do
 
   # Helper functions for common patterns
 
+  # Handle pipeline events that trigger notifications
+  defp handle_media_message({:pipeline_event, :play_complete, filename}, data) do
+    Logger.info("MediaSession #{data.id}: Play complete for #{filename}")
+    notify_event(data, {:play_complete, filename})
+    {:keep_state_and_data, []}
+  end
+
+  defp handle_media_message({:pipeline_event, :record_complete, filename, duration_ms}, data) do
+    Logger.info("MediaSession #{data.id}: Record complete for #{filename} (#{duration_ms}ms)")
+    notify_event(data, {:record_complete, filename, duration_ms})
+    {:keep_state_and_data, []}
+  end
+
+  # Handle DTMF collection messages
+  defp handle_media_message({:collect_dtmf, opts}, data) do
+    Logger.info("MediaSession #{data.id}: Starting DTMF collection with opts: #{inspect(opts)}")
+
+    max_digits = Keyword.get(opts, :max, 10)
+    terminators = Keyword.get(opts, :terminators, ["#"])
+    timeout = Keyword.get(opts, :timeout, 10_000)
+
+    # Cancel any existing DTMF collection timer
+    data = cancel_dtmf_timer(data)
+
+    # Set up new collection state
+    timer_ref = Process.send_after(self(), :dtmf_timeout, timeout)
+
+    dtmf_collection = %{
+      max: max_digits,
+      terminators: terminators,
+      timeout: timeout,
+      digits: "",
+      timer_ref: timer_ref
+    }
+
+    # Also forward to handler in case it wants to track state
+    updated_data = %{data | dtmf_collection: dtmf_collection}
+    forward_and_update(updated_data, {:collect_dtmf, opts})
+  end
+
+  # Handle DTMF digit received
+  defp handle_media_message({:dtmf, digit}, %{dtmf_collection: nil} = data) do
+    Logger.debug("MediaSession #{data.id}: Ignoring DTMF digit #{digit} - not collecting")
+    {:keep_state_and_data, []}
+  end
+
+  defp handle_media_message({:dtmf, digit}, %{dtmf_collection: collection} = data) do
+    Logger.info("MediaSession #{data.id}: Received DTMF digit: #{digit}")
+
+    # Check if this is a terminator
+    if digit in collection.terminators do
+      # Collection complete via terminator
+      Logger.info(
+        "MediaSession #{data.id}: DTMF collection complete (terminator): #{collection.digits}"
+      )
+
+      cancel_dtmf_timer(data)
+      notify_event(data, {:dtmf_collected, collection.digits})
+      {:keep_state, %{data | dtmf_collection: nil}, []}
+    else
+      # Add digit to collection
+      new_digits = collection.digits <> digit
+
+      if String.length(new_digits) >= collection.max do
+        # Max digits reached
+        Logger.info("MediaSession #{data.id}: DTMF collection complete (max): #{new_digits}")
+        cancel_dtmf_timer(data)
+        notify_event(data, {:dtmf_collected, new_digits})
+        {:keep_state, %{data | dtmf_collection: nil}, []}
+      else
+        # Continue collecting
+        updated_collection = %{collection | digits: new_digits}
+        {:keep_state, %{data | dtmf_collection: updated_collection}, []}
+      end
+    end
+  end
+
+  # Handle DTMF timeout
+  defp handle_media_message(:dtmf_timeout, %{dtmf_collection: nil} = _data) do
+    # No active collection, ignore
+    {:keep_state_and_data, []}
+  end
+
+  defp handle_media_message(:dtmf_timeout, %{dtmf_collection: collection} = data) do
+    Logger.info(
+      "MediaSession #{data.id}: DTMF collection timeout with digits: #{collection.digits}"
+    )
+
+    notify_event(data, {:dtmf_timeout, collection.digits})
+    {:keep_state, %{data | dtmf_collection: nil}, []}
+  end
+
+  # Handle start_record message
+  defp handle_media_message({:start_record, path, opts}, data) do
+    Logger.info("MediaSession #{data.id}: Starting recording to #{path}")
+    updated_data = %{data | output_file: path, audio_sink: :file}
+    forward_and_update(updated_data, {:start_record, path, opts})
+  end
+
+  # Default handler for other messages
   defp handle_media_message(msg, data) do
     case msg do
       {:play_files, _files, _opts} ->
@@ -689,6 +789,11 @@ defmodule ParrotMedia.MediaSession do
         Logger.debug("MediaSession #{data.id}: Forwarding message to handler: #{inspect(msg)}")
     end
 
+    forward_and_update(data, msg)
+  end
+
+  # Helper to forward message to handler and process actions
+  defp forward_and_update(data, msg) do
     case forward_to_media_handler(msg, data) do
       {:ok, actions, new_handler_state} ->
         updated_data = %{data | handler_state: new_handler_state}
@@ -704,7 +809,7 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Handler doesn't implement handle_info/2 for message: #{inspect(msg)}"
         )
 
-        {:keep_state_and_data, []}
+        {:keep_state, data, []}
 
       :error ->
         # Handler exists but had an error or didn't handle the message
@@ -712,9 +817,27 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Unexpected info message not handled: #{inspect(msg)}"
         )
 
-        {:keep_state_and_data, []}
+        {:keep_state, data, []}
     end
   end
+
+  # Send notification to notify_pid if configured
+  defp notify_event(%{notify_pid: nil}, _event), do: :ok
+
+  defp notify_event(%{notify_pid: pid, id: session_id}, event) when is_pid(pid) do
+    send(pid, {:media_event, session_id, event})
+    :ok
+  end
+
+  # Cancel existing DTMF timer if any
+  defp cancel_dtmf_timer(%{dtmf_collection: nil} = data), do: data
+
+  defp cancel_dtmf_timer(%{dtmf_collection: %{timer_ref: ref}} = data) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    data
+  end
+
+  defp cancel_dtmf_timer(data), do: data
 
   defp reply_with_state(from, state, data) do
     state_info = %{
@@ -736,7 +859,6 @@ defmodule ParrotMedia.MediaSession do
   # Codec mapping - using standard SDP names
   defp codec_info(:pcma), do: {8, "PCMA/8000", ParrotMedia.AlawPipeline}
   defp codec_info(:opus), do: {111, "opus/48000/1", ParrotMedia.OpusPipeline}
-
 
   defp get_pipeline_module(codec) do
     {_, _, module} = codec_info(codec)
@@ -815,7 +937,8 @@ defmodule ParrotMedia.MediaSession do
              direction: data_with_handler_state.direction
            ) do
         {:ok, sdp_answer} ->
-          pipeline_module = get_pipeline_module_for_config(selected_codec, data_with_handler_state)
+          pipeline_module =
+            get_pipeline_module_for_config(selected_codec, data_with_handler_state)
 
           session_data =
             build_session_data(
@@ -904,7 +1027,8 @@ defmodule ParrotMedia.MediaSession do
     end
   end
 
-  defp get_or_allocate_rtp_port(%{local_rtp_port: port, rtp_socket: socket, id: session_id}) when not is_nil(port) do
+  defp get_or_allocate_rtp_port(%{local_rtp_port: port, rtp_socket: socket, id: session_id})
+       when not is_nil(port) do
     Logger.info("MediaSession #{session_id}: Using pre-allocated local RTP port: #{port}")
     {port, socket}
   end
@@ -989,7 +1113,6 @@ defmodule ParrotMedia.MediaSession do
     |> Enum.reject(&is_nil/1)
   end
 
-
   defp process_sdp_answer(sdp_answer, data) do
     with {:ok, answer_info} <- Sdp.process_answer(sdp_answer) do
       pipeline_module = get_pipeline_module_for_config(answer_info.selected_codec, data)
@@ -1006,7 +1129,6 @@ defmodule ParrotMedia.MediaSession do
       {:ok, updated_data}
     end
   end
-
 
   defp allocate_rtp_port(config \\ %{}) do
     min_port = Map.get(config, :min_rtp_port, 16384)
