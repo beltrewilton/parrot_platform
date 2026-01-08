@@ -27,7 +27,11 @@ defmodule Parrot.Supervisor do
 
     children = [
       # Registry for Parrot process discovery
-      {Registry, keys: :unique, name: Parrot.Registry}
+      {Registry, keys: :unique, name: Parrot.Registry},
+      # Task supervisor for async operations (e.g., presence notifications)
+      {Task.Supervisor, name: Parrot.TaskSupervisor},
+      # Registration expiry timer manager
+      {Parrot.Registration.ExpiryManager, name: Parrot.Registration.ExpiryManager}
       # Future children will include:
       # - Router process
       # - Transport manager
