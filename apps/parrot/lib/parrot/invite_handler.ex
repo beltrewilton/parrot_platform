@@ -248,7 +248,10 @@ defmodule Parrot.InviteHandler do
           bridge: 2,
           bridge: 3,
           fork: 2,
-          fork: 3
+          fork: 3,
+          fork_media: 2,
+          fork_media: 3,
+          stop_fork_media: 2
         ]
 
       @impl Parrot.InviteHandler

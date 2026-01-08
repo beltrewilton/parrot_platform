@@ -1264,12 +1264,20 @@ defmodule ParrotMedia.MediaSession do
     Logger.info("MediaSession #{data.id}: Playing sequence of #{length(files)} files")
 
     case files do
-      [first | _rest] ->
-        updated_data = %{data | audio_file: first, audio_source: :file}
-        restart_pipeline_if_needed(updated_data)
-
       [] ->
         data
+
+      _files ->
+        # If pipeline is running, send play_files_request to it
+        # The pipeline will forward to SwitchableFileSource via notify_child action
+        if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+          send(data.pipeline_pid, {:play_files_request, files, loop: false})
+          data
+        else
+          # Pipeline not running yet, set first file and let it start normally
+          updated_data = %{data | audio_file: hd(files), audio_source: :file}
+          restart_pipeline_if_needed(updated_data)
+        end
     end
   end
 
@@ -1277,12 +1285,20 @@ defmodule ParrotMedia.MediaSession do
     Logger.info("MediaSession #{data.id}: Playing #{length(files)} files in loop")
 
     case files do
-      [first | _rest] ->
-        updated_data = %{data | audio_file: first, audio_source: :file}
-        restart_pipeline_if_needed(updated_data)
-
       [] ->
         data
+
+      _files ->
+        # If pipeline is running, send play_files_request to it
+        # The pipeline will forward to SwitchableFileSource via notify_child action
+        if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+          send(data.pipeline_pid, {:play_files_request, files, loop: true})
+          data
+        else
+          # Pipeline not running yet, set first file and let it start normally
+          updated_data = %{data | audio_file: hd(files), audio_source: :file}
+          restart_pipeline_if_needed(updated_data)
+        end
     end
   end
 
@@ -1362,6 +1378,36 @@ defmodule ParrotMedia.MediaSession do
   end
 
   defp process_media_action(:noreply, data), do: data
+
+  # Fork media to external service
+  # The fork_config is a ForkConfig struct with destination info
+  defp process_media_action({:fork_media, %ParrotMedia.ForkConfig{} = fork_config}, data) do
+    Logger.info(
+      "MediaSession #{data.id}: Forking media to #{inspect(fork_config.destination_address)}:#{fork_config.destination_port}"
+    )
+
+    # Forward the fork request to the pipeline
+    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+      send(data.pipeline_pid, {:add_fork, fork_config})
+    else
+      Logger.warning("MediaSession #{data.id}: Cannot fork media - pipeline not running")
+    end
+
+    data
+  end
+
+  # Stop a media fork by ID
+  defp process_media_action({:stop_fork, fork_id}, data) when is_binary(fork_id) do
+    Logger.info("MediaSession #{data.id}: Stopping media fork '#{fork_id}'")
+
+    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+      send(data.pipeline_pid, {:remove_fork, fork_id})
+    else
+      Logger.warning("MediaSession #{data.id}: Cannot stop fork - pipeline not running")
+    end
+
+    data
+  end
 
   defp process_media_action(actions, data) when is_list(actions) do
     Enum.reduce(actions, data, &process_media_action/2)

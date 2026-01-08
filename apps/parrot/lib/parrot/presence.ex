@@ -7,6 +7,15 @@ defmodule Parrot.Presence do
   asynchronously triggers NOTIFY messages to all subscribers watching
   the given presentity.
 
+  ## RFC References
+
+  - RFC 3856 Section 4: Notifier Processing - defines how notifiers process
+    subscription state changes and send NOTIFY requests
+  - RFC 3863: Presence Information Data Format (PIDF) - defines the XML format
+    for presence information in NOTIFY bodies
+  - RFC 3265 Section 3.1.6: Notifier NOTIFY Behavior - specifies NOTIFY message
+    construction and delivery requirements
+
   ## Usage
 
   Call `notify/2` from anywhere in your application to trigger a presence update:
@@ -49,6 +58,10 @@ defmodule Parrot.Presence do
   code paths without blocking on network operations.
   """
 
+  require Logger
+
+  alias ParrotSip.Presence.Pidf
+
   @doc """
   Notify subscribers about a presence state change.
 
@@ -81,18 +94,122 @@ defmodule Parrot.Presence do
       # Minimal update with just status
       Parrot.Presence.notify("sip:alice@example.com", %{status: :open})
 
+  ## RFC References
+
+  Per RFC 3856 Section 4, when the presence state changes, the notifier
+  MUST send a NOTIFY request to each active subscription for the presentity.
+  The NOTIFY body contains PIDF+XML per RFC 3863.
+
   """
   @spec notify(String.t(), map()) :: :ok
-  def notify(_presentity, _presence_state) do
-    # This is a fire-and-forget operation.
-    # In the full implementation, this would:
-    # 1. Look up the configured PresenceHandler via the application config
-    # 2. Call handler.get_subscriptions(presentity) to get all watchers
-    # 3. For each watcher, send a SIP NOTIFY with the presence state
-    #
-    # For now, this returns :ok as a placeholder for the async operation.
-    # The actual SIP mechanics will be handled by the framework when
-    # integrated with the SIP stack.
+  def notify(presentity, presence_state) do
+    # Fire-and-forget: spawn async task for notification delivery
+    # Use Task.Supervisor if available for fault isolation, otherwise Task.start
+    case get_presence_handler() do
+      nil ->
+        Logger.debug("No presence handler configured, skipping notification for #{presentity}")
+        :ok
+
+      handler ->
+        do_notify_async(handler, presentity, presence_state)
+    end
+  end
+
+  # Get the presence handler from the router configuration
+  defp get_presence_handler do
+    case Application.get_env(:parrot, :router) do
+      nil ->
+        nil
+
+      router ->
+        # Check if the router has a presence handler
+        if function_exported?(router, :__presence_handler__, 0) do
+          router.__presence_handler__()
+        else
+          nil
+        end
+    end
+  end
+
+  # Spawn async task for notification delivery
+  # RFC 3265 Section 3.1.6: Notifier NOTIFY Behavior
+  defp do_notify_async(handler, presentity, presence_state) do
+    task_fun = fn ->
+      do_notify_sync(handler, presentity, presence_state)
+    end
+
+    # Use Task.Supervisor if available for better fault isolation
+    case Process.whereis(Parrot.TaskSupervisor) do
+      nil ->
+        # Fall back to bare Task.start if supervisor not available
+        Task.start(task_fun)
+
+      _pid ->
+        Task.Supervisor.start_child(Parrot.TaskSupervisor, task_fun)
+    end
+
     :ok
+  end
+
+  # Synchronous notification logic (runs in spawned task)
+  defp do_notify_sync(handler, presentity, presence_state) do
+    # RFC 3856 Section 4: Get all subscriptions for this presentity
+    subscriptions = handler.get_subscriptions(presentity)
+
+    if subscriptions == [] do
+      Logger.debug("No subscriptions for #{presentity}, no NOTIFY messages to send")
+    else
+      # RFC 3863: Generate PIDF+XML body
+      pidf_body = Pidf.build(presentity, presence_state)
+
+      # RFC 3265 Section 3.1.6: Send NOTIFY to each subscriber
+      Enum.each(subscriptions, fn subscription ->
+        send_notify(subscription, presentity, pidf_body)
+      end)
+    end
+  end
+
+  # Send a NOTIFY message to a single subscriber
+  # RFC 3265 Section 3.1.6: NOTIFY requests are sent to refresh subscriptions
+  defp send_notify(subscription, presentity, pidf_body) do
+    dialog_id = Map.get(subscription, :dialog_id)
+    watcher = Map.get(subscription, :watcher)
+
+    if dialog_id do
+      Logger.debug(
+        "Sending NOTIFY for #{presentity} to watcher #{watcher} via dialog #{dialog_id}"
+      )
+
+      # Build NOTIFY message per RFC 3265 Section 3.1.6
+      notify_msg = build_notify_message(presentity, pidf_body)
+
+      # Send via dialog
+      case ParrotSip.DialogStatem.uac_request(dialog_id, notify_msg) do
+        {:ok, _request} ->
+          Logger.debug("NOTIFY sent successfully to #{watcher}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to send NOTIFY to #{watcher}: #{inspect(reason)}")
+      end
+    else
+      Logger.warning("Subscription for #{watcher} has no dialog_id, cannot send NOTIFY")
+    end
+  end
+
+  # Build a NOTIFY request message
+  # RFC 3265 Section 3.1.6: NOTIFY MUST contain Event and Subscription-State headers
+  defp build_notify_message(presentity, pidf_body) do
+    alias ParrotSip.Message
+    alias ParrotSip.Headers.{Event, SubscriptionState, ContentType}
+
+    Message.new_request(:notify, presentity)
+    |> Map.put(:event, %Event{event: "presence", parameters: %{}})
+    |> Map.put(:subscription_state, %SubscriptionState{state: :active, parameters: %{}})
+    |> Map.put(:content_type, %ContentType{
+      type: "application",
+      subtype: "pidf+xml",
+      parameters: %{}
+    })
+    |> Message.set_body(pidf_body)
   end
 end

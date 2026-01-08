@@ -12,7 +12,7 @@ defmodule ParrotMedia.MediaSessionTimeoutTest do
     test "process_offer accepts timeout parameter" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_timeout_#{:rand.uniform(100000)}",
+          id: "test_timeout_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,
@@ -36,7 +36,7 @@ defmodule ParrotMedia.MediaSessionTimeoutTest do
     test "process_offer uses default timeout when not specified" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_default_#{:rand.uniform(100000)}",
+          id: "test_default_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,
@@ -60,7 +60,7 @@ defmodule ParrotMedia.MediaSessionTimeoutTest do
     test "start_media accepts timeout parameter" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_start_#{:rand.uniform(100000)}",
+          id: "test_start_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,

@@ -14,7 +14,9 @@ defmodule ParrotSip.Transaction.Server do
 
   require Logger
 
-  @allowed_methods [:invite, :ack, :bye, :cancel, :options, :register]
+  # RFC 3261 Section 7.1: Methods must be handled at UAS layer
+  # RFC 6086: INFO method for application-level signaling (including DTMF)
+  @allowed_methods [:invite, :ack, :bye, :cancel, :options, :register, :info]
 
   @spec process(any(), Message.t(), Handler.handler()) ::
           :ok
