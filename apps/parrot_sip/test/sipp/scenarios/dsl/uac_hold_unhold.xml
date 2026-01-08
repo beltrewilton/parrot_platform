@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC Hold/Unhold (re-INVITE) Scenario
+
+  Tests complete hold and unhold cycle using re-INVITE with SDP
+  direction attributes per RFC 3264.
+
+  Flow:
+  1. Send INVITE with sendrecv (normal bidirectional audio)
+  2. Receive 200 OK
+  3. Send ACK - call established
+  4. Send re-INVITE with sendonly (put remote on hold)
+  5. Receive 200 OK with recvonly
+  6. Send ACK
+  7. Wait (call on hold)
+  8. Send re-INVITE with sendrecv (resume from hold)
+  9. Receive 200 OK with sendrecv
+  10. Send ACK
+  11. Wait (call active again)
+  12. Send BYE
+
+  RFC References:
+  - RFC 3264 Section 8: Changing Media Sessions
+  - RFC 3261 Section 14: Modifying an Existing Session
+-->
+<scenario name="UAC Hold/Unhold">
+  <!-- Initial INVITE with sendrecv -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:hold-test@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: Hold/Unhold Test
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=holdtest 123456 123456 IN IP4 [local_ip]
+      s=Hold Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Optional 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Optional 180 Ringing -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call established, wait before hold -->
+  <pause milliseconds="1000"/>
+
+  <!-- ============ HOLD: Send re-INVITE with sendonly ============ -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:hold-test@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: Hold/Unhold Test - HOLD
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=holdtest 123456 123457 IN IP4 [local_ip]
+      s=Hold Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendonly
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for hold re-INVITE (with recvonly) -->
+  <recv response="200">
+  </recv>
+
+  <!-- Send ACK for hold -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call on hold, wait -->
+  <pause milliseconds="2000"/>
+
+  <!-- ============ UNHOLD: Send re-INVITE with sendrecv ============ -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 INVITE
+      Contact: <sip:hold-test@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: Hold/Unhold Test - UNHOLD
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=holdtest 123456 123458 IN IP4 [local_ip]
+      s=Hold Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for unhold re-INVITE -->
+  <recv response="200">
+  </recv>
+
+  <!-- Send ACK for unhold -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call resumed, wait before ending -->
+  <pause milliseconds="1000"/>
+
+  <!-- Send BYE -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:hold-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 4 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>

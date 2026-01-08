@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS Fork Target Scenario
+
+  Acts as one of the fork destinations for testing call forking.
+  This scenario receives a forked INVITE from ParrotSip and answers.
+
+  Run multiple instances on different ports to test multi-target forking.
+  The first to answer wins and other calls get CANCEL.
+
+  Use with: uac_fork.xml sending to ParrotSip forker
+
+  Flow:
+  UAC (A-leg SIPp) --> ParrotSip Forker --> UAS (this, one of many targets)
+-->
+<scenario name="UAS Fork Target">
+  <!-- Receive INVITE from forker -->
+  <recv request="INVITE" crlf="true">
+  </recv>
+
+  <!-- Send 100 Trying -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 100 Trying
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Send 180 Ringing -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:fork-target@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Simulate ring time before answering -->
+  <pause milliseconds="1000"/>
+
+  <!-- Send 200 OK with SDP -->
+  <send retrans="500">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:fork-target@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=fork-target 654321 654321 IN IP4 [local_ip]
+      s=Fork Target
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK (if we won) or CANCEL (if another target won) -->
+  <!-- Use optional to handle both cases -->
+  <recv request="ACK" optional="true" rtd="true">
+  </recv>
+
+  <!-- If we won, wait then receive BYE -->
+  <recv request="BYE" optional="true" timeout="5000">
+  </recv>
+
+  <!-- Send 200 OK for BYE if received -->
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- If we lost (got CANCEL before answering), handle it -->
+  <recv request="CANCEL" optional="true">
+  </recv>
+
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>

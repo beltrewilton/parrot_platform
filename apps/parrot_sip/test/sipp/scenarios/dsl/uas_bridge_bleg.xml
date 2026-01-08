@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS Bridge B-Leg Scenario
+
+  Acts as the B-leg destination for B2BUA bridge testing.
+  This scenario receives the bridged call from ParrotSip B2BUA.
+
+  Use with: uac_bridge.xml sending to ParrotSip B2BUA
+
+  Flow:
+  UAC (A-leg SIPp) --> B2BUA (ParrotSip) --> UAS (this)
+-->
+<scenario name="UAS Bridge B-Leg">
+  <!-- Receive INVITE from B2BUA -->
+  <recv request="INVITE" crlf="true">
+  </recv>
+
+  <!-- Send 100 Trying -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 100 Trying
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Send 180 Ringing -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:b-leg@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Brief pause to simulate real ringing -->
+  <pause milliseconds="500"/>
+
+  <!-- Send 200 OK with SDP -->
+  <send retrans="500">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:b-leg@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=b-leg 654321 654321 IN IP4 [local_ip]
+      s=Bridge Test B-Leg
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK -->
+  <recv request="ACK" optional="false" rtd="true">
+  </recv>
+
+  <!-- Call established, wait for media or BYE -->
+  <!-- BYE can come from either side when A-leg hangs up -->
+  <recv request="BYE">
+  </recv>
+
+  <!-- Send 200 OK for BYE -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>

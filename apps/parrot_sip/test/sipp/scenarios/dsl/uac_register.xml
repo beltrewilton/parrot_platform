@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC REGISTER Scenario
+
+  Tests registration functionality using the DSL.
+  Simple registration without authentication.
+
+  Flow:
+  1. Send REGISTER to server
+  2. Receive 200 OK (registration accepted)
+
+  This scenario verifies:
+  - REGISTER request handling
+  - Contact binding
+  - Expires header processing
+
+  Reference: RFC 3261 Section 10 - Registrations
+-->
+<scenario name="UAC REGISTER">
+  <!-- Send REGISTER -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:dsl-test@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:dsl-test@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:dsl-test@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK -->
+  <recv response="200" crlf="true"/>
+
+</scenario>

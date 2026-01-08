@@ -427,6 +427,62 @@ defmodule Parrot.CallTest do
     end
   end
 
+  describe "fork_media/2" do
+    test "adds fork_media operation with destination" do
+      call = %Call{} |> Call.fork_media("192.168.1.100:5000")
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "192.168.1.100:5000", []}
+    end
+
+    test "parses host:port destination" do
+      call = %Call{} |> Call.fork_media("transcription.example.com:8080")
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "transcription.example.com:8080", []}
+    end
+  end
+
+  describe "fork_media/3" do
+    test "adds fork_media operation with fork_id option" do
+      call = %Call{} |> Call.fork_media("192.168.1.100:5000", fork_id: "transcription")
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "192.168.1.100:5000", [fork_id: "transcription"]}
+    end
+
+    test "adds fork_media operation with transport option" do
+      call = %Call{} |> Call.fork_media("192.168.1.100:5000", transport: :rtp)
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "192.168.1.100:5000", [transport: :rtp]}
+    end
+
+    test "adds fork_media operation with all options" do
+      call =
+        %Call{}
+        |> Call.fork_media("192.168.1.100:5000",
+          fork_id: "transcription",
+          transport: :rtp
+        )
+
+      assert [operation] = call.__operations__
+
+      assert operation ==
+               {:fork_media, "192.168.1.100:5000",
+                [fork_id: "transcription", transport: :rtp]}
+    end
+  end
+
+  describe "stop_fork_media/2" do
+    test "adds stop_fork_media operation with fork_id" do
+      call = %Call{} |> Call.stop_fork_media("transcription")
+
+      assert [operation] = call.__operations__
+      assert operation == {:stop_fork_media, "transcription"}
+    end
+  end
+
   describe "get_operations/1" do
     test "returns operations in execution order" do
       call =

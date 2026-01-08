@@ -13,7 +13,7 @@ defmodule ParrotMedia.MediaSessionPortAllocationTest do
       # Process a simple offer to trigger port allocation
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_port_#{:rand.uniform(100000)}",
+          id: "test_port_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,
@@ -44,7 +44,7 @@ defmodule ParrotMedia.MediaSessionPortAllocationTest do
     test "RTCP port (RTP+1) is available" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_rtcp_#{:rand.uniform(100000)}",
+          id: "test_rtcp_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,

@@ -25,11 +25,13 @@ defmodule ParrotMedia.OpusSdpTest do
     @impl true
     def handle_codec_negotiation(offered, supported, state) do
       # Prefer opus if available
-      codec = if :opus in offered and :opus in supported do
-        :opus
-      else
-        Enum.find(offered, &(&1 in supported)) || hd(supported)
-      end
+      codec =
+        if :opus in offered and :opus in supported do
+          :opus
+        else
+          Enum.find(offered, &(&1 in supported)) || hd(supported)
+        end
+
       {:ok, codec, state}
     end
 

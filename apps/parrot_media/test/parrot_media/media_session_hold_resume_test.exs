@@ -12,7 +12,7 @@ defmodule ParrotMedia.MediaSessionHoldResumeTest do
     test "pause_media generates SDP with sendonly direction" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_hold_#{:rand.uniform(100000)}",
+          id: "test_hold_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,
@@ -44,7 +44,7 @@ defmodule ParrotMedia.MediaSessionHoldResumeTest do
     test "resume_media transitions back to active state" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_resume_#{:rand.uniform(100000)}",
+          id: "test_resume_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,
@@ -77,7 +77,7 @@ defmodule ParrotMedia.MediaSessionHoldResumeTest do
     test "generates SDP with correct direction attribute" do
       {:ok, session} =
         MediaSession.start_link(
-          id: "test_sdp_dir_#{:rand.uniform(100000)}",
+          id: "test_sdp_dir_#{:rand.uniform(100_000)}",
           dialog_id: "dialog_test",
           role: :uas,
           media_handler: TestMediaHandler,

@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC Fork A-Leg Scenario
+
+  Tests call forking functionality where ParrotSip sends INVITEs to
+  multiple destinations and the first to answer wins.
+
+  This scenario acts as the caller:
+  1. Send INVITE to ParrotSip
+  2. ParrotSip forks to multiple B-leg destinations
+  3. First B-leg to answer wins
+  4. Call established with winning endpoint
+  5. Send BYE to end call
+
+  Use with multiple uas_fork_target.xml instances on different ports
+
+  Flow:
+  UAC (this) --> ParrotSip --> UAS 1 (fork target)
+                          --> UAS 2 (fork target)
+                          --> UAS N (fork target)
+-->
+<scenario name="UAC Fork A-Leg">
+  <!-- Initial INVITE -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:fork-caller@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:fork-caller@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: Fork Test - A-Leg
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=fork-caller 123456 123456 IN IP4 [local_ip]
+      s=Fork Test A-Leg
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Optional 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- May receive multiple 180 Ringing from different fork targets -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Optional 183 Session Progress -->
+  <recv response="183" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK (from first answering fork target) -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:fork-caller@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call established with winning fork target -->
+  <pause milliseconds="2000"/>
+
+  <!-- Send BYE -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:fork-caller@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>

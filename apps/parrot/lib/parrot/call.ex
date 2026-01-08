@@ -415,6 +415,73 @@ defmodule Parrot.Call do
   end
 
   # ---------------------------------------------------------------------------
+  # Media Forking Operations
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Forks media to an external service for processing.
+
+  Media forking allows streaming a copy of the call's audio to an external
+  destination via RTP. Common use cases include:
+
+  - Real-time transcription services
+  - Call recording servers
+  - Audio analysis systems
+  - AI-powered conversation analysis
+
+  ## Arguments
+
+  - `destination` - The destination in "host:port" format (e.g., "192.168.1.100:5000")
+
+  ## Examples
+
+      call |> fork_media("192.168.1.100:5000")
+      call |> fork_media("transcription.example.com:8080")
+
+  """
+  @spec fork_media(t(), String.t()) :: t()
+  def fork_media(%__MODULE__{} = call, destination) when is_binary(destination) do
+    add_operation(call, {:fork_media, destination, []})
+  end
+
+  @doc """
+  Forks media to an external service with options.
+
+  ## Options
+
+  * `:fork_id` - Unique identifier for this fork (used for stopping later)
+  * `:transport` - Transport type (currently only `:rtp` is supported)
+
+  ## Examples
+
+      call |> fork_media("192.168.1.100:5000", fork_id: "transcription")
+      call |> fork_media("192.168.1.100:5000", fork_id: "recording", transport: :rtp)
+
+  """
+  @spec fork_media(t(), String.t(), keyword()) :: t()
+  def fork_media(%__MODULE__{} = call, destination, opts)
+      when is_binary(destination) and is_list(opts) do
+    add_operation(call, {:fork_media, destination, opts})
+  end
+
+  @doc """
+  Stops a media fork by its ID.
+
+  ## Arguments
+
+  - `fork_id` - The unique identifier of the fork to stop
+
+  ## Examples
+
+      call |> stop_fork_media("transcription")
+
+  """
+  @spec stop_fork_media(t(), String.t()) :: t()
+  def stop_fork_media(%__MODULE__{} = call, fork_id) when is_binary(fork_id) do
+    add_operation(call, {:stop_fork_media, fork_id})
+  end
+
+  # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
 
