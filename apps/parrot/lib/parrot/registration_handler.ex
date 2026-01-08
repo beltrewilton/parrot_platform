@@ -15,12 +15,9 @@ defmodule Parrot.RegistrationHandler do
       defmodule MyApp.RegistrationHandler do
         use Parrot.RegistrationHandler
 
-        def authenticate(%{username: username, password: password}) do
-          case MyDB.check_password(username, password) do
-            :ok -> :ok
-            :error -> :error
-          end
-        end
+        def get_password("alice"), do: {:ok, "alices_password"}
+        def get_password("bob"), do: {:ok, "bobs_password"}
+        def get_password(_), do: :error
 
         def store_binding(aor, contact, expires) do
           MyDB.save_registration(aor, contact, expires)
@@ -31,7 +28,8 @@ defmodule Parrot.RegistrationHandler do
           MyDB.get_contacts(aor)
         end
 
-        def handle_registration_expired(aor) do
+        def handle_registration_expired(aor, contact) do
+          Logger.info("Contact \#{contact} expired for \#{aor}")
           Parrot.Presence.notify(aor, %{status: :offline})
           :ok
         end
@@ -42,26 +40,31 @@ defmodule Parrot.RegistrationHandler do
   ### Required Callbacks
 
   All callbacks have default implementations, but you should override at least
-  `authenticate/1` and `store_binding/3` for a functional registrar:
+  `get_password/1` and `store_binding/3` for a functional registrar:
 
-  - `authenticate/1` - Validate user credentials
+  - `get_password/1` - Return password for digest authentication
+  - `authenticate/1` - Additional authentication logic (optional)
   - `store_binding/3` - Store a registration binding
   - `get_bindings/1` - Retrieve current contacts for an AOR
-  - `handle_registration_expired/1` - Called when a registration expires
+  - `handle_registration_expired/2` - Called when a registration expires
 
   ## Registration Flow
 
-  1. REGISTER received by framework
-  2. Framework calls `authenticate/1` with credentials
-  3. If `:ok`, framework calls `store_binding/3` for each contact
+  1. REGISTER received without Authorization - framework sends 401 challenge
+  2. REGISTER received with Authorization header:
+     a. Framework extracts credentials and validates nonce
+     b. Framework calls `get_password/1` to retrieve user's password
+     c. Framework validates digest response using the password
+     d. Framework calls `authenticate/1` for additional checks
+  3. If authentication succeeds, framework calls `store_binding/3`
   4. Framework builds 200 OK with contacts from `get_bindings/1`
-  5. If `:error`, framework sends 401/403 response
+  5. If authentication fails, framework sends 403 Forbidden
 
   ## Expires Handling
 
   - `expires > 0`: Normal registration, store the binding
   - `expires == 0`: Unregister request, remove the binding
-  - When timer fires: `handle_registration_expired/1` is called
+  - When timer fires: `handle_registration_expired/2` is called
 
   ## Multiple Contacts
 
@@ -71,16 +74,49 @@ defmodule Parrot.RegistrationHandler do
   """
 
   @doc """
+  Retrieve the password for a username.
+
+  Called by the framework to get the password for digest authentication
+  validation. The framework uses this password to verify the digest
+  response from the client.
+
+  ## Arguments
+
+  - `username` - The username from the Authorization header
+
+  ## Return Values
+
+  - `{:ok, password}` - Return the password for this user
+  - `:error` - Unknown user, will result in 403 Forbidden
+
+  ## Example
+
+      def get_password(username) do
+        case MyDB.get_user(username) do
+          %User{password: password} -> {:ok, password}
+          nil -> :error
+        end
+      end
+
+  ## Security Note
+
+  The password should be stored securely. For production systems,
+  consider using password hashing with HA1 pre-computation:
+  HA1 = MD5(username:realm:password)
+  """
+  @callback get_password(username :: String.t()) :: {:ok, String.t()} | :error
+
+  @doc """
   Authenticate user credentials for registration.
 
-  Called when a REGISTER request is received with credentials (either in
-  the initial request or in response to a 401 challenge).
+  Called after the digest response has been validated by the framework.
+  Use this callback for any additional authentication logic (e.g.,
+  checking if the user is allowed to register, rate limiting, etc.).
 
   ## Arguments
 
   - `credentials` - A map containing:
     - `:username` - The username from the Authorization header
-    - `:password` - The password (after digest validation by framework)
     - `:realm` - The authentication realm
     - `:nonce` - The nonce value (for replay prevention)
 
@@ -91,10 +127,11 @@ defmodule Parrot.RegistrationHandler do
 
   ## Example
 
-      def authenticate(%{username: username, password: password}) do
-        case MyDB.check_password(username, password) do
-          :ok -> :ok
-          :error -> :error
+      def authenticate(%{username: username}) do
+        if MyDB.user_can_register?(username) do
+          :ok
+        else
+          :error
         end
       end
   """
@@ -169,6 +206,7 @@ defmodule Parrot.RegistrationHandler do
   ## Arguments
 
   - `aor` - The Address of Record that expired
+  - `contact` - The specific Contact URI that expired
 
   ## Return Value
 
@@ -176,13 +214,13 @@ defmodule Parrot.RegistrationHandler do
 
   ## Example
 
-      def handle_registration_expired(aor) do
+      def handle_registration_expired(aor, contact) do
         Parrot.Presence.notify(aor, %{status: :offline})
-        Logger.info("Registration expired for \#{aor}")
+        Logger.info("Registration expired for \#{aor} contact \#{contact}")
         :ok
       end
   """
-  @callback handle_registration_expired(aor :: String.t()) :: :ok
+  @callback handle_registration_expired(aor :: String.t(), contact :: String.t()) :: :ok
 
   @doc """
   Provides default implementations for all callbacks.
@@ -196,18 +234,24 @@ defmodule Parrot.RegistrationHandler do
 
   ## Default Implementations
 
-  - `authenticate/1` - Returns `:error` (rejects all)
+  - `get_password/1` - Returns `:error` (unknown user)
+  - `authenticate/1` - Returns `:ok` (allows all authenticated users)
   - `store_binding/3` - Returns `:ok` (no-op)
   - `get_bindings/1` - Returns `[]` (empty)
-  - `handle_registration_expired/1` - Returns `:ok` (no-op)
+  - `handle_registration_expired/2` - Returns `:ok` (no-op)
   """
   defmacro __using__(_opts) do
     quote do
       @behaviour Parrot.RegistrationHandler
 
       @impl Parrot.RegistrationHandler
-      def authenticate(_credentials) do
+      def get_password(_username) do
         :error
+      end
+
+      @impl Parrot.RegistrationHandler
+      def authenticate(_credentials) do
+        :ok
       end
 
       @impl Parrot.RegistrationHandler
@@ -221,14 +265,15 @@ defmodule Parrot.RegistrationHandler do
       end
 
       @impl Parrot.RegistrationHandler
-      def handle_registration_expired(_aor) do
+      def handle_registration_expired(_aor, _contact) do
         :ok
       end
 
-      defoverridable authenticate: 1,
+      defoverridable get_password: 1,
+                     authenticate: 1,
                      store_binding: 3,
                      get_bindings: 1,
-                     handle_registration_expired: 1
+                     handle_registration_expired: 2
     end
   end
 end

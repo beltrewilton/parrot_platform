@@ -17,14 +17,19 @@ defmodule Parrot.RegistrationHandlerTest do
       assert {:get_bindings, 1} in callbacks
     end
 
-    test "defines handle_registration_expired/1 callback" do
+    test "defines handle_registration_expired/2 callback" do
       callbacks = Parrot.RegistrationHandler.behaviour_info(:callbacks)
-      assert {:handle_registration_expired, 1} in callbacks
+      assert {:handle_registration_expired, 2} in callbacks
     end
 
-    test "defines all 4 expected callbacks" do
+    test "defines get_password/1 callback" do
       callbacks = Parrot.RegistrationHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 4
+      assert {:get_password, 1} in callbacks
+    end
+
+    test "defines all 5 expected callbacks" do
+      callbacks = Parrot.RegistrationHandler.behaviour_info(:callbacks)
+      assert length(callbacks) == 5
     end
   end
 
@@ -33,9 +38,15 @@ defmodule Parrot.RegistrationHandlerTest do
       use Parrot.RegistrationHandler
     end
 
-    test "provides default authenticate/1 that rejects all" do
-      credentials = %{username: "alice", password: "secret"}
-      assert :error = MinimalHandler.authenticate(credentials)
+    test "provides default get_password/1 that rejects all users" do
+      assert :error = MinimalHandler.get_password("alice")
+    end
+
+    test "provides default authenticate/1 that allows all authenticated users" do
+      # authenticate/1 is now for additional auth logic after digest validation
+      # Default allows all since get_password/1 handles user validation
+      credentials = %{username: "alice", realm: "example.com"}
+      assert :ok = MinimalHandler.authenticate(credentials)
     end
 
     test "provides default store_binding/3 that returns :ok" do
@@ -51,9 +62,10 @@ defmodule Parrot.RegistrationHandlerTest do
       assert [] = MinimalHandler.get_bindings(aor)
     end
 
-    test "provides default handle_registration_expired/1 that returns :ok" do
+    test "provides default handle_registration_expired/2 that returns :ok" do
       aor = "sip:alice@example.com"
-      assert :ok = MinimalHandler.handle_registration_expired(aor)
+      contact = "sip:alice@192.168.1.100:5060"
+      assert :ok = MinimalHandler.handle_registration_expired(aor, contact)
     end
   end
 
@@ -207,14 +219,14 @@ defmodule Parrot.RegistrationHandlerTest do
     end
   end
 
-  describe "handle_registration_expired/1 callback" do
+  describe "handle_registration_expired/2 callback" do
     defmodule ExpiryHandler do
       use Parrot.RegistrationHandler
 
-      def handle_registration_expired(aor) do
+      def handle_registration_expired(aor, contact) do
         # Track expired registrations for testing
         expired = Process.get(:expired_registrations, [])
-        Process.put(:expired_registrations, [aor | expired])
+        Process.put(:expired_registrations, [{aor, contact} | expired])
         :ok
       end
     end
@@ -224,26 +236,29 @@ defmodule Parrot.RegistrationHandlerTest do
       :ok
     end
 
-    test "is called with AOR when registration expires" do
+    test "is called with AOR and contact when registration expires" do
       aor = "sip:alice@example.com"
+      contact = "sip:alice@192.168.1.100:5060"
 
-      assert :ok = ExpiryHandler.handle_registration_expired(aor)
+      assert :ok = ExpiryHandler.handle_registration_expired(aor, contact)
 
       expired = Process.get(:expired_registrations, [])
-      assert aor in expired
+      assert {aor, contact} in expired
     end
 
     test "handles multiple expirations" do
       aor1 = "sip:alice@example.com"
       aor2 = "sip:bob@example.com"
+      contact1 = "sip:alice@192.168.1.100:5060"
+      contact2 = "sip:bob@192.168.1.101:5060"
 
-      assert :ok = ExpiryHandler.handle_registration_expired(aor1)
-      assert :ok = ExpiryHandler.handle_registration_expired(aor2)
+      assert :ok = ExpiryHandler.handle_registration_expired(aor1, contact1)
+      assert :ok = ExpiryHandler.handle_registration_expired(aor2, contact2)
 
       expired = Process.get(:expired_registrations, [])
       assert length(expired) == 2
-      assert aor1 in expired
-      assert aor2 in expired
+      assert {aor1, contact1} in expired
+      assert {aor2, contact2} in expired
     end
   end
 
@@ -288,10 +303,12 @@ defmodule Parrot.RegistrationHandlerTest do
         |> Enum.map(fn {contact, _expires} -> contact end)
       end
 
-      def handle_registration_expired(aor) do
-        # Remove all bindings for this AOR
+      def handle_registration_expired(aor, contact) do
+        # Remove specific binding for this AOR and contact
         bindings = Process.get(:bindings, %{})
-        Process.put(:bindings, Map.delete(bindings, aor))
+        contacts = Map.get(bindings, aor, [])
+        new_contacts = Enum.reject(contacts, fn {c, _e} -> c == contact end)
+        Process.put(:bindings, Map.put(bindings, aor, new_contacts))
         :ok
       end
     end
@@ -331,7 +348,7 @@ defmodule Parrot.RegistrationHandlerTest do
       assert [^contact] = CompleteHandler.get_bindings(aor)
 
       # Simulate expiration
-      assert :ok = CompleteHandler.handle_registration_expired(aor)
+      assert :ok = CompleteHandler.handle_registration_expired(aor, contact)
 
       # Verify bindings removed
       assert [] = CompleteHandler.get_bindings(aor)
@@ -404,7 +421,7 @@ defmodule Parrot.RegistrationHandlerTest do
       assert [] = PartialOverrideHandler.get_bindings("aor")
 
       # Default handle_registration_expired returns :ok
-      assert :ok = PartialOverrideHandler.handle_registration_expired("aor")
+      assert :ok = PartialOverrideHandler.handle_registration_expired("aor", "contact")
     end
   end
 end
