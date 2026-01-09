@@ -40,22 +40,22 @@ defmodule SippTest.MediaTestHandler do
   # ParrotSip.Handler Callbacks
   # ============================================================================
 
-  @impl true
+  @impl ParrotSip.Handler
   def transp_request(_msg, _args) do
     :process_transaction
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def transaction(_trans, _sip_msg, _args) do
     :process_uas
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def transaction_stop(_trans, _result, _args) do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def uas_request(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] uas_request fallback for method: #{sip_msg.method}")
     update_stats(args, :other)
@@ -65,21 +65,21 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def uas_cancel(_uas_id, args) do
     Logger.debug("[MediaTestHandler] uas_cancel called")
     update_stats(args, :cancels)
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def process_ack(_sip_msg, args) do
     Logger.debug("[MediaTestHandler] process_ack called")
     update_stats(args, :acks)
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_invite(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_invite called")
     update_stats(args, :invites)
@@ -148,7 +148,7 @@ defmodule SippTest.MediaTestHandler do
     end
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_bye(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_bye called")
     update_stats(args, :byes)
@@ -172,7 +172,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_options(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_options called")
     update_stats(args, :options)
@@ -190,7 +190,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_cancel(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_cancel called")
     update_stats(args, :cancels)
@@ -200,7 +200,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_register(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_register called")
     update_stats(args, :registers)
@@ -210,7 +210,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_subscribe(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_subscribe called")
     update_stats(args, :subscribes)
@@ -220,7 +220,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_notify(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_notify called")
     update_stats(args, :notifies)
@@ -230,7 +230,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_message(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_message called")
     update_stats(args, :messages)
@@ -240,7 +240,7 @@ defmodule SippTest.MediaTestHandler do
     :ok
   end
 
-  @impl true
+  @impl ParrotSip.Handler
   def handle_info(uas, sip_msg, args) do
     Logger.debug("[MediaTestHandler] handle_info called")
     update_stats(args, :infos)
@@ -254,67 +254,67 @@ defmodule SippTest.MediaTestHandler do
   # ParrotMedia.Handler Callbacks
   # ============================================================================
 
-  @impl true
+  @impl ParrotMedia.Handler
   def init(args) do
     Logger.debug("[MediaTestHandler] MediaHandler init called with args: #{inspect(args)}")
     {:ok, args}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_session_start(_session_id, _opts, state) do
     Logger.debug("[MediaTestHandler] handle_session_start called")
     {:ok, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_offer(_sdp, _direction, state) do
     Logger.debug("[MediaTestHandler] handle_offer called")
     {:noreply, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_answer(_sdp, _direction, state) do
     Logger.debug("[MediaTestHandler] handle_answer called")
     {:ok, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_stream_start(_session_id, _direction, state) do
     Logger.debug("[MediaTestHandler] handle_stream_start called")
     {:noreply, state}
   end
 
-  @impl true
-  def handle_stream_stop(_reason, state) do
+  @impl ParrotMedia.Handler
+  def handle_stream_stop(_session_id, _reason, state) do
     Logger.debug("[MediaTestHandler] handle_stream_stop called")
     {:ok, state}
   end
 
-  @impl true
+  # Note: handle_dtmf is not part of ParrotMedia.Handler behaviour
   def handle_dtmf(digit, state) do
     Logger.debug("[MediaTestHandler] handle_dtmf called: #{digit}")
     {:noreply, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_play_complete(_file, state) do
     Logger.debug("[MediaTestHandler] handle_play_complete called")
     {:noreply, state}
   end
 
-  @impl true
+  # Note: handle_record_complete is not part of ParrotMedia.Handler behaviour
   def handle_record_complete(_file, state) do
     Logger.debug("[MediaTestHandler] handle_record_complete called")
     {:noreply, state}
   end
 
-  @impl true
+  # Note: handle_error is not part of ParrotMedia.Handler behaviour
   def handle_error(error, state) do
     Logger.error("[MediaTestHandler] handle_error called: #{inspect(error)}")
     {:noreply, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_codec_negotiation(offered, supported, state) do
     Logger.debug(
       "[MediaTestHandler] handle_codec_negotiation called - offered: #{inspect(offered)}, supported: #{inspect(supported)}"
@@ -326,13 +326,13 @@ defmodule SippTest.MediaTestHandler do
     {:ok, codec, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_negotiation_complete(_answer, _offer, codec, state) do
     Logger.debug("[MediaTestHandler] handle_negotiation_complete - codec: #{codec}")
     {:ok, state}
   end
 
-  @impl true
+  @impl ParrotMedia.Handler
   def handle_info(msg, state) do
     Logger.debug("[MediaTestHandler] MediaHandler handle_info: #{inspect(msg)}")
     {:noreply, state}

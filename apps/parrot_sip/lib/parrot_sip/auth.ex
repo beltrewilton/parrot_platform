@@ -236,10 +236,22 @@ defmodule ParrotSip.Auth do
   """
   @spec format_auth_header(map()) :: String.t()
   def format_auth_header(params) do
-    # Build the Digest auth string
+    # Define canonical key order for consistent output
+    # (maps don't guarantee order, so we sort to ensure deterministic headers)
+    key_order = ~w(username realm nonce uri response algorithm cnonce opaque qop nc stale)
+
+    # Build the Digest auth string with sorted keys
     auth_params =
       params
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Enum.sort_by(fn {k, _v} ->
+        key = to_string(k)
+        # Sort by canonical order, unknown keys go to the end alphabetically
+        case Enum.find_index(key_order, &(&1 == key)) do
+          nil -> {1, key}
+          idx -> {0, idx}
+        end
+      end)
       |> Enum.map(fn {k, v} ->
         key = to_string(k)
         # Quote string values except nc, qop (when it's the selected value, not offered)
