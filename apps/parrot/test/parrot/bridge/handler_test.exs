@@ -2,7 +2,6 @@ defmodule Parrot.Bridge.HandlerTest do
   use ExUnit.Case, async: true
 
   alias Parrot.Bridge.Handler
-  alias Parrot.Call
   alias ParrotSip.Message
 
   defmodule TestRouter do
