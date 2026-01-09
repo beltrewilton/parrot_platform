@@ -39,6 +39,8 @@ defmodule Parrot.Examples.SimpleIVR do
   - Clean callback separation for events like `handle_play_complete`
   """
 
+  require Logger
+
   # ============================================================================
   # Handler - DSL-based call handling
   # ============================================================================
@@ -117,8 +119,15 @@ defmodule Parrot.Examples.SimpleIVR do
     # Create a ParrotSip.Handler that uses Bridge.Handler with our DSL router
     handler = ParrotSip.Handler.new(Parrot.Bridge.Handler, %{router: Router})
 
-    # Start the SIP stack using the test helper pattern
-    # In production, you would use ParrotSip.Stack instead
-    SippTest.SipStackHelper.start_udp(handler, port: port)
+    # Start the SIP stack
+    case ParrotSip.Stack.start_link(handler: handler, transport: :udp, port: port) do
+      {:ok, stack} ->
+        actual_port = ParrotSip.Stack.get_port(stack)
+        Logger.info("[SimpleIVR] Started on port #{actual_port}")
+        {:ok, stack}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 end

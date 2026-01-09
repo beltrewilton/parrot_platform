@@ -23,7 +23,25 @@ defmodule Parrot.Examples.Registrar do
 
   require Logger
 
-  alias SippTest.SipStackHelper
+  # ============================================================================
+  # ETS Table Owner - Holds the ETS table to prevent it from being garbage collected
+  # ============================================================================
+
+  defmodule TableOwner do
+    @moduledoc false
+    use GenServer
+
+    def start_link(table_name) do
+      GenServer.start_link(__MODULE__, table_name, name: __MODULE__)
+    end
+
+    @impl true
+    def init(table_name) do
+      # Create ETS table owned by this GenServer
+      :ets.new(table_name, [:named_table, :public, :set])
+      {:ok, table_name}
+    end
+  end
 
   # ============================================================================
   # Registration Handler - Implements Parrot.RegistrationHandler callbacks
@@ -120,21 +138,21 @@ defmodule Parrot.Examples.Registrar do
     port = Keyword.get(opts, :port, 15062)
     _auth = Keyword.get(opts, :auth, false)
 
-    # Create ETS table for registrations (if not exists)
-    try do
-      :ets.new(__MODULE__, [:named_table, :public, :set])
-    catch
-      # Table already exists
-      :error, :badarg -> :ok
+    # Start the TableOwner GenServer to own the ETS table
+    # This ensures the table persists as long as the registrar is running
+    case TableOwner.start_link(__MODULE__) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
     end
 
     # Create a ParrotSip.Handler that uses Bridge.Handler with our router
     handler = ParrotSip.Handler.new(Parrot.Bridge.Handler, %{router: Router})
 
-    # Start the SIP stack using the test helper
-    case SipStackHelper.start_udp(handler, port: port) do
+    # Start the SIP stack
+    case ParrotSip.Stack.start_link(handler: handler, transport: :udp, port: port) do
       {:ok, stack} ->
-        Logger.info("[Registrar] Started on port #{stack.port}")
+        actual_port = ParrotSip.Stack.get_port(stack)
+        Logger.info("[Registrar] Started on port #{actual_port}")
         {:ok, stack}
 
       {:error, reason} ->
