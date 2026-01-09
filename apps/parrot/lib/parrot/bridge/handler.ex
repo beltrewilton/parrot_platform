@@ -275,6 +275,14 @@ defmodule Parrot.Bridge.Handler do
   defp extract_aor(_), do: "unknown"
 
   # Extract Contact URI from message
+  # Handle single Contact struct (common case)
+  defp extract_contact(%{contact: %{uri: %ParrotSip.Uri{} = uri}}) do
+    ParrotSip.Uri.to_string(uri)
+  end
+
+  defp extract_contact(%{contact: %{uri: uri}}) when is_binary(uri), do: uri
+
+  # Handle Contact as a list (less common)
   defp extract_contact(%{contact: [contact | _]}) when is_binary(contact), do: contact
 
   defp extract_contact(%{contact: [%{uri: %ParrotSip.Uri{} = uri} | _]}) do

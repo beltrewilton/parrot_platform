@@ -28,16 +28,17 @@ defmodule Parrot.Sipp.DSL.RegistrarTest do
   setup do
     # Start the registrar using its start/1 function
     {:ok, stack} = Registrar.start(port: 0)
+    port = ParrotSip.Stack.get_port(stack)
 
     on_exit(fn ->
-      # Stop transport listener first (if it's still alive)
-      if Process.alive?(stack.transport_listener) do
-        ParrotTransport.stop_listener(stack.transport_listener)
+      # Stop the stack (if it's still alive)
+      if Process.alive?(stack) do
+        ParrotSip.Stack.stop(stack)
       end
 
-      # Stop bridge process (if it's still alive)
-      if Process.alive?(stack.transport_handler) do
-        GenServer.stop(stack.transport_handler)
+      # Stop the TableOwner process
+      if pid = Process.whereis(Registrar.TableOwner) do
+        GenServer.stop(pid)
       end
 
       # Clean up ETS table
@@ -48,7 +49,7 @@ defmodule Parrot.Sipp.DSL.RegistrarTest do
       end
     end)
 
-    %{stack: stack, port: stack.port}
+    %{stack: stack, port: port}
   end
 
   # Get the umbrella root directory
