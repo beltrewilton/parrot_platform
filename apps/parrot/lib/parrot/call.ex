@@ -68,7 +68,11 @@ defmodule Parrot.Call do
           state: call_state(),
           method: String.t() | nil,
           assigns: map(),
-          __operations__: list()
+          __operations__: list(),
+          __uas__: term() | nil,
+          __media_pid__: pid() | nil,
+          __dialog_id__: String.t() | nil,
+          __sip_msg__: term() | nil
         }
 
   defstruct id: nil,
@@ -79,7 +83,11 @@ defmodule Parrot.Call do
             state: :incoming,
             method: nil,
             assigns: %{},
-            __operations__: []
+            __operations__: [],
+            __uas__: nil,
+            __media_pid__: nil,
+            __dialog_id__: nil,
+            __sip_msg__: nil
 
   @doc """
   Creates a new Call struct from keyword options.
@@ -109,7 +117,11 @@ defmodule Parrot.Call do
       state: Keyword.get(opts, :state, :incoming),
       method: Keyword.get(opts, :method),
       assigns: Keyword.get(opts, :assigns, %{}),
-      __operations__: []
+      __operations__: [],
+      __uas__: Keyword.get(opts, :uas),
+      __media_pid__: Keyword.get(opts, :media_pid),
+      __dialog_id__: Keyword.get(opts, :dialog_id),
+      __sip_msg__: Keyword.get(opts, :sip_msg)
     }
   end
 

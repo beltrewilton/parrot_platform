@@ -453,6 +453,262 @@ defmodule Parrot.Call.ServerTest do
     end
   end
 
+  describe "ActionExecutor integration" do
+    # Handler that returns play operation after play_complete
+    defmodule ChainedPlayHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(invite) do
+        invite
+        |> answer()
+        |> play("welcome.wav")
+      end
+
+      @impl true
+      def handle_play_complete("welcome.wav", call) do
+        call |> play("menu.wav")
+      end
+
+      @impl true
+      def handle_play_complete(_filename, call), do: call
+    end
+
+    test "executes operations via ActionExecutor when context provided" do
+      # Create a mock media process to receive play commands
+      media_pid = spawn(fn -> receive_loop([]) end)
+
+      invite_data = %{
+        from: "sip:a@b.com",
+        to: "sip:c@d.com"
+      }
+
+      context = %{
+        uas: self(),
+        sip_msg: build_test_sip_message(),
+        media_pid: media_pid
+      }
+
+      {:ok, pid} = Server.start_link(
+        handler: ChainedPlayHandler,
+        invite: invite_data,
+        context: context
+      )
+
+      # Initial handle_invite calls answer() and play()
+      # ActionExecutor should execute these
+      assert_receive {:response_sent, response}, 100
+      assert response.status_code == 200
+
+      call = Server.get_call(pid)
+      assert call.state == :answered
+    end
+
+    test "executes operations from callback results" do
+      media_pid = spawn(fn -> receive_loop([]) end)
+
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      context = %{
+        uas: self(),
+        sip_msg: build_test_sip_message(),
+        media_pid: media_pid
+      }
+
+      {:ok, pid} = Server.start_link(
+        handler: ChainedPlayHandler,
+        invite: invite_data,
+        context: context
+      )
+
+      # Consume initial response
+      assert_receive {:response_sent, _}, 100
+
+      # Dispatch play_complete - handler returns play("menu.wav")
+      Server.dispatch(pid, {:play_complete, "welcome.wav"})
+
+      # ActionExecutor should have sent play_files to media_pid
+      send(media_pid, {:get_messages, self()})
+      assert_receive {:messages, messages}, 100
+      assert {:play_files, ["menu.wav"], []} in messages
+    end
+
+    test "stores context fields in call struct" do
+      media_pid = spawn(fn -> receive_loop([]) end)
+
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      context = %{
+        uas: self(),
+        sip_msg: build_test_sip_message(),
+        media_pid: media_pid,
+        dialog_id: "dialog-123"
+      }
+
+      {:ok, pid} = Server.start_link(
+        handler: TestHandler,
+        invite: invite_data,
+        context: context
+      )
+
+      call = Server.get_call(pid)
+      assert call.__uas__ == self()
+      assert call.__media_pid__ == media_pid
+      assert call.__dialog_id__ == "dialog-123"
+    end
+  end
+
+  # Helper to receive and store messages
+  defp receive_loop(messages) do
+    receive do
+      {:get_messages, from} ->
+        send(from, {:messages, Enum.reverse(messages)})
+        receive_loop(messages)
+
+      msg ->
+        receive_loop([msg | messages])
+    end
+  end
+
+  defp build_test_sip_message do
+    %ParrotSip.Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:test@example.com",
+      from: %ParrotSip.Headers.From{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "example.com"},
+        parameters: %{tag: "from-tag"}
+      },
+      to: %ParrotSip.Headers.To{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "bob", host: "example.com"},
+        parameters: %{}
+      },
+      call_id: "test-call-id",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite},
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{branch: "z9hG4bK-test"}
+        }
+      ],
+      body: nil
+    }
+  end
+
+  describe "hangup integration" do
+    # Handler that plays welcome, then hangs up after play_complete
+    defmodule HangupAfterPlayHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(invite) do
+        invite
+        |> answer()
+        |> play("welcome.wav")
+      end
+
+      @impl true
+      def handle_play_complete("welcome.wav", call) do
+        # T039: Hangup after play_complete
+        call |> hangup()
+      end
+
+      @impl true
+      def handle_play_complete(_filename, call), do: call
+
+      @impl true
+      def handle_hangup(call) do
+        {:noreply, assign(call, :hangup_callback_invoked, true)}
+      end
+    end
+
+    test "hangup operation is dispatched correctly after play_complete" do
+      # T039: Test hangup after play_complete
+      media_pid = spawn(fn -> receive_loop([]) end)
+
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      context = %{
+        uas: self(),
+        sip_msg: build_test_sip_message(),
+        media_pid: media_pid
+      }
+
+      {:ok, pid} = Server.start_link(
+        handler: HangupAfterPlayHandler,
+        invite: invite_data,
+        context: context
+      )
+
+      # Consume initial 200 OK response from answer()
+      assert_receive {:response_sent, _}, 100
+
+      # Dispatch play_complete - handler returns hangup()
+      Server.dispatch(pid, {:play_complete, "welcome.wav"})
+
+      # Verify ActionExecutor sent stop_media to media session
+      send(media_pid, {:get_messages, self()})
+      assert_receive {:messages, messages}, 100
+      assert {:stop_media} in messages
+
+      # Verify call state is terminated
+      call = Server.get_call(pid)
+      assert call.state == :terminated
+    end
+
+    test "hangup callback is invoked when :hangup event is dispatched" do
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+
+      {:ok, pid} = Server.start_link(
+        handler: HangupAfterPlayHandler,
+        invite: invite_data
+      )
+
+      # Dispatch :hangup event (simulating remote party hanging up)
+      Server.dispatch(pid, :hangup)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:hangup_callback_invoked] == true
+      assert call.state == :terminated
+    end
+
+    test "hangup stops media session when context has media_pid" do
+      media_pid = spawn(fn -> receive_loop([]) end)
+
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      context = %{
+        uas: self(),
+        sip_msg: build_test_sip_message(),
+        media_pid: media_pid
+      }
+
+      {:ok, pid} = Server.start_link(
+        handler: TestHandler,
+        invite: invite_data,
+        context: context
+      )
+
+      # Consume initial response
+      assert_receive {:response_sent, _}, 100
+
+      # Now test hangup via play_complete handler that calls hangup
+      # First, play_complete on welcome.wav (TestHandler just stores it)
+      Server.dispatch(pid, {:play_complete, "welcome.wav"})
+
+      # Dispatch hangup event
+      Server.dispatch(pid, :hangup)
+
+      # Verify state is terminated
+      call = Server.get_call(pid)
+      assert call.state == :terminated
+    end
+
+    # Future enhancements tracked in GitHub issues:
+    # - T042: Registry cleanup - Call.Server will unregister on termination
+    # - T041: UAC BYE sending - Requires dialog state integration
+  end
+
   describe "synchronous vs asynchronous dispatch" do
     test "dispatch/2 is synchronous by default" do
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
@@ -478,6 +734,101 @@ defmodule Parrot.Call.ServerTest do
 
       call = Server.get_call(pid)
       assert call.assigns[:play_complete] == "async.wav"
+    end
+  end
+
+  describe "media event handling via handle_info" do
+    # These tests verify that Call.Server receives {:media_event, session_id, event}
+    # messages directly from MediaSession and dispatches them to the appropriate callbacks.
+
+    setup do
+      invite_data = %{
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: "test-call@host"
+      }
+
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+      %{pid: pid}
+    end
+
+    test "dispatches play_complete media event to handle_play_complete callback", %{pid: pid} do
+      session_id = "media-session-123"
+
+      # Send media event directly to the server process (simulating MediaSession)
+      send(pid, {:media_event, session_id, {:play_complete, "welcome.wav"}})
+
+      # Allow message to be processed
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:play_complete] == "welcome.wav"
+    end
+
+    test "dispatches dtmf_collected media event to handle_dtmf callback", %{pid: pid} do
+      session_id = "media-session-123"
+
+      # Send dtmf_collected event from MediaSession
+      send(pid, {:media_event, session_id, {:dtmf_collected, "1234"}})
+
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:dtmf_received] == "1234"
+    end
+
+    test "dispatches dtmf_timeout media event to handle_dtmf callback with :timeout", %{pid: pid} do
+      session_id = "media-session-123"
+
+      # Send dtmf_timeout event - partial digits collected before timeout
+      send(pid, {:media_event, session_id, {:dtmf_timeout, "12"}})
+
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:dtmf_received] == :timeout
+    end
+
+    test "dispatches record_complete media event to handle_record_complete callback", %{pid: pid} do
+      session_id = "media-session-123"
+
+      # Send record_complete event from MediaSession
+      send(pid, {:media_event, session_id, {:record_complete, "/tmp/recording.wav", 5000}})
+
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:record_complete] == {"/tmp/recording.wav", 5000}
+    end
+
+    test "handles multiple media events in sequence", %{pid: pid} do
+      session_id = "media-session-123"
+
+      # Simulate a sequence of media events
+      send(pid, {:media_event, session_id, {:play_complete, "welcome.wav"}})
+      Process.sleep(10)
+
+      send(pid, {:media_event, session_id, {:dtmf_collected, "5"}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:play_complete] == "welcome.wav"
+      assert call.assigns[:dtmf_received] == "5"
+    end
+
+    test "ignores session_id in media event (uses for logging only)", %{pid: pid} do
+      # Different session IDs should still work - session_id is for logging/debugging
+      send(pid, {:media_event, "session-A", {:play_complete, "file1.wav"}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:play_complete] == "file1.wav"
+
+      send(pid, {:media_event, "session-B", {:dtmf_collected, "9"}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:dtmf_received] == "9"
     end
   end
 end

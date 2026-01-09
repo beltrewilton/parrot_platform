@@ -194,21 +194,34 @@ defmodule Parrot.Bridge.Handler do
   Handles incoming REGISTER requests.
 
   Routes to the registration handler specified in the router.
+  If no registration handler is configured, returns 404 Not Found.
   """
   @impl true
-  def handle_register(uas, req_sip_msg, %{router: _router} = _args) do
+  def handle_register(uas, req_sip_msg, %{router: router} = args) do
     Logger.debug("[Bridge.Handler] Received REGISTER")
 
-    # Future implementation:
-    # 1. Get registration handler from router.__register_handler__()
-    # 2. Invoke handler callbacks (authenticate, store_binding, etc.)
-    # 3. Send appropriate response
+    case router.__register_handler__() do
+      nil ->
+        # No registration handler configured
+        Logger.warning("[Bridge.Handler] No registration handler configured")
+        not_found = Message.reply(req_sip_msg, 404, "Not Found")
+        send_response(uas, not_found, args)
+        :ok
 
-    # For now, send 200 OK
-    response = Message.reply(req_sip_msg, 200, "OK")
-    ParrotSip.Transaction.Server.response(response, uas)
-
-    :ok
+      handler_module ->
+        # Route to registration handler
+        # For now, just send 200 OK - full implementation would:
+        # 1. Extract credentials from Authorization header
+        # 2. Call handler.get_password/1 to get password
+        # 3. Validate digest authentication
+        # 4. Call handler.authenticate/1 for additional checks
+        # 5. Call handler.store_binding/3 to store registration
+        # 6. Call handler.get_bindings/1 to build Contact header
+        Logger.debug("[Bridge.Handler] Routing REGISTER to #{inspect(handler_module)}")
+        response = Message.reply(req_sip_msg, 200, "OK")
+        send_response(uas, response, args)
+        :ok
+    end
   end
 
   @doc """

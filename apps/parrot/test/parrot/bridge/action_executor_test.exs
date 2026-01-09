@@ -204,7 +204,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
   end
 
   describe "execute_hangup/2" do
-    test "updates call state to :terminated" do
+    test "updates call state to :terminated from :answered state" do
       call = Call.new(state: :answered)
 
       context = %{
@@ -213,6 +213,61 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: nil
       }
 
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+    end
+
+    test "updates call state to :terminated from :incoming state" do
+      call = Call.new(state: :incoming)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+    end
+
+    test "sends stop message to media_pid when running" do
+      # Start a mock media process that will receive the stop message
+      test_pid = self()
+
+      media_pid =
+        spawn(fn ->
+          receive do
+            {:stop_media} -> send(test_pid, :media_stopped)
+          end
+        end)
+
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+      assert_receive :media_stopped, 500
+    end
+
+    test "handles dead media_pid gracefully" do
+      # Create a process that immediately dies
+      media_pid = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid
+      }
+
+      # Should not crash even with dead pid
       {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
       assert updated_call.state == :terminated
     end
