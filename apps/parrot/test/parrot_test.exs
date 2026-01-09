@@ -74,4 +74,41 @@ defmodule ParrotTest do
       end
     end
   end
+
+  describe "validate_router/1" do
+    defmodule ValidRouter do
+      @moduledoc false
+      use Parrot.Router
+      invite "*", SomeHandler
+    end
+
+    defmodule InvalidRouter do
+      @moduledoc false
+      # Does not use Parrot.Router - no __routes__/0 or __pipelines__/0
+    end
+
+    test "returns :ok for a valid router module" do
+      assert :ok = Parrot.validate_router(ValidRouter)
+    end
+
+    test "returns {:error, reason} for a module without __routes__/0" do
+      assert {:error, reason} = Parrot.validate_router(InvalidRouter)
+      assert reason =~ "__routes__"
+    end
+
+    test "returns {:error, reason} for a module without __pipelines__/0" do
+      # Create a module that has __routes__ but not __pipelines__
+      defmodule PartialRouter do
+        def __routes__, do: []
+      end
+
+      assert {:error, reason} = Parrot.validate_router(PartialRouter)
+      assert reason =~ "__pipelines__"
+    end
+
+    test "returns {:error, reason} for a non-existent module" do
+      assert {:error, reason} = Parrot.validate_router(NonExistentModule)
+      assert reason =~ "not loaded" or reason =~ "not found"
+    end
+  end
 end

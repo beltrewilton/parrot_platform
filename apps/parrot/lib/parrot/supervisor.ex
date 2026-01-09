@@ -15,9 +15,22 @@ defmodule Parrot.Supervisor do
 
   * `:router` - Required. The router module for call routing.
   * `:transports` - Required. List of transport configurations.
+
+  ## Raises
+
+  * `ArgumentError` - If the router is invalid (doesn't define `__routes__/0` or `__pipelines__/0`)
   """
   def start_link(opts) do
-    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+    # Validate router before starting
+    router = Keyword.fetch!(opts, :router)
+
+    case Parrot.validate_router(router) do
+      :ok ->
+        Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+
+      {:error, reason} ->
+        raise ArgumentError, reason
+    end
   end
 
   @impl true
@@ -25,17 +38,18 @@ defmodule Parrot.Supervisor do
     # Store configuration in persistent_term for fast access
     :persistent_term.put(:parrot_config, opts)
 
+    router = Keyword.fetch!(opts, :router)
+    transports = Keyword.get(opts, :transports, [])
+
     children = [
       # Registry for Parrot process discovery
       {Registry, keys: :unique, name: Parrot.Registry},
       # Task supervisor for async operations (e.g., presence notifications)
       {Task.Supervisor, name: Parrot.TaskSupervisor},
       # Registration expiry timer manager
-      {Parrot.Registration.ExpiryManager, name: Parrot.Registration.ExpiryManager}
-      # Future children will include:
-      # - Router process
-      # - Transport manager
-      # - Call supervisor
+      {Parrot.Registration.ExpiryManager, name: Parrot.Registration.ExpiryManager},
+      # Transport manager - starts and manages SIP transports
+      {Parrot.Bridge.TransportManager, router: router, transports: transports}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
