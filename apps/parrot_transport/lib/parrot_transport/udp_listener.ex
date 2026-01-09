@@ -50,8 +50,11 @@ defmodule ParrotTransport.UdpListener do
   """
   @spec start_link(ListenerConfig.t()) :: :gen_statem.start_ret()
   def start_link(%ListenerConfig{transport: :udp} = config) do
-    opts = if config.name, do: [name: config.name], else: []
-    :gen_statem.start_link(__MODULE__, config, opts)
+    if config.name do
+      :gen_statem.start_link({:local, config.name}, __MODULE__, config, [])
+    else
+      :gen_statem.start_link(__MODULE__, config, [])
+    end
   end
 
   @doc """
