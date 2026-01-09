@@ -255,6 +255,70 @@ Configure your SIP client with:
    - Place call on hold
    - Verify re-INVITE with appropriate SDP
 
+### Testing with gophone
+
+[gophone](https://github.com/pion/gophone) is a command-line SIP client ideal for testing Parrot applications.
+
+#### Installation
+
+```bash
+go install github.com/pion/gophone@latest
+```
+
+#### Testing the DSL Examples
+
+**1. Echo Server**
+```bash
+# Start the echo server (in one terminal)
+mix run -e "Parrot.Examples.EchoServer.start(port: 15060)"
+
+# Make a test call (in another terminal)
+gophone dial sip:test@127.0.0.1:15060
+
+# Expected: Call answers with 200 OK, then terminates on hangup
+```
+
+**2. Simple IVR**
+```bash
+# Start the IVR server
+mix run -e "Parrot.Examples.SimpleIVR.start(port: 15061)"
+
+# Make a call
+gophone dial sip:welcome@127.0.0.1:15061
+
+# Make a call with DTMF
+gophone dial -dtmf=1 -dtmf_delay=2s sip:welcome@127.0.0.1:15061
+
+# Expected: Answers, plays welcome audio, handles DTMF
+```
+
+**3. Registrar**
+```bash
+# Start the registrar
+mix run -e "Parrot.Examples.Registrar.start(port: 15062)"
+
+# Register a user
+gophone register -username=alice sip:127.0.0.1:15062
+
+# Expected: 200 OK response, registration stored
+```
+
+#### gophone Common Options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `-username` | SIP username | `-username=alice` |
+| `-password` | SIP password | `-password=secret` |
+| `-dtmf` | Send DTMF digits | `-dtmf=1234` |
+| `-dtmf_delay` | Delay before DTMF | `-dtmf_delay=2s` |
+| `-duration` | Call duration | `-duration=10s` |
+
+#### Troubleshooting gophone
+
+1. **"Connection refused"** - Server not running or wrong port
+2. **"No route to host"** - Check firewall, try `127.0.0.1` instead of `localhost`
+3. **No audio** - gophone supports PCMU/PCMA codecs, verify SDP negotiation
+
 ## Testing Media Handlers
 
 ### Creating Test Media Handlers
