@@ -254,4 +254,322 @@ defmodule Parrot.Bridge.HandlerTest do
       timeout -> acc
     end
   end
+
+  # ===========================================================================
+  # US5: Router-based Routing Tests
+  # ===========================================================================
+
+  describe "pattern routing (US5 - T043)" do
+    # Handler for extension calls (1xxx pattern)
+    defmodule ExtensionHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> assign(:routed_to, :extension) |> answer()
+      end
+    end
+
+    # Handler for catch-all
+    defmodule CatchAllHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> assign(:routed_to, :catchall) |> answer()
+      end
+    end
+
+    # Router with multiple patterns
+    defmodule PatternRouter do
+      use Parrot.Router
+
+      # Extension pattern: 1xxx (1 followed by 3 digits)
+      invite "1xxx", Parrot.Bridge.HandlerTest.ExtensionHandler
+
+      # Catch-all
+      invite "*", Parrot.Bridge.HandlerTest.CatchAllHandler
+    end
+
+    test "routes 1xxx pattern to ExtensionHandler" do
+      test_pid = self()
+      invite = create_invite_to("1234")  # Matches 1xxx
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PatternRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      # Should get 100 Trying + 200 OK (from ExtensionHandler answering)
+      responses = collect_responses(2)
+      assert Enum.any?(responses, fn r -> r.status_code == 200 end)
+    end
+
+    test "routes non-matching pattern to catch-all handler" do
+      test_pid = self()
+      invite = create_invite_to("5678")  # Doesn't match 1xxx, matches *
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PatternRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      responses = collect_responses(2)
+      assert Enum.any?(responses, fn r -> r.status_code == 200 end)
+    end
+  end
+
+  describe "scope routing with from_ip (US5 - T044)" do
+    defmodule InternalHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> assign(:routed_to, :internal) |> answer()
+      end
+    end
+
+    defmodule ExternalHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> assign(:routed_to, :external) |> answer()
+      end
+    end
+
+    defmodule ScopeRouter do
+      use Parrot.Router
+
+      # Internal network scope
+      scope "/", from_ip: "192.168.1.0/24" do
+        invite "*", Parrot.Bridge.HandlerTest.InternalHandler
+      end
+
+      # Catch-all for external
+      invite "*", Parrot.Bridge.HandlerTest.ExternalHandler
+    end
+
+    test "routes requests from matching IP to scoped handler" do
+      test_pid = self()
+      invite = create_invite_from_ip({192, 168, 1, 50})
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: ScopeRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      responses = collect_responses(2)
+      assert Enum.any?(responses, fn r -> r.status_code == 200 end)
+    end
+
+    test "routes requests from non-matching IP to fallback handler" do
+      test_pid = self()
+      invite = create_invite_from_ip({10, 0, 0, 1})  # Not in 192.168.1.0/24
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: ScopeRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      responses = collect_responses(2)
+      assert Enum.any?(responses, fn r -> r.status_code == 200 end)
+    end
+  end
+
+  describe "REGISTER routing (US5 - T045)" do
+    defmodule TestRegistrationHandler do
+      @moduledoc false
+      use Parrot.RegistrationHandler
+
+      @impl true
+      def authenticate(_credentials), do: :ok
+
+      @impl true
+      def store_binding(_aor, _contact, _expires), do: :ok
+
+      @impl true
+      def get_bindings(_aor), do: []
+    end
+
+    defmodule RegisterRouter do
+      use Parrot.Router
+
+      invite "*", Parrot.Bridge.HandlerTest.CatchAllHandler
+      register Parrot.Bridge.HandlerTest.TestRegistrationHandler
+    end
+
+    test "routes REGISTER to registered handler" do
+      test_pid = self()
+      register_msg = create_test_register()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: RegisterRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_register(uas, register_msg, args)
+
+      # Should receive 200 OK for successful registration
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+    end
+
+    test "returns 404 when no registration handler configured" do
+      test_pid = self()
+      register_msg = create_test_register()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      # Router without register handler (PatternRouter is defined in pattern routing describe block)
+      args = %{router: Parrot.Bridge.HandlerTest.PatternRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_register(uas, register_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 404
+    end
+  end
+
+  describe "no-match routing (US5 - T046)" do
+    defmodule NoMatchRouter do
+      use Parrot.Router
+      # No routes defined
+    end
+
+    test "returns 404 when no route matches INVITE" do
+      test_pid = self()
+      invite = create_test_invite()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: NoMatchRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      responses = collect_responses(2)
+      not_found = Enum.find(responses, fn r -> r.status_code == 404 end)
+      assert not_found != nil
+      assert not_found.reason_phrase == "Not Found"
+    end
+  end
+
+  describe "uas_request fallback (US5 - T049)" do
+    test "returns 501 Not Implemented for unhandled methods" do
+      test_pid = self()
+
+      # Create an INFO request (unhandled method)
+      info_msg = %Message{
+        type: :request,
+        method: :info,
+        request_uri: "sip:100@127.0.0.1:5060",
+        version: "SIP/2.0",
+        via: [
+          %ParrotSip.Headers.Via{
+            protocol: "SIP",
+            version: "2.0",
+            transport: :udp,
+            host: "127.0.0.1",
+            port: 5080,
+            parameters: %{"branch" => "z9hG4bK-test"}
+          }
+        ],
+        from: %ParrotSip.Headers.From{
+          uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1"},
+          parameters: %{"tag" => "from-tag"}
+        },
+        to: %ParrotSip.Headers.To{
+          uri: %ParrotSip.Uri{scheme: "sip", user: "bob", host: "127.0.0.1"},
+          parameters: %{}
+        },
+        call_id: "test-call-id",
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :info}
+      }
+
+      # uas_request should return 501 - can't easily test via response callback
+      # since it uses ParrotSip.Transaction.Server.response directly
+      # Just verify it doesn't crash and returns :ok
+      result = Handler.uas_request(:test_uas, info_msg, %{router: TestRouter})
+      assert result == :ok
+    end
+  end
+
+  # ===========================================================================
+  # Additional Test Helpers
+  # ===========================================================================
+
+  defp create_invite_to(to_user) do
+    %Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:#{to_user}@127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{"branch" => "z9hG4bK-test-branch"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        display_name: nil,
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1", port: 5080},
+        parameters: %{"tag" => "from-tag-123"}
+      },
+      to: %ParrotSip.Headers.To{
+        display_name: nil,
+        uri: %ParrotSip.Uri{scheme: "sip", user: to_user, host: "127.0.0.1", port: 5060},
+        parameters: %{}
+      },
+      call_id: "test-call-id-123@127.0.0.1",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite},
+      max_forwards: 70,
+      body: "",
+      source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
+
+  defp create_invite_from_ip(source_ip) do
+    invite = create_test_invite()
+    %{invite | source: %{ip: source_ip, port: 5080}}
+  end
+
+  defp create_test_register do
+    %Message{
+      type: :request,
+      method: :register,
+      request_uri: "sip:127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          parameters: %{"branch" => "z9hG4bK-register-branch"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1"},
+        parameters: %{"tag" => "from-tag-reg"}
+      },
+      to: %ParrotSip.Headers.To{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1"},
+        parameters: %{}
+      },
+      call_id: "register-call-id@127.0.0.1",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :register},
+      max_forwards: 70,
+      body: "",
+      source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
 end

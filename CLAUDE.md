@@ -73,6 +73,15 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building teleco
 - Content-Length framing for stream transports (TCP/TLS)
 - Never inspect packet contents at transport layer
 
+#### parrot (DSL Layer)
+- High-level DSL for building VoIP applications
+- Use `Parrot.InviteHandler` behaviour for call handling
+- Use `Parrot.Router` for request routing with pattern matching
+- `Bridge.Handler` connects ParrotSip to DSL handlers
+- `Call.Server` manages call lifecycle and executes operations via `ActionExecutor`
+- Pipeline operations: `answer()`, `reject(status)`, `hangup()`, `play(file)`
+- Media events received via `{:media_event, session_id, event}` messages to Call.Server
+
 ---
 
 ## Media Handler Pattern (IMPORTANT)
@@ -444,3 +453,10 @@ When working with these modules, understand gen_statem concepts:
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Active Technologies
+- Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines) (001-dsl-sip-bridge)
+- In-memory process state, ETS for call/dialog lookups via Registry (001-dsl-sip-bridge)
+
+## Recent Changes
+- 001-dsl-sip-bridge: Added Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines)

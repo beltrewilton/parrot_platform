@@ -34,6 +34,7 @@ defmodule Parrot.Bridge.ActionExecutor do
   @type operation ::
           {:answer, keyword()}
           | {:reject, integer()}
+          | {:reject, integer(), keyword()}
           | {:hangup, keyword()}
           | {:play, String.t() | [String.t()], keyword()}
 
@@ -103,10 +104,11 @@ defmodule Parrot.Bridge.ActionExecutor do
     Logger.debug("[ActionExecutor] Executing answer operation")
 
     # Build 200 OK response
+    # Note: SDP body for media negotiation is not included in this basic implementation.
+    # The current behavior sends a 200 OK without SDP, which means no media session
+    # parameters are exchanged. Full SDP negotiation requires integration with
+    # MediaSession to generate an SDP answer based on the offer in the INVITE.
     response = Message.reply(sip_msg, 200, "OK")
-
-    # TODO: Add SDP body for media negotiation
-    # For now, send basic 200 OK
 
     # Send the response
     send_response(context, response)
@@ -148,23 +150,29 @@ defmodule Parrot.Bridge.ActionExecutor do
   @doc """
   Execute the `:hangup` operation.
 
-  1. Send BYE request (if call is established)
-  2. Stop MediaSession if running
-  3. Update call state to `:terminated`
+  1. Stop MediaSession if running
+  2. Update call state to `:terminated`
+
+  Note: BYE request transmission is not currently implemented. The current behavior
+  stops the local media session but does not send a BYE to the remote party.
+  Call termination relies on the remote party initiating the BYE.
   """
   @spec execute_hangup(Call.t(), context()) :: execute_result()
   def execute_hangup(call, %{media_pid: media_pid} = _context) do
     Logger.debug("[ActionExecutor] Executing hangup operation")
 
     # Stop media session if running
-    if media_pid && Process.alive?(media_pid) do
-      # TODO: Implement proper media session shutdown
-      Logger.debug("[ActionExecutor] Would stop media session #{inspect(media_pid)}")
+    # Note: Sending to a dead process is safe (message silently discarded)
+    if media_pid do
+      Logger.debug("[ActionExecutor] Stopping media session #{inspect(media_pid)}")
+      send(media_pid, {:stop_media})
     end
 
-    # TODO: Send BYE request (requires UAC transaction)
-    # For now, just update state
-
+    # Note: BYE request transmission is not implemented in ActionExecutor.
+    # The current behavior only stops the local media session and updates call state.
+    # To properly terminate an established call, the Bridge.Handler or a UAC module
+    # must send the BYE request using dialog state. Currently, call termination
+    # relies on the remote party sending BYE.
     updated_call = %{call | state: :terminated}
 
     {:ok, updated_call}
@@ -212,6 +220,13 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   defp execute_operation({:reject, status_code}, call, context) do
+    case execute_reject(call, context, status_code) do
+      {:ok, updated_call} -> {:ok, updated_call, :stop}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:reject, status_code, _opts}, call, context) do
     case execute_reject(call, context, status_code) do
       {:ok, updated_call} -> {:ok, updated_call, :stop}
       error -> error
