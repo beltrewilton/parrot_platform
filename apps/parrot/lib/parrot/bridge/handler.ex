@@ -32,6 +32,9 @@ defmodule Parrot.Bridge.Handler do
 
   require Logger
 
+  alias Parrot.Bridge.ActionExecutor
+  alias Parrot.Call
+  alias Parrot.Router.Dispatcher
   alias ParrotSip.Message
 
   # ============================================================================
@@ -81,7 +84,7 @@ defmodule Parrot.Bridge.Handler do
     # For now, return 501 Not Implemented for unhandled methods
     # Future: Route through router to find appropriate handler
     response = Message.reply(req_sip_msg, 501, "Not Implemented")
-    ParrotSip.Transaction.Server.response(uas, response)
+    ParrotSip.Transaction.Server.response(response, uas)
     :ok
   end
 
@@ -118,21 +121,51 @@ defmodule Parrot.Bridge.Handler do
   then dispatches to the handler's `handle_invite/1` callback.
   """
   @impl true
-  def handle_invite(uas, req_sip_msg, %{router: _router} = _args) do
+  def handle_invite(uas, req_sip_msg, %{router: router} = args) do
     Logger.debug("[Bridge.Handler] Received INVITE")
 
-    # Future implementation:
-    # 1. Route through router.dispatch(req_sip_msg)
-    # 2. Create Parrot.Call struct
-    # 3. Spawn Call.Server
-    # 4. Invoke handler's handle_invite/1
-    # 5. Execute returned operations via ActionExecutor
-
-    # For now, send 100 Trying to acknowledge receipt
+    # 1. Send 100 Trying first
     trying = Message.reply(req_sip_msg, 100, "Trying")
-    ParrotSip.Transaction.Server.response(uas, trying)
+    send_response(uas, trying, args)
 
-    :ok
+    # 2. Route through dispatcher to find handler
+    case Dispatcher.dispatch(router, req_sip_msg) do
+      {:ok, handler_module, _opts} ->
+        # 3. Create Call struct from SIP message
+        call = create_call_from_sip(req_sip_msg, handler_module)
+
+        # 4. Invoke handler's handle_invite/1
+        result_call = handler_module.handle_invite(call)
+
+        # 5. Execute returned operations via ActionExecutor
+        operations = Call.get_operations(result_call)
+
+        context = %{
+          uas: uas,
+          sip_msg: req_sip_msg,
+          media_pid: nil,
+          response_fn: Map.get(args, :response_fn)
+        }
+
+        case ActionExecutor.execute(operations, result_call, context) do
+          {:ok, _updated_call} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.error("[Bridge.Handler] ActionExecutor failed: #{inspect(reason)}")
+            # Send 500 error on failure
+            error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+            send_response(uas, error_response, args)
+            :ok
+        end
+
+      {:no_match, _reason} ->
+        Logger.warning("[Bridge.Handler] No route match for INVITE")
+        # Send 404 Not Found
+        not_found = Message.reply(req_sip_msg, 404, "Not Found")
+        send_response(uas, not_found, args)
+        :ok
+    end
   end
 
   @doc """
@@ -152,7 +185,7 @@ defmodule Parrot.Bridge.Handler do
 
     # For now, send 200 OK
     response = Message.reply(req_sip_msg, 200, "OK")
-    ParrotSip.Transaction.Server.response(uas, response)
+    ParrotSip.Transaction.Server.response(response, uas)
 
     :ok
   end
@@ -173,7 +206,7 @@ defmodule Parrot.Bridge.Handler do
 
     # For now, send 200 OK
     response = Message.reply(req_sip_msg, 200, "OK")
-    ParrotSip.Transaction.Server.response(uas, response)
+    ParrotSip.Transaction.Server.response(response, uas)
 
     :ok
   end
@@ -188,7 +221,7 @@ defmodule Parrot.Bridge.Handler do
     Logger.debug("[Bridge.Handler] Received OPTIONS")
 
     response = Message.reply(req_sip_msg, 200, "OK")
-    ParrotSip.Transaction.Server.response(uas, response)
+    ParrotSip.Transaction.Server.response(response, uas)
 
     :ok
   end
@@ -197,12 +230,54 @@ defmodule Parrot.Bridge.Handler do
   Handles incoming CANCEL requests.
   """
   @impl true
-  def handle_cancel(uas, req_sip_msg, _args) do
+  def handle_cancel(uas, req_sip_msg, args) do
     Logger.debug("[Bridge.Handler] Received CANCEL")
 
     response = Message.reply(req_sip_msg, 200, "OK")
-    ParrotSip.Transaction.Server.response(uas, response)
+    send_response(uas, response, args)
 
     :ok
+  end
+
+  # ============================================================================
+  # Private Helper Functions
+  # ============================================================================
+
+  # Create a Parrot.Call struct from a SIP message
+  defp create_call_from_sip(sip_msg, handler_module) do
+    Call.new(
+      id: Call.generate_id(),
+      handler: handler_module,
+      from: extract_uri_string(sip_msg.from),
+      to: extract_uri_string(sip_msg.to),
+      call_id: sip_msg.call_id,
+      method: to_string(sip_msg.method),
+      state: :incoming
+    )
+  end
+
+  # Extract URI string from From/To headers
+  defp extract_uri_string(%{uri: %ParrotSip.Uri{scheme: scheme} = uri}) when is_atom(scheme) do
+    # Convert atom scheme to string for to_string/1
+    uri_with_string_scheme = %{uri | scheme: to_string(scheme)}
+    ParrotSip.Uri.to_string(uri_with_string_scheme)
+  end
+
+  defp extract_uri_string(%{uri: %ParrotSip.Uri{} = uri}) do
+    ParrotSip.Uri.to_string(uri)
+  end
+
+  defp extract_uri_string(%{uri: uri}) when is_binary(uri), do: uri
+  defp extract_uri_string(_), do: nil
+
+  # Send response, supporting test callback pattern
+  defp send_response(uas, response, %{response_fn: response_fn}) when is_function(response_fn, 2) do
+    # Test mode - use callback
+    response_fn.(response, uas)
+  end
+
+  defp send_response(uas, response, _args) do
+    # Production mode - use UAS transaction
+    ParrotSip.Transaction.Server.response(response, uas)
   end
 end
