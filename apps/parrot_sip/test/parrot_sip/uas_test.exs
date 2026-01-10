@@ -223,13 +223,43 @@ defmodule ParrotSip.Transaction.ServerTest do
   end
 
   describe "response functions" do
-    test "response/2 delegates to transaction server" do
+    test "response/2 returns {:ok, final_response} with To tag for INVITE 2xx" do
       req_msg = create_invite_request()
       uas = create_test_uas(req_msg)
       resp_msg = Message.reply(req_msg, 200, "OK")
 
-      # Should complete without error
-      assert :ok == Server.response(resp_msg, uas)
+      # Response should return {:ok, final_response} with generated To tag
+      assert {:ok, final_response} = Server.response(resp_msg, uas)
+      assert final_response.status_code == 200
+
+      # The final response should have a To tag added
+      assert final_response.to.parameters["tag"] != nil
+      assert is_binary(final_response.to.parameters["tag"])
+    end
+
+    test "response/2 preserves existing To tag for INVITE 2xx" do
+      req_msg = create_invite_request()
+      uas = create_test_uas(req_msg)
+      resp_msg = Message.reply(req_msg, 200, "OK")
+
+      # Add an existing To tag
+      existing_tag = "existing-tag-123"
+      to_with_tag = %{resp_msg.to | parameters: Map.put(resp_msg.to.parameters, "tag", existing_tag)}
+      resp_msg_with_tag = %{resp_msg | to: to_with_tag}
+
+      # Response should preserve the existing tag
+      assert {:ok, final_response} = Server.response(resp_msg_with_tag, uas)
+      assert final_response.to.parameters["tag"] == existing_tag
+    end
+
+    test "response/2 returns {:ok, final_response} for non-dialog responses" do
+      req_msg = create_options_request()
+      uas = create_test_uas(req_msg)
+      resp_msg = Message.reply(req_msg, 200, "OK")
+
+      # Non-dialog responses should also return {:ok, final_response}
+      assert {:ok, final_response} = Server.response(resp_msg, uas)
+      assert final_response.status_code == 200
     end
 
     test "response_retransmit/2 delegates to transaction server" do
@@ -330,6 +360,28 @@ defmodule ParrotSip.Transaction.ServerTest do
       call_id: headers["call-id"],
       contact: headers["contact"],
       cseq: headers["cseq"],
+      from: headers["from"],
+      to: headers["to"],
+      via: headers["via"],
+      body: "",
+      source: create_test_source(),
+      other_headers: %{}
+    }
+  end
+
+  defp create_options_request do
+    headers = create_basic_headers()
+    cseq = %CSeq{number: 1, method: :options}
+
+    %Message{
+      type: :request,
+      direction: :incoming,
+      method: :options,
+      request_uri: "sip:bob@biloxi.com",
+      version: "SIP/2.0",
+      call_id: headers["call-id"],
+      contact: headers["contact"],
+      cseq: cseq,
       from: headers["from"],
       to: headers["to"],
       via: headers["via"],

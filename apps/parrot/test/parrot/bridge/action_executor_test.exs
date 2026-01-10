@@ -92,6 +92,26 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       assert updated_call.state == :answered
     end
 
+    test "captures dialog_id after answer" do
+      call = Call.new(state: :incoming)
+      sip_msg = build_invite_message()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Should have dialog_id set
+      assert updated_call.__dialog_id__ != nil
+      assert is_binary(updated_call.__dialog_id__)
+
+      # dialog_id should contain the call_id
+      assert String.contains?(updated_call.__dialog_id__, sip_msg.call_id)
+    end
+
     test "returns error when UAS is nil" do
       call = Call.new()
 
@@ -268,6 +288,39 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       # Should not crash even with dead pid
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+    end
+
+    test "succeeds without dialog_id (graceful degradation)" do
+      # Call without dialog_id - hangup should still work, just log warning
+      call = Call.new(state: :answered, dialog_id: nil)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+      # Should not crash, just logs warning about no dialog_id
+    end
+
+    test "attempts to send BYE when dialog_id is present" do
+      # Create a call with dialog_id
+      sip_msg = build_invite_message()
+      dialog_id = "test-dialog-id-#{:erlang.unique_integer()}"
+      call = Call.new(state: :answered, dialog_id: dialog_id)
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil
+      }
+
+      # Hangup should complete even if dialog not found
+      # (graceful degradation - dialog might have been cleaned up)
       {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
       assert updated_call.state == :terminated
     end

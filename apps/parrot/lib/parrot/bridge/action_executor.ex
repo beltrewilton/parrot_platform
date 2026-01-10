@@ -37,6 +37,8 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:reject, integer(), keyword()}
           | {:hangup, keyword()}
           | {:play, String.t() | [String.t()], keyword()}
+          | {:record, String.t(), keyword()}
+          | {:stop_record, keyword()}
 
   @type context :: %{
           required(:uas) => term(),
@@ -110,11 +112,16 @@ defmodule Parrot.Bridge.ActionExecutor do
     # MediaSession to generate an SDP answer based on the offer in the INVITE.
     response = Message.reply(sip_msg, 200, "OK")
 
-    # Send the response
-    send_response(context, response)
+    # Send the response - returns {:ok, final_response} with To tag added
+    {:ok, final_response} = send_response(context, response)
 
-    # Update call state
-    updated_call = %{call | state: :answered}
+    # Compute dialog_id from the SIP message and final response
+    # For UAS: local_tag = To tag (us), remote_tag = From tag (them)
+    dialog_id = compute_dialog_id(sip_msg, final_response)
+    Logger.debug("[ActionExecutor] Dialog established: #{dialog_id}")
+
+    # Update call state with dialog_id
+    updated_call = %{call | state: :answered, __dialog_id__: dialog_id}
 
     {:ok, updated_call}
   end
@@ -151,28 +158,32 @@ defmodule Parrot.Bridge.ActionExecutor do
   Execute the `:hangup` operation.
 
   1. Stop MediaSession if running
-  2. Update call state to `:terminated`
-
-  Note: BYE request transmission is not currently implemented. The current behavior
-  stops the local media session but does not send a BYE to the remote party.
-  Call termination relies on the remote party initiating the BYE.
+  2. Send BYE to remote party (if dialog exists)
+  3. Update call state to `:terminated`
   """
   @spec execute_hangup(Call.t(), context()) :: execute_result()
-  def execute_hangup(call, %{media_pid: media_pid} = _context) do
+  def execute_hangup(call, context) do
     Logger.debug("[ActionExecutor] Executing hangup operation")
 
-    # Stop media session if running
+    # 1. Stop media session if running
     # Note: Sending to a dead process is safe (message silently discarded)
+    media_pid = Map.get(context, :media_pid)
+
     if media_pid do
       Logger.debug("[ActionExecutor] Stopping media session #{inspect(media_pid)}")
       send(media_pid, {:stop_media})
     end
 
-    # Note: BYE request transmission is not implemented in ActionExecutor.
-    # The current behavior only stops the local media session and updates call state.
-    # To properly terminate an established call, the Bridge.Handler or a UAC module
-    # must send the BYE request using dialog state. Currently, call termination
-    # relies on the remote party sending BYE.
+    # 2. Send BYE if we have a dialog
+    case call.__dialog_id__ do
+      nil ->
+        Logger.warning("[ActionExecutor] No dialog_id, cannot send BYE")
+
+      dialog_id ->
+        send_bye(dialog_id, call)
+    end
+
+    # 3. Update call state
     updated_call = %{call | state: :terminated}
 
     {:ok, updated_call}
@@ -203,6 +214,56 @@ defmodule Parrot.Bridge.ActionExecutor do
 
     # Send play command to media session
     send(media_pid, {:play_files, file_list, opts})
+
+    {:ok, call}
+  end
+
+  @doc """
+  Execute the `:record` operation.
+
+  1. Verify call is in `:answered` state
+  2. Verify media_pid is available
+  3. Send `{:start_record, filename, opts}` to MediaSession
+  """
+  @spec execute_record(Call.t(), context(), String.t(), keyword()) :: execute_result()
+  def execute_record(%Call{state: state}, _context, _filename, _opts) when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_record(_call, %{media_pid: nil}, _filename, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_record(call, %{media_pid: media_pid} = _context, filename, opts) do
+    Logger.debug("[ActionExecutor] Executing record operation: #{filename}")
+
+    # Send record command to media session
+    send(media_pid, {:start_record, filename, opts})
+
+    {:ok, call}
+  end
+
+  @doc """
+  Execute the `:stop_record` operation.
+
+  1. Verify call is in `:answered` state
+  2. Verify media_pid is available
+  3. Send `{:stop_record}` to MediaSession
+  """
+  @spec execute_stop_record(Call.t(), context(), keyword()) :: execute_result()
+  def execute_stop_record(%Call{state: state}, _context, _opts) when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_stop_record(_call, %{media_pid: nil}, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_stop_record(call, %{media_pid: media_pid} = _context, _opts) do
+    Logger.debug("[ActionExecutor] Executing stop_record operation")
+
+    # Send stop record command to media session
+    send(media_pid, {:stop_record})
 
     {:ok, call}
   end
@@ -247,12 +308,28 @@ defmodule Parrot.Bridge.ActionExecutor do
     end
   end
 
+  defp execute_operation({:record, filename, opts}, call, context) do
+    case execute_record(call, context, filename, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:stop_record, opts}, call, context) do
+    case execute_stop_record(call, context, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
   defp execute_operation(unknown, _call, _context) do
     Logger.warning("[ActionExecutor] Unknown operation: #{inspect(unknown)}")
     {:error, {:unknown_operation, unknown}}
   end
 
   # Send response - handle different modes
+  # Returns {:ok, final_response} in all modes for consistency
+  @spec send_response(context(), Message.t()) :: {:ok, Message.t()}
   defp send_response(context, response) do
     uas = Map.get(context, :uas)
 
@@ -260,15 +337,66 @@ defmodule Parrot.Bridge.ActionExecutor do
       response_fn when is_function(response_fn, 2) ->
         # Test mode with callback function
         response_fn.(response, uas)
+        {:ok, response}
 
       nil when is_pid(uas) ->
         # Test mode - send message to process
         send(uas, {:response_sent, response})
-        :ok
+        {:ok, response}
 
       nil ->
         # Production mode - use UAS transaction
+        # Returns {:ok, final_response} with To tag added
         UAS.response(response, uas)
+    end
+  end
+
+  # Compute dialog_id from request and response messages
+  # For UAS: local_tag = To tag (our tag), remote_tag = From tag (their tag)
+  @spec compute_dialog_id(Message.t(), Message.t()) :: String.t()
+  defp compute_dialog_id(request, response) do
+    call_id = request.call_id
+
+    # From tag (remote party) from request
+    remote_tag = get_in(request.from.parameters, ["tag"])
+
+    # To tag (us) from response - added by Transaction.Server
+    local_tag = get_in(response.to.parameters, ["tag"])
+
+    # Generate dialog ID from UAS perspective
+    ParrotSip.Dialog.generate_id(:uas, call_id, local_tag, remote_tag)
+  end
+
+  # Send BYE request to terminate dialog
+  @spec send_bye(String.t(), Call.t()) :: :ok
+  defp send_bye(dialog_id, call) do
+    # Look up dialog and create BYE request
+    case ParrotSip.DialogStatem.uac_request(dialog_id, %Message{method: :bye}) do
+      {:ok, bye_request} ->
+        Logger.info("[ActionExecutor] Sending BYE for call #{call.id}")
+
+        # Send BYE via client transaction
+        # We don't need to wait for the response - fire and forget
+        bye_callback = fn
+          {:message, %{status_code: status}} ->
+            Logger.debug("[ActionExecutor] BYE response: #{status}")
+            :ok
+
+          {:stop, reason} ->
+            Logger.debug("[ActionExecutor] BYE transaction stopped: #{inspect(reason)}")
+            :ok
+        end
+
+        ParrotSip.Transaction.Client.request(bye_request, bye_callback)
+        :ok
+
+      {:error, :no_dialog} ->
+        Logger.warning("[ActionExecutor] Dialog #{dialog_id} not found, cannot send BYE")
+        :ok
+
+      {:error, :timeout} ->
+        Logger.warning("[ActionExecutor] Timeout looking up dialog #{dialog_id}")
+        :ok
     end
   end
 
