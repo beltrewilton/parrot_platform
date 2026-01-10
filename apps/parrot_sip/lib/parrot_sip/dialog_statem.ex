@@ -111,7 +111,12 @@ defmodule ParrotSip.DialogStatem do
       # Owner process monitor
       owner_mon: nil,
       # Flag indicating if this dialog was recovered from stored state
-      recovered: false
+      recovered: false,
+      # CDR timing fields
+      # Timestamp when INVITE was received (dialog creation)
+      invite_received_at: nil,
+      # Timestamp when call was answered (:early -> :confirmed transition)
+      answered_at: nil
     ]
 
     @type t :: %__MODULE__{
@@ -123,7 +128,9 @@ defmodule ParrotSip.DialogStatem do
             dialog_type: :invite | :notify | nil,
             need_cleanup: boolean(),
             owner_mon: reference() | nil,
-            recovered: boolean()
+            recovered: boolean(),
+            invite_received_at: DateTime.t() | nil,
+            answered_at: DateTime.t() | nil
           }
   end
 
