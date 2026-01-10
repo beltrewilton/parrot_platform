@@ -10,6 +10,8 @@ defmodule ParrotMedia.Application do
       {Registry, keys: :unique, name: ParrotMedia.Registry},
       # Registry for WebSocket forker discovery by fork_id
       {Registry, keys: :unique, name: ParrotMedia.WsForkerRegistry},
+      # Registry for MOS Calculator processes by session_id
+      {Registry, keys: :unique, name: ParrotMedia.MOS.Registry},
       # Media session supervisor
       ParrotMedia.MediaSessionSupervisor
     ]
