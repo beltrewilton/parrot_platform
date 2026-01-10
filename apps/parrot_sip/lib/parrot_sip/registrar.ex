@@ -247,23 +247,54 @@ defmodule ParrotSip.Registrar do
     response = Message.reply(message, 200, "OK")
 
     # Build Contact header(s) from bindings
+    # Bindings can be:
+    # - Rich binding maps: %{contact: uri, expires: int, registered_at: int, q: float (optional)}
+    # - Simple URI strings (legacy format, deprecated)
     contacts =
       case bindings do
         [] ->
           # No bindings - return the original contact
           message.contact
 
-        [single] ->
-          %Contact{uri: single, parameters: %{"expires" => to_string(expires)}}
+        bindings when is_list(bindings) ->
+          now = System.system_time(:second)
 
-        multiple ->
-          Enum.map(multiple, fn uri ->
-            %Contact{uri: uri, parameters: %{"expires" => to_string(expires)}}
+          Enum.map(bindings, fn binding ->
+            build_contact_from_binding(binding, expires, now)
           end)
       end
 
     response = %{response | contact: contacts, expires: expires}
     %{response | body: "", content_length: 0}
+  end
+
+  # Build Contact from rich binding map with optional q-value
+  # RFC 3261 Section 10.3: Response MUST include Contact with expires
+  # RFC 3261 Section 10.2.1.2: q-value indicates Contact preference (0.0-1.0)
+  defp build_contact_from_binding(
+         %{contact: uri, expires: binding_expires, registered_at: registered_at} = binding,
+         _default_expires,
+         now
+       ) do
+    # Calculate remaining time
+    elapsed = now - registered_at
+    remaining = max(0, binding_expires - elapsed)
+
+    params = %{"expires" => to_string(remaining)}
+
+    # Add q-value if present
+    params =
+      case Map.get(binding, :q) do
+        nil -> params
+        q when is_float(q) -> Map.put(params, "q", :io_lib.format("~.1f", [q]) |> to_string())
+      end
+
+    %Contact{uri: uri, parameters: params}
+  end
+
+  # Legacy format: simple URI string (deprecated, for backwards compatibility)
+  defp build_contact_from_binding(uri, expires, _now) when is_binary(uri) do
+    %Contact{uri: uri, parameters: %{"expires" => to_string(expires)}}
   end
 
   defp extract_aor(message) do

@@ -424,4 +424,138 @@ defmodule Parrot.RegistrationHandlerTest do
       assert :ok = PartialOverrideHandler.handle_registration_expired("aor", "contact")
     end
   end
+
+  describe "get_bindings/1 richer binding format (Task 6f9.3)" do
+    @moduledoc """
+    Tests for the richer binding data format returned by get_bindings/1.
+
+    Per RFC 3261 Section 10.3, the registrar MUST return Contact headers
+    with expires parameters. The binding format includes:
+    - :contact - The Contact URI string (required)
+    - :expires - The original expiration time in seconds (required)
+    - :registered_at - Unix timestamp when binding was stored (required)
+    - :q - Optional q-value (0.0-1.0) for Contact priority (RFC 3261 Section 10.2.1.2)
+    """
+
+    defmodule RicherBindingHandler do
+      use Parrot.RegistrationHandler
+
+      @impl Parrot.RegistrationHandler
+      def get_bindings("sip:alice@example.com") do
+        now = System.system_time(:second)
+
+        [
+          %{
+            contact: "sip:alice@192.168.1.100:5060",
+            expires: 3600,
+            registered_at: now - 100,
+            q: 1.0
+          },
+          %{
+            contact: "sip:alice@192.168.1.101:5060",
+            expires: 1800,
+            registered_at: now - 50,
+            q: 0.5
+          }
+        ]
+      end
+
+      @impl Parrot.RegistrationHandler
+      def get_bindings("sip:bob@example.com") do
+        now = System.system_time(:second)
+
+        # Bob has no q-value (optional field omitted)
+        [
+          %{
+            contact: "sip:bob@10.0.0.50:5060",
+            expires: 3600,
+            registered_at: now
+          }
+        ]
+      end
+
+      @impl Parrot.RegistrationHandler
+      def get_bindings(_aor), do: []
+    end
+
+    test "returns binding maps with required fields" do
+      bindings = RicherBindingHandler.get_bindings("sip:alice@example.com")
+
+      assert length(bindings) == 2
+
+      Enum.each(bindings, fn binding ->
+        assert is_map(binding)
+        assert Map.has_key?(binding, :contact)
+        assert Map.has_key?(binding, :expires)
+        assert Map.has_key?(binding, :registered_at)
+        assert is_binary(binding.contact)
+        assert is_integer(binding.expires)
+        assert is_integer(binding.registered_at)
+      end)
+    end
+
+    test "binding maps can include optional q-value" do
+      bindings = RicherBindingHandler.get_bindings("sip:alice@example.com")
+
+      # Alice has q-values on her bindings
+      Enum.each(bindings, fn binding ->
+        assert Map.has_key?(binding, :q)
+        assert is_float(binding.q)
+        assert binding.q >= 0.0 and binding.q <= 1.0
+      end)
+    end
+
+    test "q-value is optional and can be omitted" do
+      bindings = RicherBindingHandler.get_bindings("sip:bob@example.com")
+
+      assert length(bindings) == 1
+      [binding] = bindings
+
+      # Bob's binding has no q-value (optional)
+      refute Map.has_key?(binding, :q)
+
+      # But still has required fields
+      assert Map.has_key?(binding, :contact)
+      assert Map.has_key?(binding, :expires)
+      assert Map.has_key?(binding, :registered_at)
+    end
+
+    test "bindings are ordered by q-value (highest first) when present" do
+      bindings = RicherBindingHandler.get_bindings("sip:alice@example.com")
+
+      # Get q-values
+      q_values = Enum.map(bindings, & &1.q)
+
+      # Should be sorted descending by q-value (1.0 before 0.5)
+      assert q_values == Enum.sort(q_values, :desc)
+    end
+
+    test "contact URIs are valid SIP URIs" do
+      bindings = RicherBindingHandler.get_bindings("sip:alice@example.com")
+
+      Enum.each(bindings, fn binding ->
+        assert String.starts_with?(binding.contact, "sip:")
+      end)
+    end
+
+    test "expires values are non-negative integers" do
+      bindings = RicherBindingHandler.get_bindings("sip:alice@example.com")
+
+      Enum.each(bindings, fn binding ->
+        assert binding.expires >= 0
+      end)
+    end
+
+    test "registered_at is a Unix timestamp" do
+      bindings = RicherBindingHandler.get_bindings("sip:alice@example.com")
+      now = System.system_time(:second)
+
+      Enum.each(bindings, fn binding ->
+        # registered_at should be in the past or now
+        assert binding.registered_at <= now
+        # And reasonably recent (within last hour for test)
+        assert binding.registered_at > now - 3600
+      end)
+    end
+  end
 end

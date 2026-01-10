@@ -244,10 +244,16 @@ defmodule Parrot.Bridge.Handler do
         case handler_module.store_binding(aor, contact, expires) do
           :ok ->
             # Get all bindings for response
-            _bindings = handler_module.get_bindings(aor)
+            # RFC 3261 Section 10.3: Response MUST include Contact headers
+            # with expires parameter for each binding
+            bindings = handler_module.get_bindings(aor)
+            contact_headers = build_contact_headers(bindings)
 
-            # Build and send 200 OK response
-            response = Message.reply(req_sip_msg, 200, "OK")
+            # Build and send 200 OK response with Contact headers
+            response =
+              Message.reply(req_sip_msg, 200, "OK")
+              |> Message.put_contact(contact_headers)
+
             send_response(uas, response, args)
             :ok
 
@@ -306,6 +312,52 @@ defmodule Parrot.Bridge.Handler do
   # Extract username from From header
   defp extract_username(%{uri: %ParrotSip.Uri{user: user}}) when is_binary(user), do: user
   defp extract_username(_), do: "unknown"
+
+  @doc """
+  Builds Contact headers from registration bindings.
+
+  Converts binding data (with contact URI, expires, registered_at, and optional q)
+  into ParrotSip.Headers.Contact structs with expires parameters showing the
+  remaining registration time and optional q-value for Contact priority.
+
+  Per RFC 3261 Section 10.3, the registrar MUST return Contact headers
+  in the 200 OK response with the actual expiration interval for each binding.
+  Per RFC 3261 Section 10.2.1.2, q-values indicate preference (0.0-1.0).
+
+  ## Arguments
+
+  - `bindings` - List of binding maps with :contact, :expires, :registered_at,
+    and optional :q keys
+
+  ## Returns
+
+  List of `%ParrotSip.Headers.Contact{}` structs with expires and optional q parameters.
+  """
+  @spec build_contact_headers([map()]) :: [ParrotSip.Headers.Contact.t()]
+  def build_contact_headers([]), do: []
+
+  def build_contact_headers(bindings) when is_list(bindings) do
+    now = System.system_time(:second)
+
+    Enum.map(bindings, fn binding ->
+      # Calculate remaining time: expires - (now - registered_at)
+      elapsed = now - binding.registered_at
+      remaining = max(0, binding.expires - elapsed)
+
+      # Create Contact with expires parameter
+      # RFC 3261 Section 10.3: Response MUST include Contact with expires
+      contact =
+        ParrotSip.Headers.Contact.new(binding.contact)
+        |> ParrotSip.Headers.Contact.with_expires(remaining)
+
+      # Add optional q-value if present
+      # RFC 3261 Section 10.2.1.2: q-value indicates Contact preference
+      case Map.get(binding, :q) do
+        nil -> contact
+        q when is_float(q) -> ParrotSip.Headers.Contact.with_q(contact, q)
+      end
+    end)
+  end
 
   @doc """
   Handles incoming OPTIONS requests.

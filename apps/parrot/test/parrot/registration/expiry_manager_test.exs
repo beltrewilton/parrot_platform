@@ -48,8 +48,10 @@ defmodule Parrot.Registration.ExpiryManagerTest do
     {:ok, pid} = ExpiryManager.start_link(name: :"expiry_manager_#{:erlang.unique_integer()}")
 
     on_exit(fn ->
-      if Process.alive?(pid) do
-        GenServer.stop(pid)
+      try do
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
+      catch
+        :exit, _ -> :ok
       end
     end)
 

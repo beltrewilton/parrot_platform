@@ -86,9 +86,16 @@ defmodule Parrot.Examples.Registrar do
 
     @impl Parrot.RegistrationHandler
     def get_bindings(aor) do
+      # Return richer binding data per RFC 3261 Section 10.3
+      # The response MUST include Contact headers with expires parameter
+      # Optional q-value for Contact priority (RFC 3261 Section 10.2.1.2)
       case :ets.lookup(Parrot.Examples.Registrar, aor) do
-        [{^aor, %{contact: contact}}] -> [contact]
-        [] -> []
+        [{^aor, binding}] ->
+          # Return binding as-is (may include optional :q field if stored)
+          [binding]
+
+        [] ->
+          []
       end
     end
 
