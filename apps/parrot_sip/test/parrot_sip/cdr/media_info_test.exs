@@ -289,7 +289,15 @@ defmodule ParrotSip.CDR.MediaInfoTest do
       keys = Map.keys(media_info) |> Enum.sort()
 
       expected_keys =
-        [:__struct__, :codec, :codec_payload_type, :jitter_ms, :mos_score, :packets_received, :packets_sent]
+        [
+          :__struct__,
+          :codec,
+          :codec_payload_type,
+          :jitter_ms,
+          :mos_score,
+          :packets_received,
+          :packets_sent
+        ]
         |> Enum.sort()
 
       assert keys == expected_keys

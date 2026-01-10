@@ -69,23 +69,23 @@ As a developer, I want to implement custom CDR handling logic so that I can stor
 
 1. **Given** a registered CDR handler, **When** a call completes, **Then** the handler receives the CDR data
 2. **Given** a handler that adds custom fields, **When** a CDR is generated, **Then** the custom fields are included
-3. **Given** a handler that fails, **When** a CDR is generated, **Then** the error is logged and the default CDR storage continues
+3. **Given** a handler that fails, **When** a CDR is generated, **Then** the error is logged and other registered handlers continue to receive CDRs
 
 ---
 
 ### Edge Cases
 
-- What happens when a call has multiple legs (transferred calls, conferencing)?
-- How are abandoned calls (ring-no-answer) recorded?
-- What happens if CDR storage fails during a high-volume period?
-- How are calls that span midnight (date boundary) handled?
-- What happens to in-progress calls during system restart?
+- Multi-leg calls (transfers, conferences): Each leg generates a separate CDR; all legs share a correlation ID for reconstruction
+- Abandoned calls (ring-no-answer, immediate cancels): CDR generated for every INVITE with appropriate disposition (no-answer, cancelled)
+- Handler failures: Library logs error and continues (fire-and-forget); handlers responsible for their own retry/persistence guarantees
+- Midnight boundary: CDRs use actual timestamps; date aggregation is handler responsibility
+- System restart: In-progress dialogs terminate normally (timeout or BYE); CDR generated on termination per standard DialogStatem lifecycle
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: System MUST generate a CDR for every completed call (answered or failed)
+- **FR-001**: System MUST generate a CDR for every INVITE transaction, regardless of outcome (answered, failed, cancelled, or abandoned)
 - **FR-002**: System MUST capture call start time (invite received), answer time (if answered), and end time
 - **FR-003**: System MUST calculate and store call duration (ring time and talk time separately)
 - **FR-004**: System MUST record caller identifier (From URI, caller ID)
@@ -95,19 +95,21 @@ As a developer, I want to implement custom CDR handling logic so that I can stor
 - **FR-008**: System MUST assign a unique identifier to each CDR
 - **FR-009**: System MUST link CDRs to SIP Call-ID for correlation with protocol traces
 - **FR-010**: System MUST provide a behaviour/callback interface for custom CDR handlers
-- **FR-011**: System MUST support CDR retrieval by unique ID
-- **FR-012**: System MUST support CDR queries by date range, caller, callee, and disposition
-- **FR-013**: System MUST support CDR export in CSV and JSON formats
-- **FR-014**: System MUST handle CDR generation failures gracefully without affecting call processing
+- **FR-011**: CDR struct MUST include unique ID field to enable handler-implemented retrieval
+- **FR-012**: CDR struct MUST include indexed fields (timestamps, caller, callee, disposition) to enable handler-implemented queries
+- **FR-013**: Library MUST provide CDR serialization helpers for CSV and JSON formats (export implementation is handler responsibility)
+- **FR-014**: System MUST handle CDR generation and handler delivery failures gracefully (log and continue) without affecting call processing
 - **FR-015**: System MUST record media information when available (codec, MOS score if 005-mos-scoring is implemented)
+- **FR-016**: System MUST assign a correlation ID to link CDRs from multi-leg calls (transfers, conferences)
 
 ### Key Entities
 
 - **Call Detail Record (CDR)**: The primary entity representing a single call, containing all call metadata, timing, participants, and outcome information
 - **Call Disposition**: Enumeration of possible call outcomes (answered, busy, no-answer, failed, cancelled, transferred)
 - **Termination Cause**: Information about why and how a call ended, including SIP response codes and terminating party
-- **CDR Handler**: A callback module that receives CDR events for custom processing (storage, transformation, forwarding)
+- **CDR Handler**: A behaviour that users implement for CDR storage, transformation, and forwarding; the library delivers CDR structs to handlers but does not persist them
 - **CDR Query**: Parameters for searching CDRs including date ranges, participant filters, and disposition filters
+- **Correlation ID**: Unique identifier linking related CDRs from multi-leg calls (transfers, conferences); all legs of a logical call share the same correlation ID while having distinct CDR IDs
 
 ## Success Criteria *(mandatory)*
 
@@ -115,15 +117,26 @@ As a developer, I want to implement custom CDR handling logic so that I can stor
 
 - **SC-001**: CDRs are generated within 1 second of call termination
 - **SC-002**: 100% of completed calls have corresponding CDRs (no data loss)
-- **SC-003**: CDR queries return results within 500ms for typical queries (single day, single user)
-- **SC-004**: CDR export completes within 10 seconds for datasets up to 10,000 records
+- **SC-003**: CDR serialization to JSON/CSV completes within 1ms per record
+- **SC-004**: Reference handler implementation (if provided) demonstrates query patterns for typical use cases
 - **SC-005**: Custom CDR handlers receive events within 100ms of CDR generation
 - **SC-006**: CDR generation adds less than 10ms latency to call termination processing
 
+## Clarifications
+
+### Session 2026-01-10
+
+- Q: How should multi-leg calls (transfers, conferences) be represented in the CDR system? → A: Separate CDR per leg with correlation ID linking related legs
+- Q: What is the primary interface for CDR retrieval and queries? → A: Elixir API only (module functions); library provides CDR generation and handler callbacks, users implement storage
+- Q: When should a CDR be generated for unanswered calls? → A: Generate CDR for every INVITE, regardless of outcome (including immediate cancels)
+- Q: What should happen when a CDR handler fails to process a CDR? → A: Log error and drop (fire-and-forget); handlers own their reliability
+- Q: Where should CDR generation be triggered in the Parrot architecture? → A: DialogStatem termination (captures all calls regardless of upper layer)
+
 ## Assumptions
 
-- The default CDR storage will be in-memory (ETS) for MVP, with the handler system allowing external database integration
+- The CDR system is a library providing CDR generation and a handler behaviour; storage is the responsibility of user-implemented handlers (no built-in storage)
 - SIP Call-ID will be used as the primary correlation key between CDRs and SIP transactions
 - Time synchronization (NTP) is assumed for accurate timestamps
 - CDR retention policy and archival is the responsibility of the CDR handler implementation
-- Multi-leg calls (transfers, conferences) will generate separate CDRs that can be correlated via custom fields
+- Multi-leg calls (transfers, conferences) generate separate CDRs linked by a shared correlation ID
+- CDR generation hooks into DialogStatem termination to capture all calls regardless of upper-layer abstraction
