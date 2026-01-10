@@ -38,3 +38,7 @@ installer/parrot_new/_build/
 
 # Git worktrees for isolated development
 .worktrees/
+
+# Speckit tooling
+.specify/
+specs/

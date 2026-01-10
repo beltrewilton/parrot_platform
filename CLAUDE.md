@@ -50,6 +50,7 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building teleco
 4. **State Machines:** Use `gen_statem` for transactions, dialogs, and connections
 5. **RFC References:** All SIP code must reference relevant RFC 3261 sections in comments
 6. **Commit Messages:** Always write single-line commit messages - no multi-line descriptions
+7. **Production-Grade Engineering:** Never take the easy way or cut corners. Always choose the best-engineered, most professional solution even if it requires more work. This is production VoIP software - prefer clean APIs, proper abstractions, and maintainable architecture over quick fixes. If a solution requires changing an existing API to be cleaner, do it.
 
 ### App-Specific Rules
 
