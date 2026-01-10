@@ -83,8 +83,8 @@ defmodule ParrotSip.Integration.CDRIntegrationTest do
       assert cdr.disposition == :answered,
              "Expected disposition :answered, got #{inspect(cdr.disposition)}"
 
-      assert cdr.talk_duration_ms >= 0,
-             "Talk duration should be >= 0 for answered calls"
+      assert cdr.talk_duration_ms > 0,
+             "Talk duration should be > 0 for answered calls"
 
       assert cdr.answered_at != nil,
              "answered_at should be set for answered calls"
@@ -115,7 +115,18 @@ defmodule ParrotSip.Integration.CDRIntegrationTest do
       SipStackHelper.stop(stack)
     end
 
+    # T027: PENDING - Requires transaction-level CDR generation for rejected calls
+    #
+    # Per spec FR-001, CDRs should be generated for all call attempts including rejections.
+    # However, the current architecture only generates CDRs for established dialogs.
+    # A 486 Busy response does not create a dialog (only 2xx responses or provisional
+    # responses with To-tag create dialogs), so no CDR is generated.
+    #
+    # TODO: To support CDR generation for rejected calls, implement one of:
+    # 1. Transaction-level CDR generation (tracks INVITE transactions regardless of dialog)
+    # 2. Synthetic CDR creation in the handler when rejecting with 4xx/5xx/6xx
     @tag :cdr
+    @tag skip: "Requires transaction-level CDR generation for rejected calls (see FR-001)"
     test "T027: rejected call (486 Busy) generates CDR with disposition :busy" do
       # Create SIP handler that responds with 486 Busy Here
       handler = TestHandler.new(invite_response: {486, "Busy Here"})
@@ -166,33 +177,32 @@ defmodule ParrotSip.Integration.CDRIntegrationTest do
                  "talk_duration_ms should be 0 for unanswered calls"
       after
         2_000 ->
-          # CDR may not be generated for early rejection (no dialog established)
-          # This is expected behavior - only established dialogs generate CDRs
-          # Log this for clarity in test output
-          :ok
+          # Known architectural limitation: CDRs only generated for established dialogs.
+          # Rejected calls (486) don't create dialogs, so no CDR is generated.
+          flunk(
+            "CDR not generated - requires transaction-level CDR generation for rejected calls (see FR-001)"
+          )
       end
 
       # Cleanup
       SipStackHelper.stop(stack)
     end
 
+    # T028: PENDING - Requires early dialog support or transaction-level CDR generation
+    #
+    # Per spec FR-001, CDRs should be generated for all call attempts including cancellations.
+    # However, the current architecture only generates CDRs for established dialogs.
+    #
+    # For cancelled calls, we need an early dialog to be created. Per RFC 3261 Section 12.1.1,
+    # early dialogs require a To-tag in provisional responses. Currently, Transaction.Server
+    # only adds To-tags for 2xx responses, so 180 Ringing doesn't create a dialog.
+    #
+    # TODO: To support CDR generation for cancelled calls, implement one of:
+    # 1. Early dialog support (add To-tag to provisional responses per RFC 3261 Section 12.1.1)
+    # 2. Transaction-level CDR generation (tracks INVITE transactions regardless of dialog)
     @tag :cdr
+    @tag skip: "Requires early dialog support or transaction-level CDR generation (see FR-001)"
     test "T028: cancelled call generates CDR with disposition :cancelled" do
-      # For CDR generation on cancelled calls, we need an early dialog to be created.
-      # Per RFC 3261 Section 12.1.1, early dialogs require a To-tag in provisional responses.
-      #
-      # Currently, the TestHandler with invite_response: {180, "Ringing"} doesn't generate
-      # a dialog because Transaction.Server.response/2 only adds To-tags for 2xx responses.
-      # This is a known limitation - cancelled calls without early dialog don't generate CDRs.
-      #
-      # For this test to pass, we need to use a scenario where an early dialog IS created.
-      # That requires either:
-      # 1. The 180 Ringing to include a To-tag (which Server.response doesn't do for 1xx)
-      # 2. A different mechanism that creates early dialogs
-      #
-      # For now, this test documents the current behavior: CANCEL before early dialog
-      # creation does not generate a CDR (no dialog = no CDR).
-
       handler = TestHandler.new(invite_response: {180, "Ringing"})
 
       # Start SIP stack
@@ -240,13 +250,12 @@ defmodule ParrotSip.Integration.CDRIntegrationTest do
                  "ring_duration_ms should be >= 0"
       after
         2_000 ->
-          # Current expected behavior: No CDR generated for pre-dialog CANCEL
-          # This is because 180 Ringing without To-tag doesn't create an early dialog,
-          # and CDRs are only generated for established dialogs.
-          #
-          # TODO: When early dialog support is added (To-tag in provisional responses),
-          # update this test to expect a CDR with disposition :cancelled
-          :ok
+          # Known architectural limitation: CDRs only generated for established dialogs.
+          # Cancelled calls require early dialogs (To-tag in 1xx) which aren't currently
+          # created by Transaction.Server.
+          flunk(
+            "CDR not generated - requires early dialog support or transaction-level CDR generation (see FR-001)"
+          )
       end
 
       # Cleanup
