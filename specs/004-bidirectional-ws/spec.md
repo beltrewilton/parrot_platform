@@ -75,7 +75,7 @@ A developer needs to cleanly disconnect the bidirectional WebSocket connection w
 
 - What happens when the WebSocket server sends non-audio data (JSON control messages)? The system must forward these to a callback handler for processing.
 - What happens when audio format conversion is needed between the call and the AI service? The system must support configurable audio encoding/decoding.
-- What happens when the WebSocket buffer fills up due to slow network? The system must apply backpressure or drop frames appropriately without crashing.
+- What happens when the WebSocket buffer fills up due to slow network? The system drops oldest frames to keep the stream current and prevent latency buildup, logging each drop event for visibility.
 - What happens when the caller hangs up while the AI is mid-sentence? The system must terminate cleanly without orphaned processes.
 - What happens when the initial WebSocket connection fails? The system must invoke error callbacks and allow retry configuration.
 
@@ -99,6 +99,7 @@ A developer needs to cleanly disconnect the bidirectional WebSocket connection w
 - **FR-014**: System MUST support sending text/JSON messages to the WebSocket via a `send_ws_message/2` action.
 - **FR-015**: System MUST buffer inbound audio appropriately to handle network jitter without audible artifacts.
 - **FR-016**: System MUST enforce a maximum of one bidirectional WebSocket connection per call; attempting to establish a second connection while one is active MUST return an error.
+- **FR-016a**: System MUST allow bidirectional WebSocket connections to coexist with unidirectional fork_ws connections on the same call.
 - **FR-017**: System MUST emit structured logs for connection lifecycle events (connect, disconnect, reconnect, errors) with correlation IDs for tracing.
 - **FR-018**: System MUST expose metrics for frames sent/received counts, audio latency, buffer depth, and connection duration.
 - **FR-019**: System MUST support distributed tracing by propagating trace context through WebSocket connections.
@@ -127,6 +128,9 @@ A developer needs to cleanly disconnect the bidirectional WebSocket connection w
 
 - Q: Should a single call support multiple concurrent bidirectional WebSocket connections? → A: No, only one bidirectional connection per call at a time (simpler, covers primary use case)
 - Q: What level of observability should bidirectional connections provide? → A: Full telemetry - Logs, metrics (frames sent/received, latency, buffer depth), and distributed tracing
+- Q: When WebSocket buffer fills due to slow network, what backpressure strategy? → A: Drop oldest frames (keep stream current) with logging for visibility
+- Q: Should the system enforce TLS (wss://) for WebSocket connections? → A: No, allow both ws:// and wss:// - developer's responsibility
+- Q: Can fork_ws (unidirectional) and bidirectional_ws coexist on same call? → A: Yes, allow both active simultaneously (different purposes)
 
 ## Assumptions
 

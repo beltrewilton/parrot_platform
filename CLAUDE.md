@@ -458,6 +458,8 @@ When working with these modules, understand gen_statem concepts:
 ## Active Technologies
 - Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines) (001-dsl-sip-bridge)
 - In-memory process state, ETS for call/dialog lookups via Registry (001-dsl-sip-bridge)
+- Elixir ~> 1.16, OTP 26+ + Membrane Framework, Fresh (WebSocket), ExSDP, Telemetry (004-bidirectional-ws)
+- N/A (in-memory process state, Registry for lookups) (004-bidirectional-ws)
 
 ## Recent Changes
 - 001-dsl-sip-bridge: Added Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines)

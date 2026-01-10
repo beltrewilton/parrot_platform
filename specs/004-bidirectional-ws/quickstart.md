@@ -23,7 +23,7 @@ defmodule MyApp.AIAssistantHandler do
            {"Authorization", "Bearer #{api_key}"},
            {"OpenAI-Beta", "realtime=v1"}
          ],
-         callback: MyApp.OpenAICallback,
+         callback_module: MyApp.OpenAICallback,
          sample_rate: 24000
        )
   end
@@ -34,22 +34,17 @@ end
 
 ```elixir
 defmodule MyApp.OpenAICallback do
-  @behaviour ParrotMedia.WsBidirectionalConnector.Callback
+  @behaviour ParrotMedia.WsBidirectional.Callback
   require Logger
 
   @impl true
-  def init(args) do
-    {:ok, %{call_id: args[:call_id]}}
-  end
-
-  @impl true
-  def handle_bidirectional_event({:bidirectional_event, _id, :connected}, state) do
-    Logger.info("Connected to OpenAI for call #{state.call_id}")
+  def handle_event({:connected}, state) do
+    Logger.info("Connected to OpenAI")
     {:ok, state}
   end
 
   @impl true
-  def handle_bidirectional_event({:bidirectional_event, _id, {:ws_message, data}}, state) do
+  def handle_event({:ws_message, data}, state) do
     case Jason.decode(data) do
       {:ok, %{"type" => "error", "error" => error}} ->
         Logger.error("OpenAI error: #{inspect(error)}")
@@ -65,13 +60,13 @@ defmodule MyApp.OpenAICallback do
   end
 
   @impl true
-  def handle_bidirectional_event({:bidirectional_event, _id, {:failed, reason}}, state) do
+  def handle_event({:failed, reason}, state) do
     Logger.error("OpenAI connection failed: #{inspect(reason)}")
-    {:stop, :ai_failed, state}
+    {:ok, state}
   end
 
   @impl true
-  def handle_bidirectional_event(_event, state), do: {:ok, state}
+  def handle_event(_event, state), do: {:ok, state}
 end
 ```
 
@@ -116,7 +111,7 @@ call |> disconnect_bidirectional_ws()
 | Option | Description | Default |
 |--------|-------------|---------|
 | `headers` | HTTP headers for auth | `[]` |
-| `callback` | Event handler module | `nil` |
+| `callback_module` | Event handler module | `nil` |
 | `callback_state` | Initial callback state | `%{}` |
 | `inbound_format` | Audio format from AI | `:pcm_16le` |
 | `outbound_format` | Audio format to AI | `:pcm_16le` |
@@ -138,7 +133,7 @@ Tested with:
 ## Error Handling
 
 ```elixir
-def handle_bidirectional_event({:bidirectional_event, _id, {:failed, reason}}, state) do
+def handle_event({:failed, reason}, state) do
   # Connection permanently failed - handle gracefully
   case reason do
     :max_retries_exceeded ->
@@ -152,7 +147,7 @@ def handle_bidirectional_event({:bidirectional_event, _id, {:failed, reason}}, s
       Logger.error("AI connection failed: #{inspect(reason)}")
   end
 
-  {:stop, :ai_failed, state}
+  {:ok, state}
 end
 ```
 
@@ -168,7 +163,7 @@ Use the mock WebSocket server for testing:
 call
 |> answer()
 |> connect_bidirectional_ws("ws://localhost:9999/test",
-     callback: TestCallback
+     callback_module: TestCallback
    )
 
 # Verify audio flows
