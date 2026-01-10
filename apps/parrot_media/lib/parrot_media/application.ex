@@ -10,6 +10,8 @@ defmodule ParrotMedia.Application do
       {Registry, keys: :unique, name: ParrotMedia.Registry},
       # Registry for WebSocket forker discovery by fork_id
       {Registry, keys: :unique, name: ParrotMedia.WsForkerRegistry},
+      # Registry for bidirectional WebSocket connection discovery by connection_id
+      {Registry, keys: :unique, name: ParrotMedia.BidirectionalRegistry},
       # Media session supervisor
       ParrotMedia.MediaSessionSupervisor
     ]
