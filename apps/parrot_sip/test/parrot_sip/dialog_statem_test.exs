@@ -1550,6 +1550,270 @@ defmodule ParrotSip.DialogStatemTest do
     message
   end
 
+  describe "DialogBroadcast integration" do
+    setup do
+      # Start PubSub for testing
+      pubsub_name = :test_pubsub
+      {:ok, pubsub_supervisor} = Phoenix.PubSub.Supervisor.start_link(name: pubsub_name)
+
+      # Start DialogBroadcast for testing
+      {:ok, broadcast_pid} =
+        ParrotSip.DialogBroadcast.start_link(
+          name: :dialog_broadcast,
+          pubsub: pubsub_name
+        )
+
+      on_exit(fn ->
+        # Kill processes immediately to avoid hang
+        if Process.alive?(broadcast_pid), do: Process.exit(broadcast_pid, :kill)
+        if Process.alive?(pubsub_supervisor), do: Process.exit(pubsub_supervisor, :kill)
+        Process.sleep(10)
+      end)
+
+      %{broadcast_pid: broadcast_pid}
+    end
+
+    test "broadcasts create event when dialog transitions to confirmed", %{
+      broadcast_pid: broadcast_pid
+    } do
+      # Create a UAS dialog starting in early state
+      invite = build_invite_message()
+      provisional = build_response_message(180, "Ringing")
+      {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
+
+      # Verify starts in early state
+      {state, _data} = :sys.get_state(pid)
+      assert state == :early
+
+      # Transition to confirmed with 200 OK
+      final = build_response_message(200, "OK")
+      :gen_statem.cast(pid, {:uas_response, final, invite})
+
+      Process.sleep(50)
+
+      # Verify dialog transitioned to confirmed
+      {new_state, data} = :sys.get_state(pid)
+      assert new_state == :confirmed
+
+      # Verify broadcast occurred
+      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, data.id)
+      assert dialog_state.state == :confirmed
+      assert dialog_state.owner_node == node()
+    end
+
+    test "broadcasts create event when UAC dialog confirms", %{broadcast_pid: broadcast_pid} do
+      # Create a UAC dialog with 200 OK response
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
+
+      Process.sleep(50)
+
+      # Dialog should be confirmed
+      {state, data} = :sys.get_state(pid)
+      assert state == :confirmed
+
+      # Verify broadcast occurred
+      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, data.id)
+      assert dialog_state.state == :confirmed
+    end
+
+    test "broadcasts delete event when dialog terminates", %{broadcast_pid: broadcast_pid} do
+      # Create and confirm a dialog
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      Process.sleep(50)
+      {_state, data} = :sys.get_state(pid)
+      dialog_id = data.id
+
+      # Verify dialog was broadcast
+      assert {:ok, _} = ParrotSip.DialogBroadcast.get(broadcast_pid, dialog_id)
+
+      # Send BYE to terminate dialog
+      bye_msg = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye_msg})
+
+      Process.sleep(50)
+
+      # Verify dialog was deleted from broadcast
+      assert {:error, :not_found} = ParrotSip.DialogBroadcast.get(broadcast_pid, dialog_id)
+    end
+
+    test "broadcasts update event on state changes", %{broadcast_pid: broadcast_pid} do
+      # Create confirmed dialog
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
+
+      Process.sleep(50)
+      {_state, data} = :sys.get_state(pid)
+
+      # Send a response that updates state
+      update_response = build_response_message(200, "OK")
+      :gen_statem.cast(pid, {:uac_trans_result, {:message, update_response}})
+
+      Process.sleep(50)
+
+      # Verify dialog state in broadcast
+      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, data.id)
+      assert dialog_state.state == :confirmed
+    end
+
+    test "gracefully handles missing DialogBroadcast process" do
+      # Stop the broadcast process
+      GenServer.stop(:dialog_broadcast)
+      Process.sleep(10)
+
+      # Create a dialog without DialogBroadcast running
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Should not crash
+      assert Process.alive?(pid)
+
+      # Transition to confirmed should also not crash
+      final = build_response_message(200, "OK")
+      :gen_statem.cast(pid, {:uas_response, final, invite})
+
+      Process.sleep(50)
+      assert Process.alive?(pid)
+    end
+  end
+
+  describe "dialog recovery - cluster failover" do
+    test "start_recovered/1 creates a running DialogStatem" do
+      # Simulate stored state from DialogBroadcast
+      stored_state = %{
+        call_id: "recovered-call-123@example.com",
+        local_tag: "local-tag-123",
+        remote_tag: "remote-tag-456",
+        local_uri: "sip:local@example.com",
+        remote_uri: "sip:remote@example.com",
+        local_seq: 1,
+        remote_seq: 1,
+        secure: false,
+        route_set: []
+      }
+
+      assert {:ok, pid} = DialogStatem.start_recovered(stored_state)
+      assert is_pid(pid)
+      assert Process.alive?(pid)
+    end
+
+    test "recovered dialog is in :confirmed state" do
+      stored_state = %{
+        call_id: "recovered-call-456@example.com",
+        local_tag: "local-tag-456",
+        remote_tag: "remote-tag-789",
+        local_uri: "sip:local@example.com",
+        remote_uri: "sip:remote@example.com",
+        local_seq: 5,
+        remote_seq: 3,
+        secure: false,
+        route_set: []
+      }
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+
+      # Verify state is :confirmed
+      {state, _data} = :sys.get_state(pid)
+      assert state == :confirmed
+    end
+
+    test "recovered dialog can process BYE request" do
+      stored_state = %{
+        call_id: "recovered-call-789@example.com",
+        local_tag: "local-tag-789",
+        remote_tag: "remote-tag-012",
+        local_uri: "sip:local@example.com",
+        remote_uri: "sip:remote@example.com",
+        local_seq: 10,
+        remote_seq: 5,
+        secure: false,
+        route_set: []
+      }
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+
+      # Create a BYE message matching the recovered dialog
+      bye_msg = %Message{
+        type: :request,
+        method: :bye,
+        request_uri: "sip:local@example.com",
+        version: "SIP/2.0",
+        via: %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{"branch" => "z9hG4bK-bye-recovered"}
+        },
+        from: %From{
+          uri: "sip:remote@example.com",
+          parameters: %{"tag" => "remote-tag-012"}
+        },
+        to: %To{
+          uri: "sip:local@example.com",
+          parameters: %{"tag" => "local-tag-789"}
+        },
+        call_id: "recovered-call-789@example.com",
+        cseq: %CSeq{number: 6, method: :bye},
+        other_headers: %{},
+        body: ""
+      }
+
+      # Should process the BYE without errors
+      assert :process = :gen_statem.call(pid, {:uas_request, bye_msg})
+    end
+
+    test "recovered dialog has recovered flag set" do
+      stored_state = %{
+        call_id: "recovered-call-flag@example.com",
+        local_tag: "local-tag-flag",
+        remote_tag: "remote-tag-flag",
+        local_uri: "sip:local@example.com",
+        remote_uri: "sip:remote@example.com",
+        local_seq: 1,
+        remote_seq: 1,
+        secure: false,
+        route_set: []
+      }
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+
+      # Verify recovered flag is set
+      {_state, data} = :sys.get_state(pid)
+      assert data.recovered == true
+    end
+
+    test "recovered dialog registers with correct dialog ID" do
+      stored_state = %{
+        call_id: "recovered-call-reg@example.com",
+        local_tag: "local-tag-reg",
+        remote_tag: "remote-tag-reg",
+        local_uri: "sip:local@example.com",
+        remote_uri: "sip:remote@example.com",
+        local_seq: 1,
+        remote_seq: 1,
+        secure: false,
+        route_set: []
+      }
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+
+      # Verify dialog is registered in Registry
+      {_state, data} = :sys.get_state(pid)
+      dialog_id = data.id
+
+      result = Registry.lookup(ParrotSip.Registry, dialog_id)
+      assert [{^pid, _}] = result
+    end
+  end
+
   describe "error handling in confirmed state" do
     test "uas_request with invalid cseq returns error" do
       # Test line 501-504: Dialog.uas_process error path

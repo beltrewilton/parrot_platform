@@ -83,7 +83,7 @@ defmodule ParrotSip.DialogStatem do
 
   require Logger
 
-  alias ParrotSip.{Dialog, Message, Branch}
+  alias ParrotSip.{Dialog, Message, Branch, DialogBroadcast}
   alias ParrotSip.Headers.{Contact, Via}
 
   @type trans :: {:trans, pid()}
@@ -109,7 +109,9 @@ defmodule ParrotSip.DialogStatem do
       :dialog_type,
       need_cleanup: true,
       # Owner process monitor
-      owner_mon: nil
+      owner_mon: nil,
+      # Flag indicating if this dialog was recovered from stored state
+      recovered: false
     ]
 
     @type t :: %__MODULE__{
@@ -120,7 +122,8 @@ defmodule ParrotSip.DialogStatem do
             log_id: String.t() | nil,
             dialog_type: :invite | :notify | nil,
             need_cleanup: boolean(),
-            owner_mon: reference() | nil
+            owner_mon: reference() | nil,
+            recovered: boolean()
           }
   end
 
@@ -144,6 +147,38 @@ defmodule ParrotSip.DialogStatem do
       args,
       []
     )
+  end
+
+  @doc """
+  Start a DialogStatem from recovered state (cluster failover).
+  Skips initial negotiation, starts directly in :confirmed state.
+
+  ## Parameters
+    - `stored_state` - Map containing dialog state fields from DialogBroadcast
+
+  ## Returns
+    - `{:ok, pid}` on success
+    - `{:error, reason}` on failure
+
+  ## Example
+
+      stored_state = %{
+        call_id: "call-123@example.com",
+        local_tag: "local-tag",
+        remote_tag: "remote-tag",
+        local_uri: "sip:alice@example.com",
+        remote_uri: "sip:bob@example.com",
+        local_seq: 1,
+        remote_seq: 1,
+        secure: false,
+        route_set: []
+      }
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+  """
+  @spec start_recovered(map()) :: :gen_statem.start_ret()
+  def start_recovered(stored_state) do
+    :gen_statem.start_link(__MODULE__, {:recover, stored_state}, [])
   end
 
   @impl :gen_statem
@@ -207,6 +242,19 @@ defmodule ParrotSip.DialogStatem do
       call_id: call_id
     )
 
+    # Broadcast creation if starting directly in confirmed state
+    if initial_state == :confirmed do
+      broadcast_state = %{
+        call_id: dialog.call_id,
+        local_tag: dialog.local_tag,
+        remote_tag: dialog.remote_tag,
+        state: :confirmed,
+        owner_node: node()
+      }
+
+      maybe_broadcast_create(dialog.id, broadcast_state)
+    end
+
     {:ok, initial_state, data, actions}
   end
 
@@ -265,7 +313,72 @@ defmodule ParrotSip.DialogStatem do
 
     initial_state = dialog.state
     Logger.info("dialog #{inspect(dialog.id)}: starting in #{inspect(initial_state)} state")
+
+    # Broadcast creation if starting directly in confirmed state
+    if initial_state == :confirmed do
+      broadcast_state = %{
+        call_id: dialog.call_id,
+        local_tag: dialog.local_tag,
+        remote_tag: dialog.remote_tag,
+        state: :confirmed,
+        owner_node: node()
+      }
+
+      maybe_broadcast_create(dialog.id, broadcast_state)
+    end
+
     {:ok, initial_state, data}
+  end
+
+  @doc false
+  def init({:recover, stored_state}) do
+    Logger.info("[DialogStatem] Recovering dialog #{stored_state.call_id}")
+
+    # RFC 3261 Section 12: Generate dialog ID from call-id, local-tag, remote-tag
+    # For recovered dialogs, we assume UAS perspective (local=to_tag, remote=from_tag)
+    dialog_id = Dialog.generate_id(:uas, stored_state.call_id, stored_state.local_tag, stored_state.remote_tag)
+
+    # Build Dialog struct from stored state
+    dialog = %Dialog{
+      id: dialog_id,
+      state: :confirmed,
+      call_id: stored_state.call_id,
+      local_tag: stored_state.local_tag,
+      remote_tag: stored_state.remote_tag,
+      local_uri: stored_state.local_uri,
+      remote_uri: stored_state.remote_uri,
+      remote_target: Map.get(stored_state, :remote_target),
+      local_seq: stored_state.local_seq,
+      remote_seq: stored_state.remote_seq,
+      route_set: Map.get(stored_state, :route_set, []),
+      secure: Map.get(stored_state, :secure, false),
+      local_host: Map.get(stored_state, :local_host),
+      local_port: Map.get(stored_state, :local_port),
+      transport: Map.get(stored_state, :transport)
+    }
+
+    # Register the dialog
+    case Registry.register(ParrotSip.Registry, dialog_id, nil) do
+      {:ok, _} ->
+        Logger.info("[DialogStatem] Recovered dialog registered with ID #{inspect(dialog_id)}")
+
+      {:error, {:already_registered, _}} ->
+        Logger.warning("[DialogStatem] Recovered dialog already registered: #{inspect(dialog_id)}")
+    end
+
+    data = %Data{
+      id: dialog_id,
+      dialog: dialog,
+      local_contact: nil,
+      early_branch: nil,
+      log_id: "recovered-#{stored_state.call_id}",
+      dialog_type: :invite,
+      recovered: true
+    }
+
+    Logger.info("[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state")
+
+    {:ok, :confirmed, data}
   end
 
   # Update to replace "Dialog.is_complete" by pattern matching on the Message struct below
@@ -597,6 +710,11 @@ defmodule ParrotSip.DialogStatem do
         # Check if dialog should transition states
         new_state = if updated_dialog.state == :terminated, do: :terminated, else: state
 
+        # Broadcast delete when dialog terminates
+        if new_state == :terminated do
+          maybe_broadcast_delete(data.id)
+        end
+
         {:next_state, new_state, updated_data, [{:reply, from, :process}]}
 
       {:error, :cseq_out_of_order} ->
@@ -618,6 +736,17 @@ defmodule ParrotSip.DialogStatem do
 
   defp process_uas_response(:early, %Message{status_code: status_code}, _req_sip_msg, data)
        when status_code >= 200 and status_code < 300 do
+    # Broadcast dialog creation when transitioning to confirmed
+    broadcast_state = %{
+      call_id: data.dialog.call_id,
+      local_tag: data.dialog.local_tag,
+      remote_tag: data.dialog.remote_tag,
+      state: :confirmed,
+      owner_node: node()
+    }
+
+    maybe_broadcast_create(data.id, broadcast_state)
+
     {:next_state, :confirmed, data}
   end
 
@@ -633,6 +762,25 @@ defmodule ParrotSip.DialogStatem do
 
     # Check state transitions
     new_state = determine_new_state(state, updated_dialog.state)
+
+    # Broadcast dialog creation when transitioning from early to confirmed
+    if state == :early and new_state == :confirmed do
+      broadcast_state = %{
+        call_id: updated_dialog.call_id,
+        local_tag: updated_dialog.local_tag,
+        remote_tag: updated_dialog.remote_tag,
+        state: :confirmed,
+        owner_node: node()
+      }
+
+      maybe_broadcast_create(data.id, broadcast_state)
+    end
+
+    # Broadcast update for any state change in confirmed state
+    if state == :confirmed and updated_dialog.state == :confirmed do
+      maybe_broadcast_update(data.id, %{})
+    end
+
     {:next_state, new_state, updated_data}
   end
 
@@ -872,5 +1020,41 @@ defmodule ParrotSip.DialogStatem do
   defp uac_trans_result(dialog_pid, trans_result) do
     :gen_statem.cast(dialog_pid, {:uac_trans_result, trans_result})
     :ok
+  end
+
+  # DialogBroadcast integration helpers
+  # These functions provide graceful degradation if DialogBroadcast is not running
+
+  defp maybe_broadcast_create(dialog_id, state) do
+    case Process.whereis(:dialog_broadcast) do
+      nil ->
+        Logger.debug("dialog #{dialog_id}: DialogBroadcast not running, skipping broadcast")
+        :ok
+
+      pid ->
+        DialogBroadcast.broadcast_create(pid, dialog_id, state)
+    end
+  end
+
+  defp maybe_broadcast_update(dialog_id, changes) do
+    case Process.whereis(:dialog_broadcast) do
+      nil ->
+        Logger.debug("dialog #{dialog_id}: DialogBroadcast not running, skipping broadcast")
+        :ok
+
+      pid ->
+        DialogBroadcast.broadcast_update(pid, dialog_id, changes)
+    end
+  end
+
+  defp maybe_broadcast_delete(dialog_id) do
+    case Process.whereis(:dialog_broadcast) do
+      nil ->
+        Logger.debug("dialog #{dialog_id}: DialogBroadcast not running, skipping broadcast")
+        :ok
+
+      pid ->
+        DialogBroadcast.broadcast_delete(pid, dialog_id)
+    end
   end
 end
