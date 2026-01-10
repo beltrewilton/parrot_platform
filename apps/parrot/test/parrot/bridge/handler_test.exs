@@ -497,8 +497,277 @@ defmodule Parrot.Bridge.HandlerTest do
   end
 
   # ===========================================================================
+  # Contact Headers in Registration Response (Epic 6f9)
+  # ===========================================================================
+
+  describe "build_contact_headers/1 (6f9.1)" do
+    test "converts empty bindings list to empty Contact list" do
+      assert [] = Handler.build_contact_headers([])
+    end
+
+    test "converts single binding to Contact struct with expires" do
+      # Binding with richer data format per RFC 3261 Section 10.3
+      bindings = [
+        %{
+          contact: "sip:alice@192.168.1.100:5060",
+          expires: 3600,
+          registered_at: System.system_time(:second) - 100
+        }
+      ]
+
+      [contact] = Handler.build_contact_headers(bindings)
+
+      assert %ParrotSip.Headers.Contact{} = contact
+      assert contact.uri.user == "alice"
+      assert contact.uri.host == "192.168.1.100"
+      assert contact.uri.port == 5060
+      # Expires should be remaining time (original expires - elapsed time)
+      assert contact.parameters["expires"] != nil
+      expires = String.to_integer(contact.parameters["expires"])
+      # Should be approximately 3500 (3600 - 100 elapsed)
+      assert expires >= 3400 and expires <= 3600
+    end
+
+    test "converts multiple bindings to multiple Contact structs" do
+      now = System.system_time(:second)
+
+      bindings = [
+        %{contact: "sip:alice@device1:5060", expires: 3600, registered_at: now},
+        %{contact: "sip:alice@device2:5060", expires: 1800, registered_at: now}
+      ]
+
+      contacts = Handler.build_contact_headers(bindings)
+
+      assert length(contacts) == 2
+      assert Enum.all?(contacts, &match?(%ParrotSip.Headers.Contact{}, &1))
+
+      # Verify each contact has correct expires
+      expires_values =
+        contacts
+        |> Enum.map(& &1.parameters["expires"])
+        |> Enum.map(&String.to_integer/1)
+        |> Enum.sort(:desc)
+
+      # Should be [3600, 1800] approximately
+      assert hd(expires_values) >= 3500
+      assert List.last(expires_values) >= 1700
+    end
+
+    test "handles expired bindings by setting expires to 0" do
+      # Binding registered 4000 seconds ago with 3600 expires = expired
+      bindings = [
+        %{
+          contact: "sip:alice@expired:5060",
+          expires: 3600,
+          registered_at: System.system_time(:second) - 4000
+        }
+      ]
+
+      [contact] = Handler.build_contact_headers(bindings)
+
+      expires = String.to_integer(contact.parameters["expires"])
+      # Expired bindings should have 0 expires (not negative)
+      assert expires == 0
+    end
+  end
+
+  describe "Contact headers in 200 OK response (6f9.2, 6f9.4)" do
+    defmodule RichBindingRegistrationHandler do
+      @moduledoc false
+      use Parrot.RegistrationHandler
+
+      @impl true
+      def authenticate(_credentials), do: :ok
+
+      @impl true
+      def store_binding(_aor, _contact, _expires), do: :ok
+
+      @impl true
+      def get_bindings(_aor) do
+        # Return richer binding data with expires and registered_at
+        now = System.system_time(:second)
+
+        [
+          %{contact: "sip:alice@192.168.1.100:5060", expires: 3600, registered_at: now},
+          %{contact: "sip:alice@192.168.1.101:5060", expires: 1800, registered_at: now}
+        ]
+      end
+    end
+
+    defmodule RichBindingRouter do
+      use Parrot.Router
+      register Parrot.Bridge.HandlerTest.RichBindingRegistrationHandler
+    end
+
+    test "process_registration includes Contact header in 200 OK" do
+      test_pid = self()
+      register_msg = create_test_register_with_contact()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: RichBindingRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_register(uas, register_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+
+      # Response should have Contact header(s)
+      assert response.contact != nil
+      contacts = if is_list(response.contact), do: response.contact, else: [response.contact]
+      assert length(contacts) == 2
+    end
+
+    test "Contact header has correct expires parameter" do
+      test_pid = self()
+      register_msg = create_test_register_with_contact()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: RichBindingRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_register(uas, register_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+
+      contacts = if is_list(response.contact), do: response.contact, else: [response.contact]
+
+      # Each Contact should have an expires parameter
+      Enum.each(contacts, fn contact ->
+        assert contact.parameters["expires"] != nil
+        expires = String.to_integer(contact.parameters["expires"])
+        # Expires should be positive (registration is valid)
+        assert expires > 0
+      end)
+    end
+
+    test "Contact URIs match the registered bindings" do
+      test_pid = self()
+      register_msg = create_test_register_with_contact()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: RichBindingRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_register(uas, register_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+
+      contacts = if is_list(response.contact), do: response.contact, else: [response.contact]
+
+      # Extract hosts from contacts
+      hosts = Enum.map(contacts, & &1.uri.host) |> Enum.sort()
+      assert hosts == ["192.168.1.100", "192.168.1.101"]
+    end
+  end
+
+  describe "build_contact_headers/1 with q-value (Task 6f9.3)" do
+    test "includes q parameter when binding has q-value" do
+      now = System.system_time(:second)
+
+      bindings = [
+        %{contact: "sip:alice@192.168.1.100:5060", expires: 3600, registered_at: now, q: 1.0},
+        %{contact: "sip:alice@192.168.1.101:5060", expires: 1800, registered_at: now, q: 0.5}
+      ]
+
+      contacts = Handler.build_contact_headers(bindings)
+
+      assert length(contacts) == 2
+
+      # Check first contact has q=1.0
+      contact1 = Enum.find(contacts, fn c -> c.uri.host == "192.168.1.100" end)
+      assert contact1.parameters["q"] == "1.0"
+
+      # Check second contact has q=0.5
+      contact2 = Enum.find(contacts, fn c -> c.uri.host == "192.168.1.101" end)
+      assert contact2.parameters["q"] == "0.5"
+    end
+
+    test "omits q parameter when binding has no q-value" do
+      now = System.system_time(:second)
+
+      bindings = [
+        %{contact: "sip:bob@10.0.0.50:5060", expires: 3600, registered_at: now}
+      ]
+
+      contacts = Handler.build_contact_headers(bindings)
+
+      assert length(contacts) == 1
+      [contact] = contacts
+
+      # Should not have q parameter
+      refute Map.has_key?(contact.parameters, "q")
+
+      # Should still have expires parameter
+      assert Map.has_key?(contact.parameters, "expires")
+    end
+
+    test "handles mix of bindings with and without q-value" do
+      now = System.system_time(:second)
+
+      bindings = [
+        %{contact: "sip:alice@192.168.1.100:5060", expires: 3600, registered_at: now, q: 1.0},
+        %{contact: "sip:alice@192.168.1.101:5060", expires: 1800, registered_at: now}
+      ]
+
+      contacts = Handler.build_contact_headers(bindings)
+
+      assert length(contacts) == 2
+
+      # First has q-value
+      contact_with_q = Enum.find(contacts, fn c -> c.uri.host == "192.168.1.100" end)
+      assert contact_with_q.parameters["q"] == "1.0"
+
+      # Second does not
+      contact_without_q = Enum.find(contacts, fn c -> c.uri.host == "192.168.1.101" end)
+      refute Map.has_key?(contact_without_q.parameters, "q")
+    end
+
+    test "returns empty list for empty bindings" do
+      assert [] == Handler.build_contact_headers([])
+    end
+  end
+
+  # ===========================================================================
   # Additional Test Helpers
   # ===========================================================================
+
+  defp create_test_register_with_contact do
+    %Message{
+      type: :request,
+      method: :register,
+      request_uri: "sip:127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          parameters: %{"branch" => "z9hG4bK-register-branch"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1"},
+        parameters: %{"tag" => "from-tag-reg"}
+      },
+      to: %ParrotSip.Headers.To{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1"},
+        parameters: %{}
+      },
+      contact: %ParrotSip.Headers.Contact{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "192.168.1.100", port: 5060},
+        parameters: %{}
+      },
+      call_id: "register-call-id@127.0.0.1",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :register},
+      max_forwards: 70,
+      expires: 3600,
+      body: "",
+      source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
 
   defp create_invite_to(to_user) do
     %Message{

@@ -310,49 +310,6 @@ defmodule Parrot.Call do
   end
 
   # ---------------------------------------------------------------------------
-  # DTMF Operations
-  # ---------------------------------------------------------------------------
-
-  @doc """
-  Collects DTMF digits from the caller.
-
-  ## Options
-
-  * `:max` - Maximum number of digits to collect
-  * `:timeout` - Timeout in milliseconds
-  * `:terminators` - List of terminating digits (e.g., ["#", "*"])
-
-  ## Examples
-
-      call |> collect_dtmf(max: 4, timeout: 5_000)
-      call |> collect_dtmf(max: 16, terminators: ["#"])
-
-  """
-  @spec collect_dtmf(t(), keyword()) :: t()
-  def collect_dtmf(%__MODULE__{} = call, opts) when is_list(opts) do
-    add_operation(call, {:collect_dtmf, opts})
-  end
-
-  @doc """
-  Plays an audio file and collects DTMF digits.
-
-  This is a convenience function that combines `play/2` and `collect_dtmf/2`.
-
-  ## Options
-
-  * `:collect` - Keyword list of collect_dtmf options (max, timeout, terminators)
-
-  ## Examples
-
-      call |> prompt("enter-pin.wav", collect: [max: 4, timeout: 10_000])
-
-  """
-  @spec prompt(t(), String.t(), keyword()) :: t()
-  def prompt(%__MODULE__{} = call, file, opts) when is_binary(file) and is_list(opts) do
-    add_operation(call, {:prompt, file, opts})
-  end
-
-  # ---------------------------------------------------------------------------
   # Bridging Operations
   # ---------------------------------------------------------------------------
 

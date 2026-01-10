@@ -209,52 +209,6 @@ defmodule Parrot.CallTest do
     end
   end
 
-  describe "collect_dtmf/2" do
-    test "adds collect_dtmf operation with max option" do
-      call = %Call{} |> Call.collect_dtmf(max: 4)
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [max: 4]}
-    end
-
-    test "adds collect_dtmf operation with timeout option" do
-      call = %Call{} |> Call.collect_dtmf(timeout: 5_000)
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [timeout: 5_000]}
-    end
-
-    test "adds collect_dtmf operation with terminators option" do
-      call = %Call{} |> Call.collect_dtmf(max: 16, terminators: ["#"])
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [max: 16, terminators: ["#"]]}
-    end
-
-    test "adds collect_dtmf operation with all options" do
-      call = %Call{} |> Call.collect_dtmf(max: 4, timeout: 5_000, terminators: ["#", "*"])
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [max: 4, timeout: 5_000, terminators: ["#", "*"]]}
-    end
-  end
-
-  describe "prompt/3" do
-    test "adds prompt operation combining play and collect" do
-      call = %Call{} |> Call.prompt("enter-pin.wav", collect: [max: 4])
-
-      assert [operation] = call.__operations__
-      assert operation == {:prompt, "enter-pin.wav", [collect: [max: 4]]}
-    end
-
-    test "adds prompt operation with timeout in collect options" do
-      call = %Call{} |> Call.prompt("enter-pin.wav", collect: [max: 4, timeout: 10_000])
-
-      assert [operation] = call.__operations__
-      assert operation == {:prompt, "enter-pin.wav", [collect: [max: 4, timeout: 10_000]]}
-    end
-  end
-
   describe "bridge/2" do
     test "adds bridge operation with destination" do
       call = %Call{} |> Call.bridge("sip:dest@somewhere")
@@ -369,7 +323,7 @@ defmodule Parrot.CallTest do
         |> Call.answer()
         |> Call.assign(:menu, :main)
         |> Call.play("welcome.wav")
-        |> Call.collect_dtmf(max: 1, timeout: 10_000)
+        |> Call.play("menu.wav")
 
       assert call.assigns == %{menu: :main}
 
@@ -377,7 +331,7 @@ defmodule Parrot.CallTest do
       assert [
                {:answer, []},
                {:play, "welcome.wav", []},
-               {:collect_dtmf, [max: 1, timeout: 10_000]}
+               {:play, "menu.wav", []}
              ] = Call.get_operations(call)
     end
 
@@ -388,7 +342,7 @@ defmodule Parrot.CallTest do
         |> Call.assign(:menu, :main)
         |> Call.assign(:retries, 0)
         |> Call.play("welcome.wav")
-        |> Call.prompt("main-menu.wav", collect: [max: 1, timeout: 10_000])
+        |> Call.record("input.wav", max_duration: 10_000)
 
       assert call.from == "sip:alice@example.com"
       assert call.to == "sip:100@pbx.local"
@@ -398,7 +352,7 @@ defmodule Parrot.CallTest do
       assert [
                {:answer, []},
                {:play, "welcome.wav", []},
-               {:prompt, "main-menu.wav", [collect: [max: 1, timeout: 10_000]]}
+               {:record, "input.wav", [max_duration: 10_000]}
              ] = Call.get_operations(call)
     end
 
