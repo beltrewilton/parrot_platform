@@ -84,6 +84,8 @@ defmodule ParrotSip.DialogStatem do
   require Logger
 
   alias ParrotSip.{Dialog, Message, Branch, DialogBroadcast}
+  alias ParrotSip.CDR
+  alias ParrotSip.CDR.{Generator, Dispatcher, TerminationCause}
   alias ParrotSip.Headers.{Contact, Via}
 
   @type trans :: {:trans, pid()}
@@ -1056,6 +1058,103 @@ defmodule ParrotSip.DialogStatem do
   defp uac_trans_result(dialog_pid, trans_result) do
     :gen_statem.cast(dialog_pid, {:uac_trans_result, trans_result})
     :ok
+  end
+
+  # ===========================================================================
+  # gen_statem terminate callback - CDR generation
+  # ===========================================================================
+
+  @doc """
+  Generates and dispatches CDR when dialog terminates.
+
+  RFC 3261 Section 12.3: Termination of a Dialog
+
+  Called by gen_statem for all termination paths:
+  - BYE request processed (normal call end)
+  - Transaction stop signal
+  - Owner process dies
+  - Subscription expired
+
+  Only generates CDRs for INVITE dialogs (not SUBSCRIBE/NOTIFY).
+  Dispatches to handlers asynchronously to avoid blocking termination.
+  """
+  @impl :gen_statem
+  def terminate(reason, state, data) do
+    # Only generate CDR for INVITE dialogs with valid dialog data
+    if data.dialog_type == :invite and data.dialog != nil do
+      generate_and_dispatch_cdr(data, state, reason)
+    end
+
+    :ok
+  end
+
+  # Generates CDR and dispatches to all registered handlers asynchronously.
+  # Errors are logged but do not affect dialog termination.
+  @spec generate_and_dispatch_cdr(Data.t(), atom(), term()) :: :ok
+  defp generate_and_dispatch_cdr(data, state, reason) do
+    # Build termination cause based on how dialog ended
+    termination_cause = build_termination_cause(data, state, reason)
+
+    # Build timing data - ended_at is captured now at termination
+    timing_data = %{
+      invite_received_at: data.invite_received_at,
+      answered_at: data.answered_at,
+      ended_at: DateTime.utc_now()
+    }
+
+    # Generate CDR
+    case Generator.generate(data.dialog, timing_data, termination_cause) do
+      {:ok, cdr} ->
+        # Fire-and-forget dispatch to all handlers
+        handlers = CDR.list_handlers()
+
+        if handlers != [] do
+          Logger.debug("dialog #{inspect(data.id)}: dispatching CDR to #{length(handlers)} handlers")
+          Dispatcher.dispatch(cdr, handlers)
+        else
+          Logger.debug("dialog #{inspect(data.id)}: no CDR handlers registered")
+        end
+
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("dialog #{inspect(data.id)}: failed to generate CDR: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  # Builds termination cause based on dialog state and termination context.
+  # Determines disposition based on whether call was answered and how it ended.
+  @spec build_termination_cause(Data.t(), atom(), term()) :: TerminationCause.t()
+  defp build_termination_cause(data, state, _reason) do
+    cond do
+      # Call was answered (has answered_at) - normal termination via BYE
+      data.answered_at != nil ->
+        %TerminationCause{
+          party: :caller,
+          sip_code: 200,
+          reason: "BYE",
+          method: :bye
+        }
+
+      # Early state - call was cancelled or rejected before answer
+      state == :early ->
+        %TerminationCause{
+          party: :caller,
+          sip_code: 487,
+          reason: "Request Terminated",
+          method: :cancel
+        }
+
+      # Default - system termination (owner died, timeout, etc.)
+      true ->
+        %TerminationCause{
+          party: :system,
+          sip_code: 500,
+          reason: "Dialog Terminated",
+          method: nil
+        }
+    end
   end
 
   # DialogBroadcast integration helpers
