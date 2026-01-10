@@ -37,11 +37,6 @@ defmodule ParrotMedia.WsBidirectional.Sink do
   - If connector_pid is nil, audio is dropped (logged at debug level)
   - If connector_pid becomes unavailable, audio is still sent (Erlang semantics)
   - Pipeline errors should NOT crash the main call flow
-
-  ## STUB IMPLEMENTATION
-
-  This module is a stub for TDD. The implementation is incomplete.
-  Tests should fail until this is properly implemented.
   """
 
   use Membrane.Sink
@@ -74,20 +69,35 @@ defmodule ParrotMedia.WsBidirectional.Sink do
   end
 
   @impl true
-  def handle_buffer(:input, _buffer, _ctx, state) do
-    # STUB: Not implemented - should forward buffer payload to connector
-    {[], state}
+  def handle_buffer(:input, buffer, _ctx, state) do
+    case state.connector_pid do
+      nil ->
+        Logger.debug("WsBidirectional.Sink: No connector_pid, dropping audio frame")
+        {[], state}
+
+      pid when is_pid(pid) ->
+        send(pid, {:sink_audio, buffer.payload})
+        {[], %{state | frames_sent: state.frames_sent + 1}}
+    end
   end
 
   @impl true
   def handle_playing(_ctx, state) do
-    # STUB: Not implemented - may notify connector of playing state
+    Logger.debug("WsBidirectional.Sink: Pipeline now playing")
     {[], state}
   end
 
   @impl true
   def handle_end_of_stream(:input, _ctx, state) do
-    # STUB: Not implemented - should notify connector of end of stream
+    case state.connector_pid do
+      nil ->
+        Logger.debug("WsBidirectional.Sink: End of stream, no connector to notify")
+
+      pid when is_pid(pid) ->
+        Logger.debug("WsBidirectional.Sink: End of stream, notifying connector")
+        send(pid, {:sink_end_of_stream, %{frames_sent: state.frames_sent}})
+    end
+
     {[], state}
   end
 end
