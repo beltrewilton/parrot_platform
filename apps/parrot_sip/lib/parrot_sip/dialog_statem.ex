@@ -216,7 +216,8 @@ defmodule ParrotSip.DialogStatem do
       dialog: dialog,
       local_contact: Message.get_header(req_sip_msg, "contact"),
       log_id: uas_log_id(resp_sip_msg),
-      dialog_type: dialog_type(req_sip_msg)
+      dialog_type: dialog_type(req_sip_msg),
+      invite_received_at: DateTime.utc_now()
     }
 
     # Set a timer for NOTIFY dialogs
@@ -249,18 +250,23 @@ defmodule ParrotSip.DialogStatem do
       call_id: call_id
     )
 
-    # Broadcast creation if starting directly in confirmed state
-    if initial_state == :confirmed do
-      broadcast_state = %{
-        call_id: dialog.call_id,
-        local_tag: dialog.local_tag,
-        remote_tag: dialog.remote_tag,
-        state: :confirmed,
-        owner_node: node()
-      }
+    # Broadcast creation and set answered_at if starting directly in confirmed state
+    data =
+      if initial_state == :confirmed do
+        broadcast_state = %{
+          call_id: dialog.call_id,
+          local_tag: dialog.local_tag,
+          remote_tag: dialog.remote_tag,
+          state: :confirmed,
+          owner_node: node()
+        }
 
-      maybe_broadcast_create(dialog.id, broadcast_state)
-    end
+        maybe_broadcast_create(dialog.id, broadcast_state)
+        # Set answered_at for dialogs starting directly in confirmed state
+        %{data | answered_at: DateTime.utc_now()}
+      else
+        data
+      end
 
     {:ok, initial_state, data, actions}
   end
@@ -289,7 +295,8 @@ defmodule ParrotSip.DialogStatem do
       local_contact: Message.get_header(out_req, "contact"),
       early_branch: branch,
       log_id: uac_log_id(resp_sip_msg),
-      dialog_type: dialog_type(out_req)
+      dialog_type: dialog_type(out_req),
+      invite_received_at: DateTime.utc_now()
     }
 
     initial_state = dialog.state
@@ -315,24 +322,30 @@ defmodule ParrotSip.DialogStatem do
       local_contact: Message.get_header(out_req, "contact"),
       early_branch: nil,
       log_id: uac_log_id(resp_sip_msg),
-      dialog_type: dialog_type(out_req)
+      dialog_type: dialog_type(out_req),
+      invite_received_at: DateTime.utc_now()
     }
 
     initial_state = dialog.state
     Logger.info("dialog #{inspect(dialog.id)}: starting in #{inspect(initial_state)} state")
 
-    # Broadcast creation if starting directly in confirmed state
-    if initial_state == :confirmed do
-      broadcast_state = %{
-        call_id: dialog.call_id,
-        local_tag: dialog.local_tag,
-        remote_tag: dialog.remote_tag,
-        state: :confirmed,
-        owner_node: node()
-      }
+    # Broadcast creation and set answered_at if starting directly in confirmed state
+    data =
+      if initial_state == :confirmed do
+        broadcast_state = %{
+          call_id: dialog.call_id,
+          local_tag: dialog.local_tag,
+          remote_tag: dialog.remote_tag,
+          state: :confirmed,
+          owner_node: node()
+        }
 
-      maybe_broadcast_create(dialog.id, broadcast_state)
-    end
+        maybe_broadcast_create(dialog.id, broadcast_state)
+        # Set answered_at for dialogs starting directly in confirmed state
+        %{data | answered_at: DateTime.utc_now()}
+      else
+        data
+      end
 
     {:ok, initial_state, data}
   end
@@ -373,6 +386,9 @@ defmodule ParrotSip.DialogStatem do
         Logger.warning("[DialogStatem] Recovered dialog already registered: #{inspect(dialog_id)}")
     end
 
+    # For recovered dialogs, use stored timing or fall back to current time
+    now = DateTime.utc_now()
+
     data = %Data{
       id: dialog_id,
       dialog: dialog,
@@ -380,7 +396,9 @@ defmodule ParrotSip.DialogStatem do
       early_branch: nil,
       log_id: "recovered-#{stored_state.call_id}",
       dialog_type: :invite,
-      recovered: true
+      recovered: true,
+      invite_received_at: Map.get(stored_state, :invite_received_at, now),
+      answered_at: Map.get(stored_state, :answered_at, now)
     }
 
     Logger.info("[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state")
@@ -743,6 +761,9 @@ defmodule ParrotSip.DialogStatem do
 
   defp process_uas_response(:early, %Message{status_code: status_code}, _req_sip_msg, data)
        when status_code >= 200 and status_code < 300 do
+    # Capture answered_at timestamp for CDR when transitioning to confirmed
+    data = %{data | answered_at: DateTime.utc_now()}
+
     # Broadcast dialog creation when transitioning to confirmed
     broadcast_state = %{
       call_id: data.dialog.call_id,
@@ -769,6 +790,14 @@ defmodule ParrotSip.DialogStatem do
 
     # Check state transitions
     new_state = determine_new_state(state, updated_dialog.state)
+
+    # Capture answered_at timestamp for CDR when transitioning from early to confirmed
+    updated_data =
+      if state == :early and new_state == :confirmed do
+        %{updated_data | answered_at: DateTime.utc_now()}
+      else
+        updated_data
+      end
 
     # Broadcast dialog creation when transitioning from early to confirmed
     if state == :early and new_state == :confirmed do
