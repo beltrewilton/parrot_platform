@@ -8,6 +8,8 @@ defmodule ParrotMedia.Application do
     children = [
       # Registry for media session discovery
       {Registry, keys: :unique, name: ParrotMedia.Registry},
+      # Registry for WebSocket forker discovery by fork_id
+      {Registry, keys: :unique, name: ParrotMedia.WsForkerRegistry},
       # Media session supervisor
       ParrotMedia.MediaSessionSupervisor
     ]

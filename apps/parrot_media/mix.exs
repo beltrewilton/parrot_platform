@@ -43,7 +43,10 @@ defmodule ParrotMedia.MixProject do
       {:membrane_realtimer_plugin, "~> 0.10.1"},
       {:membrane_portaudio_plugin, "~> 0.19.2"},
       {:membrane_opus_plugin, "~> 0.20.3"},
-      {:membrane_rtp_opus_plugin, "~> 0.10.1"}
+      {:membrane_rtp_opus_plugin, "~> 0.10.1"},
+      {:websock_adapter, "~> 0.5", only: :test},
+      {:fresh, "~> 0.4"},
+      {:plug_cowboy, "~> 2.6", only: :test}
       # NO dependency on :parrot_sip or :parrot_transport!
     ]
   end
