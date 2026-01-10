@@ -29,6 +29,7 @@ defmodule ParrotSip.MixProject do
   defp deps do
     [
       {:nimble_parsec, "~> 1.3"},
+      {:phoenix_pubsub, "~> 2.1"},
       {:parrot_transport, in_umbrella: true},
       {:parrot_media, in_umbrella: true, only: :test}
     ]
