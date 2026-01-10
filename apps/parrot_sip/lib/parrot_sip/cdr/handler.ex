@@ -163,8 +163,8 @@ defmodule ParrotSip.CDR.Handler do
           }
         end
 
-        defp termination_cause_to_json(%{initiator: initiator, reason: reason, sip_status: status}) do
-          %{initiator: initiator, reason: reason, sip_status: status}
+        defp termination_cause_to_json(%{party: party, reason: reason, sip_code: code}) do
+          %{party: party, reason: reason, sip_code: code}
         end
       end
 
