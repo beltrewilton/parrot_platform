@@ -2,8 +2,6 @@ defmodule ParrotMedia.WsBidirectional.Callback do
   @moduledoc """
   Behaviour for handling bidirectional WebSocket connection events.
 
-  STUB IMPLEMENTATION - To be completed in T006.
-
   Implement this behaviour to receive callbacks when connection state changes
   or messages arrive from the AI service.
 
@@ -56,19 +54,18 @@ defmodule ParrotMedia.WsBidirectional.Callback do
   - `{:frames_dropped, count}` - Frames dropped due to backpressure
   """
 
-  # TODO: Implement callback definitions in T006
-  # @type event ::
-  #         {:connected}
-  #         | {:disconnected, reason :: term()}
-  #         | {:reconnecting, attempt :: pos_integer()}
-  #         | {:failed, reason :: term()}
-  #         | {:ws_message, data :: binary() | String.t()}
-  #         | {:frames_dropped, count :: pos_integer()}
-  #
-  # @type state :: term()
-  #
-  # @callback handle_event(event(), state()) :: {:ok, state()} | {:error, term()}
-  # @callback terminate(reason :: term(), state()) :: term()
-  #
-  # @optional_callbacks [terminate: 2]
+  @type event ::
+          {:connected}
+          | {:disconnected, reason :: term()}
+          | {:reconnecting, attempt :: pos_integer()}
+          | {:failed, reason :: term()}
+          | {:ws_message, data :: binary() | String.t()}
+          | {:frames_dropped, count :: pos_integer()}
+
+  @type state :: term()
+
+  @callback handle_event(event(), state()) :: {:ok, state()} | {:error, term()}
+  @callback terminate(reason :: term(), state()) :: term()
+
+  @optional_callbacks [terminate: 2]
 end
