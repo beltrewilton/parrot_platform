@@ -10,7 +10,7 @@ defmodule ParrotMedia.WsBidirectionalTest do
   1. Connection lifecycle - start_link, disconnect, status
   2. Audio send flow - send_audio to WebSocket
   3. Audio receive flow - receive audio from WebSocket to callback
-  4. Echo test - full round-trip audio flow
+  4. Outbound audio verification - verifies audio frames reach WebSocket server
   5. Mute/unmute - direction-specific audio control
   6. Message passing - text/JSON message exchange
 
@@ -29,6 +29,96 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
   alias ParrotMedia.WsBidirectional
   alias ParrotMedia.WsBidirectional.Config
+
+  # ============================================================================
+  # Test callback modules (defined at module level to avoid namespace pollution)
+  # ============================================================================
+
+  defmodule IntegrationConnectedCallback do
+    @moduledoc false
+    @behaviour ParrotMedia.WsBidirectional.Callback
+
+    def handle_event({:connected}, state) do
+      send(state.test_pid, :integration_connected)
+      {:ok, state}
+    end
+
+    def handle_event(_event, state), do: {:ok, state}
+  end
+
+  defmodule InboundMessageCallback do
+    @moduledoc false
+    @behaviour ParrotMedia.WsBidirectional.Callback
+
+    def handle_event({:ws_message, data}, state) do
+      send(state.test_pid, {:received_ws_message, data})
+      {:ok, state}
+    end
+
+    def handle_event(_event, state), do: {:ok, state}
+  end
+
+  defmodule DisconnectCallback do
+    @moduledoc false
+    @behaviour ParrotMedia.WsBidirectional.Callback
+
+    def handle_event({:disconnected, _reason}, state) do
+      send(state.test_pid, :callback_disconnected)
+      {:ok, state}
+    end
+
+    def handle_event(_event, state), do: {:ok, state}
+  end
+
+  # ============================================================================
+  # Test helper functions for proper synchronization
+  # ============================================================================
+
+  # Waits for the connection to be established, polling until connected or timeout.
+  # Returns :ok on success, {:error, :timeout} if timeout expires.
+  defp wait_for_connected(pid, timeout \\ 1000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_connected(pid, deadline)
+  end
+
+  defp do_wait_for_connected(pid, deadline) do
+    case WsBidirectional.connected?(pid) do
+      true ->
+        :ok
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(10)
+          do_wait_for_connected(pid, deadline)
+        else
+          {:error, :timeout}
+        end
+    end
+  end
+
+  # Waits for a process to terminate.
+  # Returns :ok when process is dead, {:error, :timeout} if timeout expires.
+  defp wait_for_process_dead(pid, timeout \\ 1000) do
+    if Process.alive?(pid) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+      do_wait_for_process_dead(pid, deadline)
+    else
+      :ok
+    end
+  end
+
+  defp do_wait_for_process_dead(pid, deadline) do
+    if Process.alive?(pid) do
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        do_wait_for_process_dead(pid, deadline)
+      else
+        {:error, :timeout}
+      end
+    else
+      :ok
+    end
+  end
 
   # Base port offset to avoid conflicts with other tests
   @base_port 16_000
@@ -85,9 +175,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
-
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
       assert WsBidirectional.connected?(pid) == true
 
       # Clean up
@@ -99,17 +188,6 @@ defmodule ParrotMedia.WsBidirectionalTest do
       url: url
     } do
       test_pid = self()
-
-      defmodule IntegrationConnectedCallback do
-        @behaviour ParrotMedia.WsBidirectional.Callback
-
-        def handle_event({:connected}, state) do
-          send(state.test_pid, :integration_connected)
-          {:ok, state}
-        end
-
-        def handle_event(_event, state), do: {:ok, state}
-      end
 
       config =
         Config.new!(
@@ -139,8 +217,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Monitor the process
       ref = Process.monitor(pid)
@@ -165,15 +243,15 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
       assert Process.alive?(pid)
 
       # Disconnect using connection_id string
       assert :ok = WsBidirectional.disconnect(connection_id)
 
-      # Give time for process to terminate
-      Process.sleep(50)
+      # Wait for process to terminate with proper synchronization
+      assert :ok = wait_for_process_dead(pid)
       refute Process.alive?(pid)
     end
 
@@ -190,8 +268,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Disconnect
       WsBidirectional.disconnect(pid)
@@ -211,8 +289,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       {:ok, status} = WsBidirectional.status(pid)
 
@@ -242,10 +320,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
           url: url
         )
 
-      {:ok, _pid} = WsBidirectional.start_link(config)
+      {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Get status using connection_id string
       {:ok, status} = WsBidirectional.status(connection_id)
@@ -268,9 +346,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
-
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
       assert WsBidirectional.connected?(pid) == true
 
       # Clean up
@@ -291,7 +368,7 @@ defmodule ParrotMedia.WsBidirectionalTest do
       # The key verification is that connected? returns a boolean
 
       # Wait for connection to be established for proper verification
-      Process.sleep(100)
+      assert :ok = wait_for_connected(pid)
 
       # Verify it's now true
       assert WsBidirectional.connected?(pid) == true
@@ -339,8 +416,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Send audio
       audio_data = <<0x00, 0x01, 0x02, 0x03, 0xFF>>
@@ -364,8 +441,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Check initial count
       {:ok, status_before} = WsBidirectional.status(pid)
@@ -376,8 +453,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
       WsBidirectional.send_audio(pid, <<0x03, 0x04>>)
       WsBidirectional.send_audio(pid, <<0x05, 0x06>>)
 
-      # Give time for processing
-      Process.sleep(50)
+      # Wait for frames to be received by mock server to ensure processing is complete
+      assert_receive {:ws_frame, _}, 1000
+      assert_receive {:ws_frame, _}, 1000
+      assert_receive {:ws_frame, _}, 1000
 
       {:ok, status_after} = WsBidirectional.status(pid)
       assert status_after.frames_sent == 3
@@ -396,10 +475,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
           url: url
         )
 
-      {:ok, _pid} = WsBidirectional.start_link(config)
+      {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Send audio using connection_id
       audio_data = <<0x10, 0x20, 0x30>>
@@ -432,8 +511,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Mute outbound
       :ok = WsBidirectional.mute(:outbound, pid)
@@ -457,8 +536,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Send multiple frames
       frame1 = <<0x01, 0x01, 0x01>>
@@ -487,8 +566,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Create a larger audio frame (16KB - typical for audio chunks)
       large_data = :crypto.strong_rand_bytes(16 * 1024)
@@ -515,17 +594,6 @@ defmodule ParrotMedia.WsBidirectionalTest do
     } do
       test_pid = self()
 
-      defmodule InboundMessageCallback do
-        @behaviour ParrotMedia.WsBidirectional.Callback
-
-        def handle_event({:ws_message, data}, state) do
-          send(state.test_pid, {:received_ws_message, data})
-          {:ok, state}
-        end
-
-        def handle_event(_event, state), do: {:ok, state}
-      end
-
       config =
         Config.new!(
           connection_id: connection_id,
@@ -536,8 +604,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Simulate receiving a text message from WebSocket
       # We need to send the message through the connector
@@ -566,8 +634,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Register as source to receive inbound audio
       # Access the connector directly for this test
@@ -594,8 +662,12 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
+
+      # Register as source to receive audio events (for synchronization)
+      alias ParrotMedia.WsBidirectional.Connector
+      Connector.register_source(pid, self())
 
       # Check initial count
       {:ok, status_before} = WsBidirectional.status(pid)
@@ -606,8 +678,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
       send(pid, {:connection_event, {:ws_audio, <<0x02>>}})
       send(pid, {:connection_event, {:ws_audio, <<0x03>>}})
 
-      # Give time for processing
-      Process.sleep(50)
+      # Wait for frames to be processed by receiving them
+      assert_receive {:ws_audio, _}, 1000
+      assert_receive {:ws_audio, _}, 1000
+      assert_receive {:ws_audio, _}, 1000
 
       {:ok, status_after} = WsBidirectional.status(pid)
       assert status_after.frames_received == 3
@@ -618,22 +692,17 @@ defmodule ParrotMedia.WsBidirectionalTest do
   end
 
   # ============================================================================
-  # Echo test (full round-trip)
+  # Outbound audio verification (verifies audio frames reach WebSocket server)
   # ============================================================================
 
-  describe "echo test (bidirectional flow)" do
-    test "audio sent is echoed back through the system", %{
+  describe "outbound audio verification" do
+    test "verifies audio frames reach WebSocket server", %{
       connection_id: connection_id,
       url: url
     } do
-      # This test verifies the complete bidirectional flow:
-      # 1. Send audio to WebSocket
-      # 2. Mock server echoes it back (handled by modifying the handler)
-      # 3. Receive echoed audio through callback
-
-      # For this test, we need the mock server to echo binary frames
-      # The MockWsHandler already sends {:ws_frame, data} to test_pid for verification
-      # We can use that to verify the round-trip
+      # This test verifies that audio sent through WsBidirectional
+      # successfully reaches the WebSocket server. The mock server
+      # reports received frames back to the test process.
 
       config =
         Config.new!(
@@ -643,23 +712,15 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
-
-      # Register to receive inbound audio
-      alias ParrotMedia.WsBidirectional.Connector
-      Connector.register_source(pid, self())
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Send audio
       audio_data = <<0xCA, 0xFE, 0xBA, 0xBE>>
       WsBidirectional.send_audio(pid, audio_data)
 
-      # Verify the audio was sent to the mock server
+      # Verify the audio was received by the mock WebSocket server
       assert_receive {:ws_frame, ^audio_data}, 1000
-
-      # Note: To complete the echo test, the mock server would need to send
-      # the audio back. The current MockWsHandler doesn't automatically echo,
-      # but we've verified the outbound path works.
 
       # Clean up
       WsBidirectional.disconnect(pid)
@@ -683,8 +744,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Initial state should be unmuted
       {:ok, status_before} = WsBidirectional.status(pid)
@@ -716,8 +777,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Mute then unmute
       WsBidirectional.mute(:outbound, pid)
@@ -752,8 +813,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Register as source
       alias ParrotMedia.WsBidirectional.Connector
@@ -788,8 +849,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Register as source
       alias ParrotMedia.WsBidirectional.Connector
@@ -823,10 +884,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
           url: url
         )
 
-      {:ok, _pid} = WsBidirectional.start_link(config)
+      {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Test with string lookup
       assert :ok = WsBidirectional.mute(:outbound, connection_id)
@@ -864,8 +925,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Send a text/JSON message
       message = ~s({"type": "control", "action": "pause"})
@@ -890,10 +951,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
           url: url
         )
 
-      {:ok, _pid} = WsBidirectional.start_link(config)
+      {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       message = ~s({"type": "hello"})
       result = WsBidirectional.send_message(connection_id, message)
@@ -956,9 +1017,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       assert Process.alive?(pid)
 
-      # Wait for connection
-      Process.sleep(100)
-
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
       assert WsBidirectional.connected?(pid) == true
 
       # Stop via stop_supervised (will be cleaned up automatically)
@@ -979,8 +1039,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Send empty binary
       empty_data = <<>>
@@ -1009,9 +1069,9 @@ defmodule ParrotMedia.WsBidirectionalTest do
       {:ok, pid1} = WsBidirectional.start_link(config)
       assert Process.alive?(pid1)
 
-      # Disconnect it
+      # Disconnect it and wait for process to terminate
       :ok = WsBidirectional.disconnect(pid1)
-      Process.sleep(50)
+      assert :ok = wait_for_process_dead(pid1)
       refute Process.alive?(pid1)
 
       # Start new connection with same connection_id
@@ -1056,17 +1116,6 @@ defmodule ParrotMedia.WsBidirectionalTest do
     } do
       test_pid = self()
 
-      defmodule DisconnectCallback do
-        @behaviour ParrotMedia.WsBidirectional.Callback
-
-        def handle_event({:disconnected, _reason}, state) do
-          send(state.test_pid, :callback_disconnected)
-          {:ok, state}
-        end
-
-        def handle_event(_event, state), do: {:ok, state}
-      end
-
       config =
         Config.new!(
           connection_id: connection_id,
@@ -1077,8 +1126,8 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       {:ok, pid} = WsBidirectional.start_link(config)
 
-      # Wait for connection
-      Process.sleep(100)
+      # Wait for connection with proper synchronization
+      assert :ok = wait_for_connected(pid)
 
       # Disconnect
       WsBidirectional.disconnect(pid)
