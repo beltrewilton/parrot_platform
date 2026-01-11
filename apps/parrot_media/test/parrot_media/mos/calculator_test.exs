@@ -12,6 +12,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   use ExUnit.Case, async: true
 
   alias ParrotMedia.MOS.Calculator
+  alias ParrotMedia.MOS.CallSummary
   alias ParrotMedia.MOS.Config
   alias ParrotMedia.MOS.Interval
   alias ParrotMedia.MOS.Score
@@ -770,6 +771,239 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       assert score == nil  # No intervals completed yet
 
       Calculator.stop(via)
+    end
+  end
+
+  # ===========================================================================
+  # Summary Generation and Telemetry Tests
+  # ===========================================================================
+
+  describe "summary generation on terminate" do
+    test "generates CallSummary struct when stopped with scores", ctx do
+      {:ok, pid} = start_calculator(ctx)
+
+      # Complete an interval with good metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(pid, good_metrics())
+      end
+
+      Process.sleep(150)
+
+      summary = Calculator.stop(pid)
+
+      # Should return a CallSummary struct, not a plain map
+      assert %CallSummary{} = summary
+      assert summary.session_id == ctx.session_id
+      assert summary.status == :complete
+    end
+
+    test "calculates min/max/avg MOS from multiple scores", ctx do
+      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # First interval: good metrics
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      # Second interval: poor metrics
+      for _ <- 1..5, do: Calculator.add_metrics(pid, poor_metrics())
+      Process.sleep(100)
+
+      # Third interval: good metrics again
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      # min_mos should be from poor interval
+      assert summary.min_mos < summary.max_mos
+      # avg should be between min and max
+      assert summary.avg_mos >= summary.min_mos
+      assert summary.avg_mos <= summary.max_mos
+    end
+
+    test "calculates duration_ms from start_time", ctx do
+      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # Add some metrics and wait
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      # Duration should be at least 100ms (the sleep time)
+      assert summary.duration_ms >= 100
+    end
+
+    test "tracks total_packets and total_lost across intervals", ctx do
+      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # First interval: no loss
+      for _ <- 1..5, do: Calculator.add_metrics(pid, %{packets_received: 10, packets_expected: 10, jitter_ms: 10.0, delay_ms: 50.0})
+      Process.sleep(100)
+
+      # Second interval: some loss
+      for _ <- 1..5, do: Calculator.add_metrics(pid, %{packets_received: 8, packets_expected: 10, jitter_ms: 10.0, delay_ms: 50.0})
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      # Total expected: 50 (5*10) + 50 (5*10) = 100
+      assert summary.total_packets == 100
+      # Total lost: 0 + 10 (5*2) = 10
+      assert summary.total_lost == 10
+      assert summary.overall_loss_percent == 10.0
+    end
+
+    test "returns :insufficient_data status when no intervals completed", ctx do
+      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 10_000))
+
+      # Add metrics but don't wait for interval
+      Calculator.add_metrics(pid, good_metrics())
+
+      summary = Calculator.stop(pid)
+
+      # Should still get a CallSummary but with insufficient_data status
+      assert %CallSummary{} = summary
+      assert summary.status == :insufficient_data
+      assert summary.intervals_calculated == 0
+    end
+
+    test "includes quality_events in summary", ctx do
+      thresholds = [
+        %Threshold{name: :good, value: 3.5, hysteresis: 0.1, direction: :both}
+      ]
+
+      config = Config.new(interval_ms: 50, min_packets_per_interval: 5, thresholds: thresholds)
+
+      {:ok, pid} = start_calculator(ctx, config: config)
+
+      # Good then poor to trigger threshold
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      for _ <- 1..5, do: Calculator.add_metrics(pid, poor_metrics())
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert is_list(summary.quality_events)
+      # Should have captured the threshold crossing
+      assert length(summary.quality_events) >= 1
+    end
+  end
+
+  describe "telemetry emission on terminate" do
+    test "emits call_summary telemetry event on stop", ctx do
+      # Attach telemetry handler to capture events
+      test_pid = self()
+      handler_id = "test-handler-#{ctx.session_id}"
+
+      :telemetry.attach(
+        handler_id,
+        [:parrot_media, :mos, :call_summary],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry_event, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      Calculator.stop(pid)
+
+      # Should receive telemetry event
+      assert_receive {:telemetry_event, [:parrot_media, :mos, :call_summary], measurements, metadata}, 500
+
+      assert measurements.min_mos != nil
+      assert measurements.max_mos != nil
+      assert measurements.avg_mos != nil
+      assert measurements.total_packets > 0
+      assert measurements.intervals_calculated >= 1
+      assert metadata.session_id == ctx.session_id
+      assert metadata.status == :complete
+
+      :telemetry.detach(handler_id)
+    end
+
+    test "telemetry includes codec and call_id metadata", ctx do
+      test_pid = self()
+      handler_id = "test-handler-codec-#{ctx.session_id}"
+
+      :telemetry.attach(
+        handler_id,
+        [:parrot_media, :mos, :call_summary],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry_event, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      {:ok, pid} = start_calculator(ctx,
+        codec: :opus,
+        call_id: "my-call-123",
+        config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+      )
+
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      Calculator.stop(pid)
+
+      assert_receive {:telemetry_event, [:parrot_media, :mos, :call_summary], _measurements, metadata}, 500
+
+      assert metadata.codec == :opus
+      assert metadata.call_id == "my-call-123"
+
+      :telemetry.detach(handler_id)
+    end
+
+    test "no telemetry emitted when no metrics received", ctx do
+      test_pid = self()
+      handler_id = "test-handler-none-#{ctx.session_id}"
+
+      :telemetry.attach(
+        handler_id,
+        [:parrot_media, :mos, :call_summary],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry_event, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      {:ok, pid} = start_calculator(ctx)
+
+      # Stop immediately without adding any metrics
+      :ok = Calculator.stop(pid)
+
+      # Should not receive telemetry (awaiting_media state returns :ok)
+      refute_receive {:telemetry_event, _, _, _}, 100
+
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  describe "handler notification on terminate" do
+    test "notifies registered handlers with CallSummary on stop", ctx do
+      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      Calculator.register_handler(pid, self())
+
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      Calculator.stop(pid)
+
+      # Should receive summary message with CallSummary struct
+      assert_receive {:mos_summary, %{session_id: session_id, summary: summary}}, 500
+      assert session_id == ctx.session_id
+      assert %CallSummary{} = summary
     end
   end
 
