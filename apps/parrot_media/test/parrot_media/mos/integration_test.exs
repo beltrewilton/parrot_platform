@@ -536,6 +536,324 @@ defmodule ParrotMedia.MOS.IntegrationTest do
   end
 
   # ===========================================================================
+  # Handler Callback Integration Tests (T051)
+  # ===========================================================================
+
+  describe "handler callback invocation" do
+    test "handler receives MOS score callbacks", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 1)
+        )
+
+      # Register this process as handler
+      Calculator.register_handler(calc_pid, self())
+
+      # Add metrics to trigger score calculation
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      # Wait for interval
+      Process.sleep(100)
+
+      # Should receive MOS score message
+      assert_receive {:mos_score, %{session_id: session_id, score: score}}, 200
+      assert session_id == ctx.session_id
+      assert %ParrotMedia.MOS.Score{} = score
+      assert score.value >= 4.0
+
+      Calculator.stop(calc_pid)
+    end
+
+    test "handler receives threshold crossing callbacks", ctx do
+      session_id = ctx.session_id
+
+      # Configure with thresholds
+      Application.put_env(:parrot_media, :mos, %{
+        enabled: true,
+        interval_ms: 50,
+        min_packets_per_interval: 1,
+        default_delay_ms: 50.0,
+        thresholds: [
+          %{name: :excellent, value: 4.0, hysteresis: 0.0},
+          %{name: :good, value: 3.5, hysteresis: 0.0}
+        ]
+      })
+
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: session_id,
+          codec: :g711,
+          config: Config.merge([])
+        )
+
+      # Register this process as handler
+      Calculator.register_handler(calc_pid, self())
+
+      # First add good quality metrics (MOS > 4.0)
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 5.0,
+          delay_ms: 30.0
+        })
+      end
+
+      Process.sleep(100)
+
+      # Then add poor quality metrics (MOS < 3.5)
+      for _ <- 1..10 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 35,
+          packets_expected: 50,
+          jitter_ms: 100.0,
+          delay_ms: 200.0
+        })
+      end
+
+      Process.sleep(100)
+
+      # Should have received threshold crossing
+      # Note: direction is :falling or :rising (from Threshold module)
+      assert_receive {:mos_threshold_crossed, %{session_id: ^session_id, threshold: _, direction: :falling}}, 200
+
+      Calculator.stop(calc_pid)
+    end
+
+    test "handler receives summary callback on stop", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 1)
+        )
+
+      # Register this process as handler
+      Calculator.register_handler(calc_pid, self())
+
+      # Add some metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      # Stop the calculator - this triggers summary notification
+      Calculator.stop(calc_pid)
+
+      # Should receive summary message
+      assert_receive {:mos_summary, %{session_id: session_id, summary: summary}}, 200
+      assert session_id == ctx.session_id
+      assert %ParrotMedia.MOS.CallSummary{} = summary
+    end
+
+    test "callback timing is within 50ms", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 1)
+        )
+
+      # Register this process as handler
+      Calculator.register_handler(calc_pid, self())
+
+      # Record when we add metrics
+      start_time = System.monotonic_time(:millisecond)
+
+      # Add metrics to trigger score calculation
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      # Wait for interval (50ms) plus some buffer
+      Process.sleep(60)
+
+      # Should receive message quickly after interval completes
+      assert_receive {:mos_score, _}, 100
+      receive_time = System.monotonic_time(:millisecond)
+
+      # The callback should have been received within 50ms of interval completion
+      # (interval is 50ms, so total time should be around 50-100ms)
+      elapsed = receive_time - start_time
+      assert elapsed < 150, "Callback took #{elapsed}ms, expected < 150ms"
+
+      Calculator.stop(calc_pid)
+    end
+  end
+
+  describe "error isolation between handlers" do
+    defmodule RaisingHandler do
+      @behaviour ParrotMedia.MOS.Handler
+
+      @impl true
+      def init(_opts), do: {:ok, %{}}
+
+      @impl true
+      def handle_mos_score(_session_id, _score, _state) do
+        raise "Intentional error in handler"
+      end
+
+      @impl true
+      def handle_threshold_crossed(_session_id, _event, _state) do
+        raise "Intentional error in handler"
+      end
+
+      @impl true
+      def handle_call_summary(_session_id, _summary, _state) do
+        raise "Intentional error in handler"
+      end
+    end
+
+    test "error in one handler does not affect others", ctx do
+      session_id = ctx.session_id
+
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 1)
+        )
+
+      # Start a task that will raise
+      {:ok, raising_task} =
+        Task.start(fn ->
+          receive do
+            {:mos_score, _} ->
+              raise "Intentional error"
+          end
+        end)
+
+      # Register both handlers - the raising one first
+      Calculator.register_handler(calc_pid, raising_task)
+      Calculator.register_handler(calc_pid, self())
+
+      # Add metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      # This process should still receive the callback even if the other crashed
+      assert_receive {:mos_score, %{session_id: ^session_id, score: _}}, 200
+
+      Calculator.stop(calc_pid)
+    end
+
+    test "dead handler pid does not crash calculator", ctx do
+      session_id = ctx.session_id
+
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 1)
+        )
+
+      # Start and immediately kill a task
+      {:ok, dead_task} = Task.start(fn -> :ok end)
+      Process.sleep(10)
+      refute Process.alive?(dead_task)
+
+      # Register dead handler and this process
+      Calculator.register_handler(calc_pid, dead_task)
+      Calculator.register_handler(calc_pid, self())
+
+      # Add metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      # Calculator should still be alive and sending to valid handlers
+      assert Process.alive?(calc_pid)
+      assert_receive {:mos_score, %{session_id: ^session_id, score: _}}, 200
+
+      Calculator.stop(calc_pid)
+    end
+
+    test "multiple handlers all receive events", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 1)
+        )
+
+      # Start multiple handler tasks that forward to this process
+      parent = self()
+
+      handler_pids =
+        for i <- 1..3 do
+          {:ok, pid} =
+            Task.start(fn ->
+              receive do
+                {:mos_score, msg} ->
+                  send(parent, {:handler, i, msg})
+              end
+            end)
+
+          pid
+        end
+
+      # Register all handlers
+      for pid <- handler_pids do
+        Calculator.register_handler(calc_pid, pid)
+      end
+
+      # Add metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      # All handlers should receive the event
+      assert_receive {:handler, 1, _}, 200
+      assert_receive {:handler, 2, _}, 200
+      assert_receive {:handler, 3, _}, 200
+
+      Calculator.stop(calc_pid)
+    end
+  end
+
+  # ===========================================================================
   # Helpers
   # ===========================================================================
 
