@@ -60,6 +60,18 @@ defmodule MyApp.OpenAICallback do
   end
 
   @impl true
+  def handle_event({:disconnected, reason}, state) do
+    Logger.warning("OpenAI disconnected: #{inspect(reason)}")
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_event({:reconnecting, attempt}, state) do
+    Logger.info("Reconnecting to OpenAI (attempt #{attempt})")
+    {:ok, state}
+  end
+
+  @impl true
   def handle_event({:failed, reason}, state) do
     Logger.error("OpenAI connection failed: #{inspect(reason)}")
     {:ok, state}
@@ -113,10 +125,13 @@ call |> disconnect_bidirectional_ws()
 | `headers` | HTTP headers for auth | `[]` |
 | `callback_module` | Event handler module | `nil` |
 | `callback_state` | Initial callback state | `%{}` |
-| `inbound_format` | Audio format from AI | `:pcm_16le` |
-| `outbound_format` | Audio format to AI | `:pcm_16le` |
+| `inbound_format` | Audio format from AI (`:pcm_16le`, `:pcmu`, `:opus`) | `:pcm_16le` |
+| `outbound_format` | Audio format to AI (`:pcm_16le`, `:pcmu`, `:opus`) | `:pcm_16le` |
 | `sample_rate` | Sample rate in Hz | `16000` |
-| `jitter_buffer_ms` | Jitter buffer size | `60` |
+| `buffer_size` | Max frames to buffer during reconnection (1-500) | `100` |
+| `jitter_buffer_ms` | Jitter buffer size in ms | `60` |
+| `connect_timeout_ms` | WebSocket connection timeout in ms | `5000` |
+| `max_retries` | Max reconnection attempts before failure | `5` |
 
 ## Supported AI Services
 

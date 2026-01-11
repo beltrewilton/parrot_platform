@@ -54,6 +54,16 @@ defmodule ParrotMedia.WsBidirectional.Callback do
   - `{:frames_dropped, count}` - Frames dropped due to backpressure
   """
 
+  @typedoc """
+  Connection lifecycle and message events.
+
+  - `{:connected}` - WebSocket connection established
+  - `{:disconnected, reason}` - Connection lost (may reconnect)
+  - `{:reconnecting, attempt}` - Reconnection attempt in progress
+  - `{:failed, reason}` - Permanent failure, no more reconnection attempts
+  - `{:ws_message, data}` - Text/JSON message received from WebSocket
+  - `{:frames_dropped, count}` - Audio frames dropped due to buffer overflow
+  """
   @type event ::
           {:connected}
           | {:disconnected, reason :: term()}
@@ -62,9 +72,41 @@ defmodule ParrotMedia.WsBidirectional.Callback do
           | {:ws_message, data :: binary() | String.t()}
           | {:frames_dropped, count :: pos_integer()}
 
+  @typedoc """
+  Callback state maintained across events.
+
+  Initialized from `callback_state` in Config, updated via `handle_event/2` return.
+  """
   @type state :: term()
 
+  @doc """
+  Handle a connection event or incoming message.
+
+  Called when the connection state changes or a message arrives from the WebSocket.
+  Return `{:ok, new_state}` to update state, or `{:error, reason}` to log an error.
+
+  ## Parameters
+
+  - `event` - The event that occurred (see event type)
+  - `state` - Current callback state
+
+  ## Returns
+
+  - `{:ok, new_state}` - Continue with updated state
+  - `{:error, reason}` - Log error and continue with unchanged state
+  """
   @callback handle_event(event(), state()) :: {:ok, state()} | {:error, term()}
+
+  @doc """
+  Called when the connector is terminating.
+
+  Optional callback for cleanup. The return value is ignored.
+
+  ## Parameters
+
+  - `reason` - Termination reason (`:normal`, `:shutdown`, or error)
+  - `state` - Final callback state
+  """
   @callback terminate(reason :: term(), state()) :: term()
 
   @optional_callbacks [terminate: 2]
