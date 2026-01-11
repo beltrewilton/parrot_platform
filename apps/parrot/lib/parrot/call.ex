@@ -72,7 +72,8 @@ defmodule Parrot.Call do
           __uas__: term() | nil,
           __media_pid__: pid() | nil,
           __dialog_id__: String.t() | nil,
-          __sip_msg__: term() | nil
+          __sip_msg__: term() | nil,
+          __bidirectional_ws_pid__: pid() | nil
         }
 
   defstruct id: nil,
@@ -87,7 +88,8 @@ defmodule Parrot.Call do
             __uas__: nil,
             __media_pid__: nil,
             __dialog_id__: nil,
-            __sip_msg__: nil
+            __sip_msg__: nil,
+            __bidirectional_ws_pid__: nil
 
   @doc """
   Creates a new Call struct from keyword options.
@@ -448,6 +450,144 @@ defmodule Parrot.Call do
   @spec stop_fork_media(t(), String.t()) :: t()
   def stop_fork_media(%__MODULE__{} = call, fork_id) when is_binary(fork_id) do
     add_operation(call, {:stop_fork_media, fork_id})
+  end
+
+  # ---------------------------------------------------------------------------
+  # Bidirectional WebSocket Operations
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Connects to a bidirectional WebSocket for real-time AI audio streaming.
+
+  Establishes a WebSocket connection that enables bidirectional audio streaming
+  between the call and an external AI service (e.g., OpenAI Realtime API).
+
+  ## Examples
+
+      call |> connect_bidirectional_ws("wss://api.openai.com/v1/realtime")
+
+  """
+  @spec connect_bidirectional_ws(t(), String.t()) :: t()
+  def connect_bidirectional_ws(call, url), do: connect_bidirectional_ws(call, url, [])
+
+  @doc """
+  Connects to a bidirectional WebSocket with options.
+
+  ## Options
+
+  * `:headers` - List of HTTP headers for the WebSocket connection
+  * `:callback_module` - Module implementing WebSocket message callbacks
+  * `:callback_state` - Initial state for the callback module
+  * `:inbound_format` - Audio format for inbound audio (AI → caller)
+  * `:outbound_format` - Audio format for outbound audio (caller → AI)
+  * `:sample_rate` - Sample rate for audio (e.g., 24000 for OpenAI)
+
+  ## Examples
+
+      call |> connect_bidirectional_ws("wss://api.openai.com/v1/realtime",
+        headers: [{"Authorization", "Bearer token"}],
+        callback_module: MyApp.OpenAICallback,
+        sample_rate: 24000
+      )
+
+  """
+  @spec connect_bidirectional_ws(t(), String.t(), keyword()) :: t()
+  def connect_bidirectional_ws(%__MODULE__{} = call, url, opts)
+      when is_binary(url) and is_list(opts) do
+    add_operation(call, {:connect_bidirectional_ws, url, opts})
+  end
+
+  @doc """
+  Disconnects from the bidirectional WebSocket.
+
+  Gracefully closes the WebSocket connection and stops audio streaming.
+
+  ## Examples
+
+      call |> disconnect_bidirectional_ws()
+
+  """
+  @spec disconnect_bidirectional_ws(t()) :: t()
+  def disconnect_bidirectional_ws(%__MODULE__{} = call) do
+    add_operation(call, {:disconnect_bidirectional_ws, []})
+  end
+
+  @doc """
+  Mutes outbound audio (caller → AI).
+
+  Stops sending the caller's audio to the AI service while maintaining
+  the connection. Useful during AI responses to prevent interruption.
+
+  ## Examples
+
+      call |> mute_outbound()
+
+  """
+  @spec mute_outbound(t()) :: t()
+  def mute_outbound(%__MODULE__{} = call) do
+    add_operation(call, {:mute_bidirectional, :outbound})
+  end
+
+  @doc """
+  Unmutes outbound audio (caller → AI).
+
+  Resumes sending the caller's audio to the AI service.
+
+  ## Examples
+
+      call |> unmute_outbound()
+
+  """
+  @spec unmute_outbound(t()) :: t()
+  def unmute_outbound(%__MODULE__{} = call) do
+    add_operation(call, {:unmute_bidirectional, :outbound})
+  end
+
+  @doc """
+  Mutes inbound audio (AI → caller).
+
+  Stops sending AI audio to the caller while maintaining the connection.
+
+  ## Examples
+
+      call |> mute_inbound()
+
+  """
+  @spec mute_inbound(t()) :: t()
+  def mute_inbound(%__MODULE__{} = call) do
+    add_operation(call, {:mute_bidirectional, :inbound})
+  end
+
+  @doc """
+  Unmutes inbound audio (AI → caller).
+
+  Resumes sending AI audio to the caller.
+
+  ## Examples
+
+      call |> unmute_inbound()
+
+  """
+  @spec unmute_inbound(t()) :: t()
+  def unmute_inbound(%__MODULE__{} = call) do
+    add_operation(call, {:unmute_bidirectional, :inbound})
+  end
+
+  @doc """
+  Sends a message through the bidirectional WebSocket.
+
+  Used to send control messages or data to the AI service,
+  such as session configuration or conversation items.
+
+  ## Examples
+
+      call |> send_ws_message(~s({"type": "response.create"}))
+      call |> send_ws_message(Jason.encode!(%{type: "session.update"}))
+
+  """
+  @spec send_ws_message(t(), String.t() | binary()) :: t()
+  def send_ws_message(%__MODULE__{} = call, message) when is_binary(message) do
+    add_operation(call, {:send_ws_message, message})
   end
 
   # ---------------------------------------------------------------------------

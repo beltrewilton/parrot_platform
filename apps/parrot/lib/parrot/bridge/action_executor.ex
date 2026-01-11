@@ -322,6 +322,42 @@ defmodule Parrot.Bridge.ActionExecutor do
     end
   end
 
+  # Bidirectional WebSocket operations
+  defp execute_operation({:connect_bidirectional_ws, url, opts}, call, context) do
+    case execute_connect_bidirectional_ws(call, context, url, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:disconnect_bidirectional_ws, _opts}, call, context) do
+    case execute_disconnect_bidirectional_ws(call, context) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:mute_bidirectional, direction}, call, context) do
+    case execute_mute_bidirectional(call, context, direction) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:unmute_bidirectional, direction}, call, context) do
+    case execute_unmute_bidirectional(call, context, direction) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:send_ws_message, message}, call, context) do
+    case execute_send_ws_message(call, context, message) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
   defp execute_operation(unknown, _call, _context) do
     Logger.warning("[ActionExecutor] Unknown operation: #{inspect(unknown)}")
     {:error, {:unknown_operation, unknown}}
@@ -418,4 +454,40 @@ defmodule Parrot.Bridge.ActionExecutor do
   defp status_code_reason(501), do: "Not Implemented"
   defp status_code_reason(503), do: "Service Unavailable"
   defp status_code_reason(code), do: "Status #{code}"
+
+  # ============================================================================
+  # Bidirectional WebSocket Operations (Stubs)
+  # Real implementation will be added in Phase 4 (US2-US4)
+  # ============================================================================
+
+  @spec execute_connect_bidirectional_ws(Call.t(), context(), String.t(), keyword()) ::
+          {:ok, Call.t()}
+  defp execute_connect_bidirectional_ws(call, _context, _url, _opts) do
+    Logger.debug("[ActionExecutor] TODO: execute_connect_bidirectional_ws")
+    {:ok, call}
+  end
+
+  @spec execute_disconnect_bidirectional_ws(Call.t(), context()) :: {:ok, Call.t()}
+  defp execute_disconnect_bidirectional_ws(call, _context) do
+    Logger.debug("[ActionExecutor] TODO: execute_disconnect_bidirectional_ws")
+    {:ok, call}
+  end
+
+  @spec execute_mute_bidirectional(Call.t(), context(), :inbound | :outbound) :: {:ok, Call.t()}
+  defp execute_mute_bidirectional(call, _context, _direction) do
+    Logger.debug("[ActionExecutor] TODO: execute_mute_bidirectional")
+    {:ok, call}
+  end
+
+  @spec execute_unmute_bidirectional(Call.t(), context(), :inbound | :outbound) :: {:ok, Call.t()}
+  defp execute_unmute_bidirectional(call, _context, _direction) do
+    Logger.debug("[ActionExecutor] TODO: execute_unmute_bidirectional")
+    {:ok, call}
+  end
+
+  @spec execute_send_ws_message(Call.t(), context(), String.t() | binary()) :: {:ok, Call.t()}
+  defp execute_send_ws_message(call, _context, _message) do
+    Logger.debug("[ActionExecutor] TODO: execute_send_ws_message")
+    {:ok, call}
+  end
 end
