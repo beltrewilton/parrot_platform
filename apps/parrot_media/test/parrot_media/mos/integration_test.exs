@@ -274,7 +274,8 @@ defmodule ParrotMedia.MOS.IntegrationTest do
       # Should have calculated a score
       score = Calculator.current_score(calc_pid)
       assert score != nil
-      assert score.value >= 4.0  # Good quality
+      # Good quality
+      assert score.value >= 4.0
 
       Calculator.stop(calc_pid)
     end
