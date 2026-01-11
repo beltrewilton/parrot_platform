@@ -494,89 +494,116 @@ defmodule ParrotMedia.WsBidirectional.Connector do
   end
 
   @impl true
-  def handle_info({:connection_event, :connected}, state) do
-    Logger.debug("Connector #{state.config.connection_id}: Connected")
-
-    # Only handle :connected if we're not already connected
-    # (avoid race conditions with multiple connection events)
-    if state.connection_state == :connected do
-      {:noreply, state}
-    else
-      # Reset reconnect attempt counter on successful connection
-      state = %{
-        state
-        | connection_state: :connected,
-          connected_at: DateTime.utc_now(),
-          reconnect_attempt: 0
-      }
-
-      # Cancel any pending reconnect timer
-      state = cancel_reconnect_timer(state)
-
-      # Invoke connected callback
-      state = invoke_callback({:connected}, state)
-
-      # Flush any buffered audio
-      state = flush_buffer(state)
+  def handle_info({:connection_event, from_pid, :connected}, state) do
+    # Validate event comes from current connection process to prevent stale events
+    if from_pid != state.conn_pid do
+      Logger.debug(
+        "Connector #{state.config.connection_id}: Ignoring stale :connected event from #{inspect(from_pid)}"
+      )
 
       {:noreply, state}
-    end
-  end
-
-  def handle_info({:connection_event, {:disconnected, reason}}, state) do
-    Logger.debug("Connector #{state.config.connection_id}: Disconnected - #{inspect(reason)}")
-
-    # Don't start reconnection if user is disconnecting
-    if state.user_disconnecting do
-      {:noreply, %{state | connection_state: :disconnected}}
     else
-      case state.connection_state do
-        :connected ->
-          # First disconnect - invoke callback and start reconnection
-          state = %{state | connection_state: :disconnected}
+      Logger.debug("Connector #{state.config.connection_id}: Connected")
 
-          # Invoke disconnected callback
-          state = invoke_callback({:disconnected, reason}, state)
+      # Only handle :connected if we're not already connected
+      # (avoid race conditions with multiple connection events)
+      if state.connection_state == :connected do
+        {:noreply, state}
+      else
+        # Reset reconnect attempt counter on successful connection
+        state = %{
+          state
+          | connection_state: :connected,
+            connected_at: DateTime.utc_now(),
+            reconnect_attempt: 0
+        }
 
-          # Start reconnection if max_retries > 0
-          if state.config.max_retries > 0 do
-            state = schedule_reconnect(state)
-            {:noreply, state}
-          else
-            # No retries configured, transition to failed
-            state = %{state | connection_state: :failed}
-            state = invoke_callback({:failed, :max_retries_exceeded}, state)
-            {:noreply, state}
-          end
+        # Cancel any pending reconnect timer
+        state = cancel_reconnect_timer(state)
 
-        :reconnecting ->
-          # Reconnection attempt failed - schedule another retry
-          # (don't invoke disconnected callback again, just schedule next attempt)
-          state = schedule_reconnect(state)
-          {:noreply, state}
+        # Invoke connected callback
+        state = invoke_callback({:connected}, state)
 
-        _other ->
-          # In other states (disconnected, failed, etc.), ignore
-          {:noreply, state}
+        # Flush any buffered audio
+        state = flush_buffer(state)
+
+        {:noreply, state}
       end
     end
   end
 
-  def handle_info({:connection_event, {:reconnecting, _attempt}}, state) do
+  def handle_info({:connection_event, from_pid, {:disconnected, reason}}, state) do
+    # Validate event comes from current connection process to prevent stale events
+    if from_pid != state.conn_pid do
+      Logger.debug(
+        "Connector #{state.config.connection_id}: Ignoring stale :disconnected event from #{inspect(from_pid)}"
+      )
+
+      {:noreply, state}
+    else
+      Logger.debug("Connector #{state.config.connection_id}: Disconnected - #{inspect(reason)}")
+
+      # Don't start reconnection if user is disconnecting
+      if state.user_disconnecting do
+        {:noreply, %{state | connection_state: :disconnected}}
+      else
+        case state.connection_state do
+          :connected ->
+            # First disconnect - invoke callback and start reconnection
+            state = %{state | connection_state: :disconnected}
+
+            # Invoke disconnected callback
+            state = invoke_callback({:disconnected, reason}, state)
+
+            # Start reconnection if max_retries > 0
+            if state.config.max_retries > 0 do
+              state = schedule_reconnect(state)
+              {:noreply, state}
+            else
+              # No retries configured, transition to failed
+              state = %{state | connection_state: :failed}
+              state = invoke_callback({:failed, :max_retries_exceeded}, state)
+              {:noreply, state}
+            end
+
+          :reconnecting ->
+            # Reconnection attempt failed - schedule another retry
+            # (don't invoke disconnected callback again, just schedule next attempt)
+            state = schedule_reconnect(state)
+            {:noreply, state}
+
+          _other ->
+            # In other states (disconnected, failed, etc.), ignore
+            {:noreply, state}
+        end
+      end
+    end
+  end
+
+  def handle_info({:connection_event, _from_pid, {:reconnecting, _attempt}}, state) do
     # This is sent by Connection module, but we manage reconnection ourselves now
     # Ignore it - we handle reconnection via :reconnect timer
     {:noreply, state}
   end
 
-  def handle_info({:connection_event, {:failed, reason}}, state) do
-    Logger.warning("Connector #{state.config.connection_id}: Failed - #{inspect(reason)}")
+  def handle_info({:connection_event, from_pid, {:failed, reason}}, state) do
+    # Validate event comes from current connection process to prevent stale events
+    if from_pid != state.conn_pid do
+      Logger.debug(
+        "Connector #{state.config.connection_id}: Ignoring stale :failed event from #{inspect(from_pid)}"
+      )
 
-    state = %{state | connection_state: :failed}
+      {:noreply, state}
+    else
+      Logger.warning("Connector #{state.config.connection_id}: Failed - #{inspect(reason)}")
 
-    # Invoke failed callback
-    state = invoke_callback({:failed, reason}, state)
+      state = %{state | connection_state: :failed}
 
-    {:noreply, state}
+      # Invoke failed callback
+      state = invoke_callback({:failed, reason}, state)
+
+      {:noreply, state}
+    end
   end
 
   def handle_info(:reconnect, state) do
@@ -634,22 +661,32 @@ defmodule ParrotMedia.WsBidirectional.Connector do
     end
   end
 
-  def handle_info({:connection_event, {:ws_audio, audio_data}}, state) do
-    state = %{state | frames_received: state.frames_received + 1}
+  def handle_info({:connection_event, from_pid, {:ws_audio, audio_data}}, state) do
+    # Validate event comes from current connection process to prevent stale events
+    if from_pid != state.conn_pid do
+      {:noreply, state}
+    else
+      state = %{state | frames_received: state.frames_received + 1}
 
-    # Forward to registered source if not muted
-    if not state.inbound_muted and state.source_pid do
-      send(state.source_pid, {:ws_audio, audio_data})
+      # Forward to registered source if not muted
+      if not state.inbound_muted and state.source_pid do
+        send(state.source_pid, {:ws_audio, audio_data})
+      end
+
+      {:noreply, state}
     end
-
-    {:noreply, state}
   end
 
-  def handle_info({:connection_event, {:ws_message, data}}, state) do
-    # Invoke callback for WebSocket message
-    state = invoke_callback({:ws_message, data}, state)
+  def handle_info({:connection_event, from_pid, {:ws_message, data}}, state) do
+    # Validate event comes from current connection process to prevent stale events
+    if from_pid != state.conn_pid do
+      {:noreply, state}
+    else
+      # Invoke callback for WebSocket message
+      state = invoke_callback({:ws_message, data}, state)
 
-    {:noreply, state}
+      {:noreply, state}
+    end
   end
 
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) when pid == state.conn_pid do
@@ -766,7 +803,11 @@ defmodule ParrotMedia.WsBidirectional.Connector do
           {:ok, new_callback_state} ->
             %{state | callback_state: new_callback_state}
 
-          {:error, _reason} ->
+          {:error, reason} ->
+            Logger.warning(
+              "[WsBidirectionalConnector] Callback error for #{state.config.connection_id}: #{inspect(reason)}"
+            )
+
             state
         end
     end

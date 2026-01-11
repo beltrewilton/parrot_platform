@@ -65,7 +65,8 @@ defmodule ParrotMedia.WsBidirectional.Connection do
     Logger.debug("WsBidirectional.Connection #{state.connection_id}: WebSocket connected")
 
     # Notify parent that connection is established
-    send(state.parent, {:connection_event, :connected})
+    # Include self() so parent can validate event source
+    send(state.parent, {:connection_event, self(), :connected})
 
     {:ok, state}
   end
@@ -78,7 +79,8 @@ defmodule ParrotMedia.WsBidirectional.Connection do
     )
 
     # Text frames are JSON messages from the provider
-    send(state.parent, {:connection_event, {:ws_message, data}})
+    # Include self() so parent can validate event source
+    send(state.parent, {:connection_event, self(), {:ws_message, data}})
 
     {:ok, state}
   end
@@ -89,7 +91,8 @@ defmodule ParrotMedia.WsBidirectional.Connection do
     )
 
     # Binary frames are audio data from the provider
-    send(state.parent, {:connection_event, {:ws_audio, data}})
+    # Include self() so parent can validate event source
+    send(state.parent, {:connection_event, self(), {:ws_audio, data}})
 
     {:ok, state}
   end
@@ -112,7 +115,8 @@ defmodule ParrotMedia.WsBidirectional.Connection do
     )
 
     # Notify parent of disconnection - let the Connector handle reconnection logic
-    send(state.parent, {:connection_event, {:disconnected, {code, reason}}})
+    # Include self() so parent can validate event source
+    send(state.parent, {:connection_event, self(), {:disconnected, {code, reason}}})
 
     # Close this connection - the Connector will create a new one if needed
     # This avoids Fresh's internal reconnection conflicting with our logic
@@ -136,7 +140,8 @@ defmodule ParrotMedia.WsBidirectional.Connection do
       _other ->
         # For other errors, notify parent and close
         # The Connector will handle reconnection
-        send(state.parent, {:connection_event, {:disconnected, error}})
+        # Include self() so parent can validate event source
+        send(state.parent, {:connection_event, self(), {:disconnected, error}})
         {:close, :normal}
     end
   end
@@ -159,11 +164,12 @@ defmodule ParrotMedia.WsBidirectional.Connection do
     )
 
     # Notify parent if this is an unexpected termination
+    # Include self() so parent can validate event source
     case reason do
       :normal -> :ok
       :shutdown -> :ok
       {:shutdown, _} -> :ok
-      other -> send(state.parent, {:connection_event, {:failed, other}})
+      other -> send(state.parent, {:connection_event, self(), {:failed, other}})
     end
 
     :ok
