@@ -337,6 +337,204 @@ defmodule ParrotMedia.MOS.IntegrationTest do
   end
 
   # ===========================================================================
+  # Call Summary Edge Cases
+  # ===========================================================================
+
+  describe "call summary edge cases" do
+    test "one-way audio detection when only inbound metrics", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      # Simulate one-way audio - only inbound packets
+      for _ <- 1..10 do
+        Calculator.add_metrics(calc_pid, %{
+          direction: :inbound,
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(calc_pid)
+
+      # Should detect one-way audio
+      assert summary.status == :one_way_audio
+      # MOS should still be calculated for the active direction
+      assert summary.intervals_calculated >= 1
+      assert summary.avg_mos >= 4.0
+    end
+
+    test "one-way audio detection when only outbound metrics", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      # Simulate one-way audio - only outbound packets
+      for _ <- 1..10 do
+        Calculator.add_metrics(calc_pid, %{
+          direction: :outbound,
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(calc_pid)
+
+      assert summary.status == :one_way_audio
+      assert summary.intervals_calculated >= 1
+    end
+
+    test "bidirectional call returns :complete status", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      # Simulate bidirectional audio
+      for _ <- 1..5 do
+        Calculator.add_metrics(calc_pid, %{
+          direction: :inbound,
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+
+        Calculator.add_metrics(calc_pid, %{
+          direction: :outbound,
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(calc_pid)
+
+      assert summary.status == :complete
+      assert summary.intervals_calculated >= 1
+    end
+
+    test "very short call with insufficient data", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 10_000, min_packets_per_interval: 100)
+        )
+
+      # Add some metrics but not enough for a full interval
+      Calculator.add_metrics(calc_pid, %{
+        direction: :inbound,
+        packets_received: 10,
+        packets_expected: 10,
+        jitter_ms: 10.0,
+        delay_ms: 50.0
+      })
+
+      # Don't wait for interval - stop immediately
+      summary = Calculator.stop(calc_pid)
+
+      assert summary.status == :insufficient_data
+      assert summary.intervals_calculated == 0
+    end
+
+    test "backward compatibility - metrics without direction", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      # Add metrics without direction (old behavior)
+      for _ <- 1..10 do
+        Calculator.add_metrics(calc_pid, %{
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(calc_pid)
+
+      # Without direction info, assumes bidirectional for backward compatibility
+      assert summary.status == :complete
+      assert summary.intervals_calculated >= 1
+    end
+
+    test "call summary includes all expected fields", ctx do
+      {:ok, calc_pid} =
+        Calculator.start_link(
+          session_id: ctx.session_id,
+          codec: :g711,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      for _ <- 1..10 do
+        Calculator.add_metrics(calc_pid, %{
+          direction: :inbound,
+          packets_received: 50,
+          packets_expected: 50,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+
+        Calculator.add_metrics(calc_pid, %{
+          direction: :outbound,
+          packets_received: 48,
+          packets_expected: 50,
+          jitter_ms: 15.0,
+          delay_ms: 60.0
+        })
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(calc_pid)
+
+      # Verify all CallSummary fields
+      assert %ParrotMedia.MOS.CallSummary{} = summary
+      assert summary.session_id == ctx.session_id
+      assert is_atom(summary.status)
+      assert summary.status in [:complete, :insufficient_data, :one_way_audio]
+      assert is_float(summary.min_mos)
+      assert is_float(summary.max_mos)
+      assert is_float(summary.avg_mos)
+      assert summary.min_mos >= 1.0 and summary.min_mos <= 5.0
+      assert summary.max_mos >= 1.0 and summary.max_mos <= 5.0
+      assert summary.avg_mos >= 1.0 and summary.avg_mos <= 5.0
+      assert is_integer(summary.total_packets)
+      assert is_integer(summary.total_lost)
+      assert is_float(summary.overall_loss_percent)
+      assert is_integer(summary.intervals_calculated)
+      assert is_integer(summary.duration_ms)
+      assert is_list(summary.quality_events)
+    end
+  end
+
+  # ===========================================================================
   # Helpers
   # ===========================================================================
 

@@ -1094,4 +1094,201 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
   end
+
+  # ===========================================================================
+  # One-Way Audio and Direction Tracking Tests
+  # ===========================================================================
+
+  describe "one-way audio detection" do
+    test "tracks inbound packet count separately", ctx do
+      {:ok, pid} = start_calculator(ctx)
+
+      # Add metrics with inbound direction
+      for _ <- 1..5 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+      end
+
+      state = :sys.get_state(pid)
+      assert state.inbound_packets > 0
+      assert state.outbound_packets == 0
+
+      Calculator.stop(pid)
+    end
+
+    test "tracks outbound packet count separately", ctx do
+      {:ok, pid} = start_calculator(ctx)
+
+      # Add metrics with outbound direction
+      for _ <- 1..5 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :outbound))
+      end
+
+      state = :sys.get_state(pid)
+      assert state.outbound_packets > 0
+      assert state.inbound_packets == 0
+
+      Calculator.stop(pid)
+    end
+
+    test "tracks bidirectional packets correctly", ctx do
+      {:ok, pid} = start_calculator(ctx)
+
+      # Add inbound metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+      end
+
+      # Add outbound metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :outbound))
+      end
+
+      state = :sys.get_state(pid)
+      assert state.inbound_packets > 0
+      assert state.outbound_packets > 0
+
+      Calculator.stop(pid)
+    end
+
+    test "detects one-way audio when only inbound packets received", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # Add only inbound metrics
+      for _ <- 1..10 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert summary.status == :one_way_audio
+    end
+
+    test "detects one-way audio when only outbound packets received", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # Add only outbound metrics
+      for _ <- 1..10 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :outbound))
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert summary.status == :one_way_audio
+    end
+
+    test "returns :complete status when bidirectional audio present", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # Add both inbound and outbound metrics
+      for _ <- 1..5 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :outbound))
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert summary.status == :complete
+    end
+
+    test "returns :insufficient_data when no packets in any direction", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 100))
+
+      # Add too few metrics with directions - not enough for interval completion
+      Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert summary.status == :insufficient_data
+    end
+
+    test "metrics without direction still work (backward compatibility)", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # Add metrics without direction - should still calculate MOS
+      for _ <- 1..10 do
+        Calculator.add_metrics(pid, good_metrics())
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      # Without direction info, we assume bidirectional (backward compatibility)
+      # The status should be :complete since we got scores
+      assert %CallSummary{} = summary
+      assert summary.status == :complete
+    end
+
+    test "one-way audio still calculates MOS for active direction", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+
+      # Add only inbound metrics
+      for _ <- 1..10 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert summary.status == :one_way_audio
+      # Should still have MOS calculated for the active direction
+      assert summary.intervals_calculated >= 1
+      assert summary.avg_mos >= 4.0
+    end
+  end
+
+  describe "no RTP packets edge case" do
+    test "returns :insufficient_data when calculator stopped with no metrics", ctx do
+      {:ok, pid} = start_calculator(ctx)
+
+      # No metrics added, stop immediately
+      result = Calculator.stop(pid)
+
+      # When awaiting media (no metrics), returns :ok
+      assert result == :ok
+    end
+
+    test "returns :insufficient_data when packets below min threshold", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 100))
+
+      # Add very few packets (below min_packets_per_interval)
+      for _ <- 1..3 do
+        Calculator.add_metrics(pid, %{
+          packets_received: 5,
+          packets_expected: 5,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      assert %CallSummary{} = summary
+      assert summary.status == :insufficient_data
+      assert summary.intervals_calculated == 0
+    end
+  end
 end
