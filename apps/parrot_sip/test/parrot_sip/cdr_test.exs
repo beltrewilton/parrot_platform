@@ -587,6 +587,107 @@ defmodule ParrotSip.CDRTest do
     end
   end
 
+  describe "build_query_filter/1" do
+    test "returns empty map for empty options" do
+      assert CDR.build_query_filter([]) == %{}
+    end
+
+    test "includes valid filter keys" do
+      filter =
+        CDR.build_query_filter(
+          start_time: ~U[2024-01-01 00:00:00Z],
+          disposition: :answered
+        )
+
+      assert filter.start_time == ~U[2024-01-01 00:00:00Z]
+      assert filter.disposition == :answered
+    end
+
+    test "filters out invalid keys" do
+      filter =
+        CDR.build_query_filter(
+          start_time: ~U[2024-01-01 00:00:00Z],
+          invalid_key: "should be ignored"
+        )
+
+      assert Map.has_key?(filter, :start_time)
+      refute Map.has_key?(filter, :invalid_key)
+    end
+
+    test "accepts all valid filter keys" do
+      filter =
+        CDR.build_query_filter(
+          start_time: ~U[2024-01-01 00:00:00Z],
+          end_time: ~U[2024-01-02 00:00:00Z],
+          caller_uri: "sip:alice@example.com",
+          callee_uri: "sip:bob@example.com",
+          disposition: [:answered, :busy],
+          call_id: "abc123",
+          direction: :inbound
+        )
+
+      assert map_size(filter) == 7
+    end
+
+    test "accepts single disposition atom" do
+      filter = CDR.build_query_filter(disposition: :answered)
+      assert filter.disposition == :answered
+    end
+
+    test "accepts list of disposition atoms" do
+      filter = CDR.build_query_filter(disposition: [:answered, :busy, :no_answer])
+      assert filter.disposition == [:answered, :busy, :no_answer]
+    end
+
+    test "accepts direction filter" do
+      filter = CDR.build_query_filter(direction: :outbound)
+      assert filter.direction == :outbound
+    end
+
+    test "accepts caller_uri filter" do
+      filter = CDR.build_query_filter(caller_uri: "sip:alice@example.com")
+      assert filter.caller_uri == "sip:alice@example.com"
+    end
+
+    test "accepts callee_uri filter" do
+      filter = CDR.build_query_filter(callee_uri: "sip:bob@example.com")
+      assert filter.callee_uri == "sip:bob@example.com"
+    end
+
+    test "accepts call_id filter" do
+      filter = CDR.build_query_filter(call_id: "call-123@example.com")
+      assert filter.call_id == "call-123@example.com"
+    end
+
+    test "preserves DateTime values correctly" do
+      start_time = ~U[2024-01-01 00:00:00Z]
+      end_time = ~U[2024-01-02 23:59:59Z]
+
+      filter = CDR.build_query_filter(start_time: start_time, end_time: end_time)
+
+      assert filter.start_time == start_time
+      assert filter.end_time == end_time
+    end
+
+    test "ignores multiple invalid keys" do
+      filter =
+        CDR.build_query_filter(
+          start_time: ~U[2024-01-01 00:00:00Z],
+          foo: "bar",
+          baz: 123,
+          qux: :atom
+        )
+
+      assert map_size(filter) == 1
+      assert Map.has_key?(filter, :start_time)
+    end
+
+    test "returns empty map when all keys are invalid" do
+      filter = CDR.build_query_filter(invalid: "value", also_invalid: 123)
+      assert filter == %{}
+    end
+  end
+
   describe "struct field types" do
     test "timestamps are DateTime structs" do
       now = DateTime.utc_now()
