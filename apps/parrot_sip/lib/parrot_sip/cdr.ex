@@ -102,6 +102,56 @@ defmodule ParrotSip.CDR do
     custom_fields: %{}
   ]
 
+  # Valid keys for query filters
+  @valid_filter_keys [
+    :start_time,
+    :end_time,
+    :caller_uri,
+    :callee_uri,
+    :disposition,
+    :call_id,
+    :direction
+  ]
+
+  # ===========================================================================
+  # Query Helper API
+  # ===========================================================================
+
+  @doc """
+  Build a query filter map from options.
+
+  Handlers can use this to build filters for their storage backend.
+
+  ## Options
+
+  - `:start_time` - Filter CDRs after this DateTime
+  - `:end_time` - Filter CDRs before this DateTime
+  - `:caller_uri` - Filter by caller URI (exact match or pattern)
+  - `:callee_uri` - Filter by callee URI (exact match or pattern)
+  - `:disposition` - Filter by disposition atom or list of atoms
+  - `:call_id` - Filter by specific call_id
+  - `:direction` - Filter by :inbound or :outbound
+
+  ## Examples
+
+      iex> filter = ParrotSip.CDR.build_query_filter(
+      ...>   start_time: ~U[2024-01-01 00:00:00Z],
+      ...>   end_time: ~U[2024-01-02 00:00:00Z],
+      ...>   disposition: [:answered, :busy]
+      ...> )
+      %{start_time: ~U[2024-01-01 00:00:00Z], end_time: ~U[2024-01-02 00:00:00Z], disposition: [:answered, :busy]}
+
+      iex> ParrotSip.CDR.build_query_filter(invalid_key: "ignored")
+      %{}
+
+  """
+  @spec build_query_filter(keyword()) :: map()
+  def build_query_filter(opts) when is_list(opts) do
+    opts
+    |> Enum.filter(fn {key, _} -> key in @valid_filter_keys end)
+    |> Map.new()
+  end
+
   # ===========================================================================
   # Handler Registration API
   # ===========================================================================
