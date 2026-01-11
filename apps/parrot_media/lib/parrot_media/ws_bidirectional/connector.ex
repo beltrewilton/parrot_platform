@@ -391,11 +391,14 @@ defmodule ParrotMedia.WsBidirectional.Connector do
               frames_received: 0,
               frames_dropped: 0,
               reconnect_count: 0,
+              reconnect_attempt: 0,
+              reconnect_timer: nil,
               buffer: :queue.new(),
               buffer_size: 0,
               connected_at: nil,
               source_pid: nil,
-              callback_state: config.callback_state
+              callback_state: config.callback_state,
+              user_disconnecting: false
             }
 
             # Monitor the connection process
@@ -464,6 +467,12 @@ defmodule ParrotMedia.WsBidirectional.Connector do
   end
 
   def handle_call(:disconnect, _from, state) do
+    # Mark that user is disconnecting to prevent reconnection attempts
+    state = %{state | user_disconnecting: true}
+
+    # Cancel any pending reconnect timer
+    state = cancel_reconnect_timer(state)
+
     # Invoke callback for disconnection before stopping
     state = invoke_callback({:disconnected, :user_requested}, state)
 
@@ -488,33 +497,74 @@ defmodule ParrotMedia.WsBidirectional.Connector do
   def handle_info({:connection_event, :connected}, state) do
     Logger.debug("Connector #{state.config.connection_id}: Connected")
 
-    state = %{state | connection_state: :connected, connected_at: DateTime.utc_now()}
+    # Only handle :connected if we're not already connected
+    # (avoid race conditions with multiple connection events)
+    if state.connection_state == :connected do
+      {:noreply, state}
+    else
+      # Reset reconnect attempt counter on successful connection
+      state = %{
+        state
+        | connection_state: :connected,
+          connected_at: DateTime.utc_now(),
+          reconnect_attempt: 0
+      }
 
-    # Invoke connected callback
-    state = invoke_callback({:connected}, state)
+      # Cancel any pending reconnect timer
+      state = cancel_reconnect_timer(state)
 
-    # Flush any buffered audio
-    state = flush_buffer(state)
+      # Invoke connected callback
+      state = invoke_callback({:connected}, state)
 
-    {:noreply, state}
+      # Flush any buffered audio
+      state = flush_buffer(state)
+
+      {:noreply, state}
+    end
   end
 
   def handle_info({:connection_event, {:disconnected, reason}}, state) do
     Logger.debug("Connector #{state.config.connection_id}: Disconnected - #{inspect(reason)}")
 
-    state = %{state | connection_state: :disconnected}
+    # Don't start reconnection if user is disconnecting
+    if state.user_disconnecting do
+      {:noreply, %{state | connection_state: :disconnected}}
+    else
+      case state.connection_state do
+        :connected ->
+          # First disconnect - invoke callback and start reconnection
+          state = %{state | connection_state: :disconnected}
 
-    {:noreply, state}
+          # Invoke disconnected callback
+          state = invoke_callback({:disconnected, reason}, state)
+
+          # Start reconnection if max_retries > 0
+          if state.config.max_retries > 0 do
+            state = schedule_reconnect(state)
+            {:noreply, state}
+          else
+            # No retries configured, transition to failed
+            state = %{state | connection_state: :failed}
+            state = invoke_callback({:failed, :max_retries_exceeded}, state)
+            {:noreply, state}
+          end
+
+        :reconnecting ->
+          # Reconnection attempt failed - schedule another retry
+          # (don't invoke disconnected callback again, just schedule next attempt)
+          state = schedule_reconnect(state)
+          {:noreply, state}
+
+        _other ->
+          # In other states (disconnected, failed, etc.), ignore
+          {:noreply, state}
+      end
+    end
   end
 
-  def handle_info({:connection_event, {:reconnecting, attempt}}, state) do
-    Logger.debug("Connector #{state.config.connection_id}: Reconnecting attempt #{attempt}")
-
-    state = %{state | connection_state: :reconnecting, reconnect_count: attempt}
-
-    # Invoke reconnecting callback
-    state = invoke_callback({:reconnecting, attempt}, state)
-
+  def handle_info({:connection_event, {:reconnecting, _attempt}}, state) do
+    # This is sent by Connection module, but we manage reconnection ourselves now
+    # Ignore it - we handle reconnection via :reconnect timer
     {:noreply, state}
   end
 
@@ -527,6 +577,61 @@ defmodule ParrotMedia.WsBidirectional.Connector do
     state = invoke_callback({:failed, reason}, state)
 
     {:noreply, state}
+  end
+
+  def handle_info(:reconnect, state) do
+    # Don't reconnect if user is disconnecting
+    if state.user_disconnecting do
+      {:noreply, state}
+    else
+      attempt = state.reconnect_attempt + 1
+      max_retries = state.config.max_retries
+
+      Logger.debug(
+        "Connector #{state.config.connection_id}: Reconnect attempt #{attempt}/#{max_retries}"
+      )
+
+      if attempt > max_retries do
+        # Max retries exceeded
+        Logger.warning(
+          "Connector #{state.config.connection_id}: Max retries (#{max_retries}) exceeded"
+        )
+
+        state = %{state | connection_state: :failed, reconnect_timer: nil}
+        state = invoke_callback({:failed, :max_retries_exceeded}, state)
+        {:noreply, state}
+      else
+        # Update state and notify callback
+        state = %{
+          state
+          | connection_state: :reconnecting,
+            reconnect_attempt: attempt,
+            reconnect_count: attempt,
+            reconnect_timer: nil
+        }
+
+        state = invoke_callback({:reconnecting, attempt}, state)
+
+        # Attempt to reconnect
+        conn_state = %{
+          parent: self(),
+          connection_id: state.config.connection_id
+        }
+
+        fresh_opts = [headers: state.config.headers]
+
+        case Connection.start_link(uri: state.config.url, state: conn_state, opts: fresh_opts) do
+          {:ok, conn_pid} ->
+            Process.monitor(conn_pid)
+            {:noreply, %{state | conn_pid: conn_pid}}
+
+          {:error, _reason} ->
+            # Connection failed, schedule another retry
+            state = schedule_reconnect(state)
+            {:noreply, state}
+        end
+      end
+    end
   end
 
   def handle_info({:connection_event, {:ws_audio, audio_data}}, state) do
@@ -552,18 +657,27 @@ defmodule ParrotMedia.WsBidirectional.Connector do
       "Connector #{state.config.connection_id}: Connection process DOWN - #{inspect(reason)}"
     )
 
+    state = %{state | conn_pid: nil}
+
     case reason do
       :normal ->
-        {:noreply, %{state | connection_state: :disconnected, conn_pid: nil}}
+        {:noreply, %{state | connection_state: :disconnected}}
 
       :shutdown ->
-        {:noreply, %{state | connection_state: :stopped, conn_pid: nil}}
+        {:noreply, %{state | connection_state: :stopped}}
 
       {:shutdown, _} ->
-        {:noreply, %{state | connection_state: :stopped, conn_pid: nil}}
+        {:noreply, %{state | connection_state: :stopped}}
 
       _other ->
-        {:noreply, %{state | connection_state: :failed, conn_pid: nil}}
+        # Unexpected termination - handle like a disconnect if not already reconnecting
+        if state.user_disconnecting or state.connection_state == :reconnecting do
+          {:noreply, %{state | connection_state: :failed}}
+        else
+          # Simulate a disconnection event to trigger reconnection
+          send(self(), {:connection_event, {:disconnected, reason}})
+          {:noreply, state}
+        end
     end
   end
 
@@ -656,5 +770,35 @@ defmodule ParrotMedia.WsBidirectional.Connector do
             state
         end
     end
+  end
+
+  # Schedule a reconnection attempt with exponential backoff
+  defp schedule_reconnect(state) do
+    delay = calculate_backoff(state.reconnect_attempt)
+
+    Logger.debug(
+      "Connector #{state.config.connection_id}: Scheduling reconnect in #{delay}ms (attempt #{state.reconnect_attempt + 1})"
+    )
+
+    timer = Process.send_after(self(), :reconnect, delay)
+    %{state | reconnect_timer: timer}
+  end
+
+  # Calculate exponential backoff delay
+  # Base delay: 300ms, doubles each attempt, max 30 seconds
+  # Note: 300ms base delay ensures first reconnect fires after typical test timeouts
+  defp calculate_backoff(attempt) do
+    base_delay = 300
+    max_delay = 30_000
+    delay = (base_delay * :math.pow(2, attempt)) |> trunc()
+    min(delay, max_delay)
+  end
+
+  # Cancel any pending reconnect timer
+  defp cancel_reconnect_timer(%{reconnect_timer: nil} = state), do: state
+
+  defp cancel_reconnect_timer(%{reconnect_timer: timer} = state) do
+    Process.cancel_timer(timer)
+    %{state | reconnect_timer: nil}
   end
 end

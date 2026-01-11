@@ -111,15 +111,12 @@ defmodule ParrotMedia.WsBidirectional.Connection do
       "WsBidirectional.Connection #{state.connection_id}: Disconnected, code: #{inspect(code)}, reason: #{inspect(reason)}"
     )
 
-    # Notify parent of disconnection
+    # Notify parent of disconnection - let the Connector handle reconnection logic
     send(state.parent, {:connection_event, {:disconnected, {code, reason}}})
 
-    # Tell Fresh to attempt reconnection
-    # The reconnect_count is tracked in WsBidirectionalConnector, but Fresh handles the actual retry logic
-    new_state = Map.update(state, :reconnect_attempt, 1, &(&1 + 1))
-    send(state.parent, {:connection_event, {:reconnecting, new_state.reconnect_attempt}})
-
-    {:reconnect, new_state}
+    # Close this connection - the Connector will create a new one if needed
+    # This avoids Fresh's internal reconnection conflicting with our logic
+    {:close, state}
   end
 
   @doc false
@@ -137,9 +134,10 @@ defmodule ParrotMedia.WsBidirectional.Connection do
         {:ignore, state}
 
       _other ->
-        # For other errors, attempt reconnection
+        # For other errors, notify parent and close
+        # The Connector will handle reconnection
         send(state.parent, {:connection_event, {:disconnected, error}})
-        :reconnect
+        {:close, :normal}
     end
   end
 
