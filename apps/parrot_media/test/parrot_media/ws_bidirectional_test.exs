@@ -120,6 +120,28 @@ defmodule ParrotMedia.WsBidirectionalTest do
     end
   end
 
+  # Waits for a connection_id to be unregistered from the Registry.
+  # Returns :ok when unregistered, {:error, :timeout} if timeout expires.
+  defp wait_for_unregistered(connection_id, timeout \\ 1000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_unregistered(connection_id, deadline)
+  end
+
+  defp do_wait_for_unregistered(connection_id, deadline) do
+    case WsBidirectional.whereis(connection_id) do
+      {:error, :not_found} ->
+        :ok
+
+      {:ok, _pid} ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(10)
+          do_wait_for_unregistered(connection_id, deadline)
+        else
+          {:error, :timeout}
+        end
+    end
+  end
+
   # Base port offset to avoid conflicts with other tests
   @base_port 16_000
 
@@ -1069,10 +1091,12 @@ defmodule ParrotMedia.WsBidirectionalTest do
       {:ok, pid1} = WsBidirectional.start_link(config)
       assert Process.alive?(pid1)
 
-      # Disconnect it and wait for process to terminate
+      # Disconnect it and wait for process to terminate and registry to be cleaned up
       :ok = WsBidirectional.disconnect(pid1)
       assert :ok = wait_for_process_dead(pid1)
       refute Process.alive?(pid1)
+      # Also wait for Registry to be cleaned up (process death triggers async cleanup)
+      assert :ok = wait_for_unregistered(connection_id)
 
       # Start new connection with same connection_id
       {:ok, pid2} = WsBidirectional.start_link(config)
