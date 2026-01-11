@@ -71,6 +71,10 @@ defmodule ParrotMedia.WsBidirectional.Connector do
 
   alias ParrotMedia.WsBidirectional.Config
   alias ParrotMedia.WsBidirectional.Connection
+  alias ParrotMedia.WsBidirectional.Telemetry
+
+  # Interval for periodic audio stats emission (in milliseconds)
+  @stats_interval 1_000
 
   @type connection_ref :: pid() | String.t()
 
@@ -368,9 +372,16 @@ defmodule ParrotMedia.WsBidirectional.Connector do
 
   @impl true
   def init(%Config{} = config) do
+    # Set Logger metadata for correlation
+    Logger.metadata(connection_id: config.connection_id)
+
     # Register in BidirectionalRegistry
     case Registry.register(@registry, {:bidirectional, config.connection_id}, self()) do
       {:ok, _} ->
+        # Emit connect:start telemetry
+        telemetry_metadata = %{connection_id: config.connection_id, url: config.url}
+        connect_start_time = Telemetry.connect_start(telemetry_metadata)
+
         # Start the WebSocket connection
         conn_state = %{
           parent: self(),
@@ -381,6 +392,9 @@ defmodule ParrotMedia.WsBidirectional.Connector do
 
         case Connection.start_link(uri: config.url, state: conn_state, opts: fresh_opts) do
           {:ok, conn_pid} ->
+            # Schedule periodic stats emission
+            stats_timer = Process.send_after(self(), :emit_stats, @stats_interval)
+
             state = %{
               config: config,
               conn_pid: conn_pid,
@@ -398,7 +412,9 @@ defmodule ParrotMedia.WsBidirectional.Connector do
               connected_at: nil,
               source_pid: nil,
               callback_state: config.callback_state,
-              user_disconnecting: false
+              user_disconnecting: false,
+              connect_start_time: connect_start_time,
+              stats_timer: stats_timer
             }
 
             # Monitor the connection process
@@ -473,6 +489,16 @@ defmodule ParrotMedia.WsBidirectional.Connector do
     # Cancel any pending reconnect timer
     state = cancel_reconnect_timer(state)
 
+    # Cancel stats timer
+    state = cancel_stats_timer(state)
+
+    # Calculate connection duration
+    duration = System.monotonic_time() - state.connect_start_time
+
+    # Emit disconnect telemetry
+    telemetry_metadata = %{connection_id: state.config.connection_id}
+    Telemetry.disconnect(telemetry_metadata, duration, :user_requested)
+
     # Invoke callback for disconnection before stopping
     state = invoke_callback({:disconnected, :user_requested}, state)
 
@@ -510,6 +536,10 @@ defmodule ParrotMedia.WsBidirectional.Connector do
       if state.connection_state == :connected do
         {:noreply, state}
       else
+        # Emit connect:stop telemetry
+        telemetry_metadata = %{connection_id: state.config.connection_id}
+        Telemetry.connect_stop(telemetry_metadata, state.connect_start_time)
+
         # Reset reconnect attempt counter on successful connection
         state = %{
           state
@@ -718,6 +748,24 @@ defmodule ParrotMedia.WsBidirectional.Connector do
     end
   end
 
+  def handle_info(:emit_stats, state) do
+    # Emit audio stats telemetry
+    telemetry_metadata = %{connection_id: state.config.connection_id}
+
+    stats = %{
+      frames_sent: state.frames_sent,
+      frames_received: state.frames_received,
+      frames_dropped: state.frames_dropped,
+      buffer_size: state.buffer_size
+    }
+
+    Telemetry.audio_stats(telemetry_metadata, stats)
+
+    # Schedule next stats emission
+    stats_timer = Process.send_after(self(), :emit_stats, @stats_interval)
+    {:noreply, %{state | stats_timer: stats_timer}}
+  end
+
   def handle_info(_msg, state) do
     {:noreply, state}
   end
@@ -755,6 +803,11 @@ defmodule ParrotMedia.WsBidirectional.Connector do
     if new_size > max_buffer_size do
       # Drop oldest frame
       {{:value, _dropped}, trimmed_buffer} = :queue.out(new_buffer)
+
+      # Log warning and emit telemetry for frame drop
+      Logger.warning("Connector: Frame dropped due to buffer overflow")
+      telemetry_metadata = %{connection_id: state.config.connection_id}
+      Telemetry.frame_dropped(telemetry_metadata, 1)
 
       %{
         state
@@ -841,5 +894,13 @@ defmodule ParrotMedia.WsBidirectional.Connector do
   defp cancel_reconnect_timer(%{reconnect_timer: timer} = state) do
     Process.cancel_timer(timer)
     %{state | reconnect_timer: nil}
+  end
+
+  # Cancel any pending stats timer
+  defp cancel_stats_timer(%{stats_timer: nil} = state), do: state
+
+  defp cancel_stats_timer(%{stats_timer: timer} = state) do
+    Process.cancel_timer(timer)
+    %{state | stats_timer: nil}
   end
 end
