@@ -5,6 +5,80 @@
 **Status**: Draft
 **Input**: User description: "MOS scoring with parrot_media along with a CDR system that can be used to get proper CDRs for calls"
 
+## Clarifications
+
+### Session 2026-01-10
+
+- Q: Is CDR (Call Detail Record) functionality in scope for this feature? → A: CDR is out of scope - this feature focuses only on MOS scoring; CDR will be a separate feature
+- Q: How should the system handle insufficient RTP packets for MOS calculation? → A: Distinguish cases - Low MOS (1.0-2.0) for missing packets during active call; `{:insufficient_data, reason}` for startup/short calls
+- Q: How should MOS calculation integrate with the Membrane pipeline? → A: Observer + GenServer - Lightweight pipeline observer extracts RTP metadata, sends to dedicated MOS GenServer for async calculation (zero audio path latency)
+- Q: Should MOS data persist beyond call lifetime? → A: Event-driven persistence - MOS data ephemeral in-memory, quality summary emitted as event for optional handler persistence
+- Q: How should MOS scoring expose metrics for observability? → A: `:telemetry` events - Emit standard telemetry events for monitoring system integration
+
+## Scope
+
+### In Scope
+
+- Real-time MOS score calculation based on RTP stream metrics
+- Per-call quality summaries with min/max/average MOS
+- Quality event callbacks and threshold alerting
+- Integration with parrot_media MediaSession lifecycle
+
+### Out of Scope
+
+- CDR (Call Detail Record) system - will be addressed in a separate feature specification
+- Audio-based MOS calculation (PESQ/POLQA) - using E-model network metrics only
+- Historical MOS data storage or analytics dashboards
+
+## Architecture
+
+### Integration Pattern: Observer + GenServer
+
+Following OTP best practices for separation of concerns and zero-latency audio path:
+
+1. **RTP Metrics Observer** (Membrane Filter element)
+   - Lightweight element inserted in RTP pipeline
+   - Reads buffer metadata only (sequence numbers, timestamps) - zero-copy, no processing
+   - Forwards metrics via message passing to MOS GenServer
+   - Does NOT block or delay audio buffers
+
+2. **MOS Calculator GenServer** (per MediaSession)
+   - Receives metrics asynchronously from observer
+   - Aggregates metrics over configurable intervals
+   - Performs E-model (ITU-T G.107) calculation
+   - Emits quality events to registered handlers
+   - Maintains call quality summary state
+   - Can crash independently without affecting audio flow
+
+3. **Quality Event Handler** (behaviour)
+   - Callback interface for quality event subscribers
+   - Handlers registered per-session or globally
+   - Isolated execution - handler errors don't affect other handlers
+
+### Process Supervision
+
+- MOS Calculator GenServer supervised under MediaSession supervisor
+- One MOS Calculator per active MediaSession
+- Lifecycle tied to MediaSession (starts/stops with media)
+
+### Data Lifecycle
+
+- **During call**: MOS scores and interval metrics held in GenServer state (ephemeral)
+- **At call end**: Quality summary event emitted to all registered handlers
+- **After call**: All in-memory MOS data discarded when GenServer terminates
+- **Persistence**: Not built-in; handlers can implement persistence if needed (e.g., write to database, forward to CDR system)
+
+### Observability
+
+Telemetry events emitted for monitoring system integration:
+
+- `[:parrot_media, :mos, :score]` - Emitted each calculation interval with MOS score and metrics
+- `[:parrot_media, :mos, :threshold_crossed]` - Emitted when MOS crosses configured threshold
+- `[:parrot_media, :mos, :call_summary]` - Emitted at call end with aggregate statistics
+
+Event measurements include: `mos_score`, `packet_loss_percent`, `jitter_ms`, `interval_duration_ms`
+Event metadata includes: `session_id`, `call_id`, `codec`, `direction`
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Real-Time Call Quality Monitoring (Priority: P1)
@@ -58,11 +132,12 @@ As a developer integrating with parrot_media, I want to receive callbacks when c
 
 ### Edge Cases
 
-- What happens when a call has no RTP packets (silent call or media failure)?
-- How does the system handle calls with only one-way audio?
-- What happens when MOS calculation cannot complete due to insufficient samples?
-- How are very short calls (< 1 second) handled?
-- What happens during codec changes mid-call?
+- **No RTP packets during active call (media failure)**: System returns low MOS score (1.0-2.0) to reflect poor quality; quality alert event emitted
+- **No RTP packets during startup**: System returns `{:insufficient_data, :awaiting_media}` until first packets arrive
+- **One-way audio**: System calculates MOS for the active direction only; indicates bidirectional metrics unavailable in quality summary
+- **Insufficient samples (< 10 packets in interval)**: During active call = low MOS; during startup = `{:insufficient_data, :insufficient_samples}`
+- **Very short calls (< 1 second)**: System returns `{:insufficient_data, :call_too_short}` in quality summary; no interval MOS scores emitted
+- **Codec changes mid-call**: MOS calculation continues; codec change noted in quality event timeline but doesn't reset metrics
 
 ## Requirements *(mandatory)*
 
