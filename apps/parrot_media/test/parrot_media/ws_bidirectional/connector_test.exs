@@ -802,6 +802,405 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
   end
 
   # ============================================================================
+  # Mute/unmute control tests (US3 - Control Audio Direction)
+  # ============================================================================
+
+  describe "mute/unmute control (US3)" do
+    test "mute(:outbound) stops audio from being sent to WebSocket", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Verify audio flows normally when unmuted
+      audio_before_mute = <<0xAA, 0xBB>>
+      :ok = Connector.send_audio(pid, audio_before_mute)
+      assert_receive {:ws_frame, ^audio_before_mute}, 1000
+
+      # Mute outbound
+      :ok = Connector.mute(pid, :outbound)
+
+      # Audio should NOT be sent to WebSocket when muted
+      audio_during_mute = <<0xCC, 0xDD>>
+      result = Connector.send_audio(pid, audio_during_mute)
+      assert result == {:error, :muted}
+
+      # Verify the muted frame was not sent
+      refute_receive {:ws_frame, ^audio_during_mute}, 100
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "unmute(:outbound) resumes sending audio to WebSocket", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Mute then unmute outbound
+      :ok = Connector.mute(pid, :outbound)
+      :ok = Connector.unmute(pid, :outbound)
+
+      # Audio should flow again after unmute
+      audio_after_unmute = <<0xEE, 0xFF>>
+      :ok = Connector.send_audio(pid, audio_after_unmute)
+      assert_receive {:ws_frame, ^audio_after_unmute}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "mute(:inbound) stops forwarding WebSocket audio to source", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      source_pid = self()
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Register as source
+      Connector.register_source(pid, source_pid)
+
+      # Verify audio flows normally when unmuted
+      audio_before_mute = <<0x11, 0x22>>
+      send(pid, {:connection_event, {:ws_audio, audio_before_mute}})
+      assert_receive {:ws_audio, ^audio_before_mute}, 1000
+
+      # Mute inbound
+      :ok = Connector.mute(pid, :inbound)
+
+      # Audio should NOT be forwarded when muted
+      audio_during_mute = <<0x33, 0x44>>
+      send(pid, {:connection_event, {:ws_audio, audio_during_mute}})
+      refute_receive {:ws_audio, ^audio_during_mute}, 100
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "unmute(:inbound) resumes forwarding WebSocket audio to source", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      source_pid = self()
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Register as source
+      Connector.register_source(pid, source_pid)
+
+      # Mute then unmute inbound
+      :ok = Connector.mute(pid, :inbound)
+      :ok = Connector.unmute(pid, :inbound)
+
+      # Audio should flow again after unmute
+      audio_after_unmute = <<0x55, 0x66>>
+      send(pid, {:connection_event, {:ws_audio, audio_after_unmute}})
+      assert_receive {:ws_audio, ^audio_after_unmute}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "muting one direction does not affect the other direction", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      source_pid = self()
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Register as source
+      Connector.register_source(pid, source_pid)
+
+      # Mute only outbound
+      :ok = Connector.mute(pid, :outbound)
+
+      # Outbound should be muted
+      assert {:error, :muted} = Connector.send_audio(pid, <<0xAA>>)
+
+      # But inbound should still work
+      inbound_audio = <<0xBB, 0xCC>>
+      send(pid, {:connection_event, {:ws_audio, inbound_audio}})
+      assert_receive {:ws_audio, ^inbound_audio}, 1000
+
+      # Now mute inbound and unmute outbound
+      :ok = Connector.mute(pid, :inbound)
+      :ok = Connector.unmute(pid, :outbound)
+
+      # Outbound should work now
+      outbound_audio = <<0xDD, 0xEE>>
+      :ok = Connector.send_audio(pid, outbound_audio)
+      assert_receive {:ws_frame, ^outbound_audio}, 1000
+
+      # But inbound should be muted
+      inbound_audio_2 = <<0xFF, 0x00>>
+      send(pid, {:connection_event, {:ws_audio, inbound_audio_2}})
+      refute_receive {:ws_audio, ^inbound_audio_2}, 100
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "status reflects current mute state for both directions", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Initial state - both unmuted
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == false
+      assert status.inbound_muted == false
+
+      # Mute outbound only
+      :ok = Connector.mute(pid, :outbound)
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == true
+      assert status.inbound_muted == false
+
+      # Mute inbound also
+      :ok = Connector.mute(pid, :inbound)
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == true
+      assert status.inbound_muted == true
+
+      # Unmute outbound
+      :ok = Connector.unmute(pid, :outbound)
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == false
+      assert status.inbound_muted == true
+
+      # Unmute inbound
+      :ok = Connector.unmute(pid, :inbound)
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == false
+      assert status.inbound_muted == false
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "frames_received counter increments even when inbound is muted", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      source_pid = self()
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      Connector.register_source(pid, source_pid)
+
+      # Mute inbound
+      :ok = Connector.mute(pid, :inbound)
+
+      # Check initial count
+      {:ok, status_before} = Connector.status(pid)
+      initial_received = status_before.frames_received
+
+      # Simulate receiving audio frames while muted
+      send(pid, {:connection_event, {:ws_audio, <<0x01>>}})
+      send(pid, {:connection_event, {:ws_audio, <<0x02>>}})
+      send(pid, {:connection_event, {:ws_audio, <<0x03>>}})
+
+      # Give time for processing
+      Process.sleep(50)
+
+      # Counter should still increment even though audio wasn't forwarded
+      {:ok, status_after} = Connector.status(pid)
+      assert status_after.frames_received == initial_received + 3
+
+      # But the audio should not have been forwarded
+      refute_receive {:ws_audio, _}, 50
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "frames_sent counter does not increment when outbound is muted", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Send some frames successfully first
+      :ok = Connector.send_audio(pid, <<0x01>>)
+      :ok = Connector.send_audio(pid, <<0x02>>)
+
+      {:ok, status_before_mute} = Connector.status(pid)
+      assert status_before_mute.frames_sent == 2
+
+      # Mute outbound
+      :ok = Connector.mute(pid, :outbound)
+
+      # Try to send more frames (should be rejected)
+      {:error, :muted} = Connector.send_audio(pid, <<0x03>>)
+      {:error, :muted} = Connector.send_audio(pid, <<0x04>>)
+
+      # Counter should not have incremented
+      {:ok, status_after_mute} = Connector.status(pid)
+      assert status_after_mute.frames_sent == 2
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "can mute both directions simultaneously", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      source_pid = self()
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      Connector.register_source(pid, source_pid)
+
+      # Mute both directions
+      :ok = Connector.mute(pid, :outbound)
+      :ok = Connector.mute(pid, :inbound)
+
+      # Verify status
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == true
+      assert status.inbound_muted == true
+
+      # Outbound should be blocked
+      assert {:error, :muted} = Connector.send_audio(pid, <<0xAA>>)
+
+      # Inbound should be blocked (audio not forwarded)
+      send(pid, {:connection_event, {:ws_audio, <<0xBB>>}})
+      refute_receive {:ws_audio, _}, 100
+
+      # Unmute both
+      :ok = Connector.unmute(pid, :outbound)
+      :ok = Connector.unmute(pid, :inbound)
+
+      # Both should work again
+      :ok = Connector.send_audio(pid, <<0xCC>>)
+      assert_receive {:ws_frame, <<0xCC>>}, 1000
+
+      send(pid, {:connection_event, {:ws_audio, <<0xDD>>}})
+      assert_receive {:ws_audio, <<0xDD>>}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "mute state persists across multiple operations", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Mute outbound
+      :ok = Connector.mute(pid, :outbound)
+
+      # Try multiple sends - all should fail
+      for i <- 1..5 do
+        assert {:error, :muted} = Connector.send_audio(pid, <<i>>)
+      end
+
+      # Status should still show muted
+      {:ok, status} = Connector.status(pid)
+      assert status.outbound_muted == true
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+  end
+
+  # ============================================================================
   # Status tests
   # ============================================================================
 
@@ -1209,6 +1608,326 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
 
       # Clean up
       Connector.disconnect(pid)
+    end
+  end
+
+  # ============================================================================
+  # Disconnect and cleanup tests (US4)
+  # ============================================================================
+
+  describe "disconnect and cleanup (US4)" do
+    test "disconnect/1 closes WebSocket gracefully", %{connection_id: connection_id, url: url} do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Verify connected
+      {:ok, status} = Connector.status(pid)
+      assert status.connection_state == :connected
+
+      # Disconnect should send close frame to WebSocket
+      assert :ok = Connector.disconnect(pid)
+
+      # The mock server should receive a close notification
+      assert_receive {:ws_closed, _reason}, 2000
+    end
+
+    test "disconnect/1 stops the Connector process", %{connection_id: connection_id, url: url} do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+      assert Process.alive?(pid)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Monitor to catch exit
+      ref = Process.monitor(pid)
+
+      # Disconnect
+      :ok = Connector.disconnect(pid)
+
+      # Process should terminate
+      assert_receive {:DOWN, ^ref, :process, ^pid, reason}, 1000
+      assert reason == :normal or reason == :shutdown or match?({:shutdown, _}, reason)
+      refute Process.alive?(pid)
+    end
+
+    test "disconnect/1 unregisters from Registry", %{connection_id: connection_id, url: url} do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Verify registered
+      assert [{^pid, _}] =
+               Registry.lookup(
+                 ParrotMedia.BidirectionalRegistry,
+                 {:bidirectional, connection_id}
+               )
+
+      # Wait for connection then disconnect
+      Process.sleep(100)
+      :ok = Connector.disconnect(pid)
+
+      # Wait for termination
+      Process.sleep(100)
+
+      # Verify unregistered
+      assert [] =
+               Registry.lookup(
+                 ParrotMedia.BidirectionalRegistry,
+                 {:bidirectional, connection_id}
+               )
+    end
+
+    test "disconnect/1 invokes callback with {:disconnected, :user_requested}", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      test_pid = self()
+
+      defmodule UserRequestedDisconnectCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:disconnected, :user_requested}, state) do
+          send(state.test_pid, {:callback_disconnect_reason, :user_requested})
+          {:ok, state}
+        end
+
+        def handle_event({:disconnected, reason}, state) do
+          send(state.test_pid, {:callback_disconnect_reason, reason})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: UserRequestedDisconnectCallback,
+          callback_state: %{test_pid: test_pid}
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Disconnect
+      Connector.disconnect(pid)
+
+      # Should receive callback with :user_requested reason
+      assert_receive {:callback_disconnect_reason, :user_requested}, 1000
+    end
+
+    test "disconnect during reconnection stops retry attempts", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule ReconnectionStopCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:reconnecting, attempt}, state) do
+          send(state.test_pid, {:reconnecting, attempt})
+          {:ok, state}
+        end
+
+        def handle_event({:disconnected, reason}, state) do
+          send(state.test_pid, {:disconnected, reason})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: ReconnectionStopCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: 10
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Stop the server to trigger reconnection attempts
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for at least one reconnection attempt (may or may not receive depending on timing)
+      Process.sleep(200)
+
+      # Disconnect while potentially reconnecting
+      ref = Process.monitor(pid)
+      :ok = Connector.disconnect(pid)
+
+      # Process should terminate
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+
+      # Verify no more reconnection messages come after disconnect
+      refute_receive {:reconnecting, _}, 500
+    end
+
+    test "resources are properly cleaned up - no lingering processes", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Get the connection process PID from the Connector state
+      # We'll monitor both the connector and verify cleanup
+      connector_ref = Process.monitor(pid)
+
+      # Disconnect
+      :ok = Connector.disconnect(pid)
+
+      # Wait for connector to terminate
+      assert_receive {:DOWN, ^connector_ref, :process, ^pid, _reason}, 1000
+
+      # Wait for registry cleanup to propagate (registry is eventually consistent)
+      Process.sleep(50)
+
+      # Verify no processes are registered for this connection
+      assert [] =
+               Registry.lookup(
+                 ParrotMedia.BidirectionalRegistry,
+                 {:bidirectional, connection_id}
+               )
+
+      # Verify whereis returns not_found
+      assert {:error, :not_found} = Connector.whereis(connection_id)
+    end
+
+    test "multiple rapid connect/disconnect cycles work correctly", %{
+      connection_id: _connection_id,
+      url: url
+    } do
+      # Run multiple cycles with unique connection_ids
+      for i <- 1..3 do
+        cycle_id = "rapid_cycle_#{System.unique_integer([:positive])}_#{i}"
+
+        {:ok, config} =
+          Config.new(
+            connection_id: cycle_id,
+            url: url
+          )
+
+        {:ok, pid} = Connector.start_link(config)
+        assert Process.alive?(pid)
+
+        # Wait for connection
+        Process.sleep(50)
+
+        # Disconnect
+        :ok = Connector.disconnect(pid)
+        Process.sleep(50)
+
+        # Verify cleaned up
+        refute Process.alive?(pid)
+        assert {:error, :not_found} = Connector.whereis(cycle_id)
+      end
+    end
+
+    test "disconnect clears pending outbound buffer", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          buffer_size: 10
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Stop server to trigger buffering
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # Send frames that will be buffered
+      Connector.send_audio(pid, <<0x01>>)
+      Connector.send_audio(pid, <<0x02>>)
+      Connector.send_audio(pid, <<0x03>>)
+
+      # Verify frames are buffered
+      {:ok, status} = Connector.status(pid)
+      assert status.buffer_size > 0
+
+      # Disconnect - should clean up buffer without sending
+      ref = Process.monitor(pid)
+      :ok = Connector.disconnect(pid)
+
+      # Wait for termination
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+    end
+
+    test "disconnect stops source audio forwarding", %{connection_id: connection_id, url: url} do
+      source_pid = self()
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Register as source
+      Connector.register_source(pid, source_pid)
+
+      # Simulate receiving audio - should forward
+      send(pid, {:connection_event, {:ws_audio, <<0x01>>}})
+      assert_receive {:ws_audio, <<0x01>>}, 100
+
+      # Disconnect
+      ref = Process.monitor(pid)
+      :ok = Connector.disconnect(pid)
+
+      # Wait for termination
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+
+      # Verify no more audio forwarding (process is dead anyway)
+      refute Process.alive?(pid)
     end
   end
 
