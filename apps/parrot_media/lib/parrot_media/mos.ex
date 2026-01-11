@@ -340,12 +340,13 @@ defmodule ParrotMedia.MOS do
             handler_message_loop(session_id, handler_module, state)
         end
 
-      {:mos_threshold_crossed, %{session_id: ^session_id, threshold: threshold, direction: direction}} ->
+      {:mos_threshold_crossed,
+       %{session_id: ^session_id, threshold: threshold, direction: direction, mos: mos}} ->
         # Create an Event struct for the handler
         {:ok, event} =
           ParrotMedia.MOS.Event.threshold_crossed(
             session_id: session_id,
-            mos: 0.0,
+            mos: mos,
             threshold: threshold,
             direction: direction
           )

@@ -163,7 +163,7 @@ defmodule ParrotMedia.MOS.Calculator do
 
   Registered handlers receive messages:
   - `{:mos_score, %{session_id: _, score: %Score{}}}` - On each interval completion
-  - `{:mos_threshold_crossed, %{session_id: _, threshold: _, direction: _}}` - On threshold crossings
+  - `{:mos_threshold_crossed, %{session_id: _, threshold: _, direction: _, mos: _}}` - On threshold crossings
   - `{:mos_summary, %{session_id: _, summary: _}}` - On calculator termination
 
   ## Examples
@@ -418,7 +418,8 @@ defmodule ParrotMedia.MOS.Calculator do
            %{
              session_id: state.session_id,
              threshold: event.threshold_name,
-             direction: event.direction
+             direction: event.direction,
+             mos: event.mos_score
            }}
         )
       end)
