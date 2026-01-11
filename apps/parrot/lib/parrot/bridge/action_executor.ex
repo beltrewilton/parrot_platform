@@ -39,6 +39,11 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:play, String.t() | [String.t()], keyword()}
           | {:record, String.t(), keyword()}
           | {:stop_record, keyword()}
+          | {:connect_bidirectional_ws, String.t(), keyword()}
+          | {:disconnect_bidirectional_ws, list()}
+          | {:mute_bidirectional, :inbound | :outbound}
+          | {:unmute_bidirectional, :inbound | :outbound}
+          | {:send_ws_message, String.t() | binary()}
 
   @type context :: %{
           required(:uas) => term(),
@@ -463,31 +468,31 @@ defmodule Parrot.Bridge.ActionExecutor do
   @spec execute_connect_bidirectional_ws(Call.t(), context(), String.t(), keyword()) ::
           {:ok, Call.t()}
   defp execute_connect_bidirectional_ws(call, _context, _url, _opts) do
-    Logger.debug("[ActionExecutor] TODO: execute_connect_bidirectional_ws")
+    # Phase 4 implementation will establish WsBidirectional connection
     {:ok, call}
   end
 
   @spec execute_disconnect_bidirectional_ws(Call.t(), context()) :: {:ok, Call.t()}
   defp execute_disconnect_bidirectional_ws(call, _context) do
-    Logger.debug("[ActionExecutor] TODO: execute_disconnect_bidirectional_ws")
+    # Phase 4 implementation will close WsBidirectional connection
     {:ok, call}
   end
 
   @spec execute_mute_bidirectional(Call.t(), context(), :inbound | :outbound) :: {:ok, Call.t()}
   defp execute_mute_bidirectional(call, _context, _direction) do
-    Logger.debug("[ActionExecutor] TODO: execute_mute_bidirectional")
+    # Phase 4 implementation will mute WsBidirectional stream direction
     {:ok, call}
   end
 
   @spec execute_unmute_bidirectional(Call.t(), context(), :inbound | :outbound) :: {:ok, Call.t()}
   defp execute_unmute_bidirectional(call, _context, _direction) do
-    Logger.debug("[ActionExecutor] TODO: execute_unmute_bidirectional")
+    # Phase 4 implementation will unmute WsBidirectional stream direction
     {:ok, call}
   end
 
   @spec execute_send_ws_message(Call.t(), context(), String.t() | binary()) :: {:ok, Call.t()}
   defp execute_send_ws_message(call, _context, _message) do
-    Logger.debug("[ActionExecutor] TODO: execute_send_ws_message")
+    # Phase 4 implementation will send message via WsBidirectional connection
     {:ok, call}
   end
 end
