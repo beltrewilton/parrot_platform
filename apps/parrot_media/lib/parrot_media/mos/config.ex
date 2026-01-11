@@ -232,6 +232,9 @@ defmodule ParrotMedia.MOS.Config do
     |> Enum.map(fn {:ok, threshold} -> threshold end)
   end
 
+  # Handle already-converted Threshold structs
+  defp convert_threshold(%Threshold{} = threshold), do: {:ok, threshold}
+
   defp convert_threshold(%{} = config) do
     opts = [
       name: config[:name],
