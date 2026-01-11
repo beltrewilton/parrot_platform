@@ -7,6 +7,14 @@ defmodule ParrotMedia.MediaSession do
     * RTP port allocation
     * Media pipeline lifecycle management
     * Codec negotiation
+    * MOS (Mean Opinion Score) monitoring
+
+  ## MOS Integration
+
+  When MOS monitoring is enabled (see `ParrotMedia.MOS.Config`), the MediaSession will:
+    * Start a MOS Calculator when the media pipeline starts
+    * Stop the Calculator when the session terminates
+    * The Calculator receives metrics from MOS Observers in the pipelines
 
   ## State Machine
 
@@ -36,6 +44,7 @@ defmodule ParrotMedia.MediaSession do
 
   alias ExSDP
   alias ParrotMedia.{Inet, Sdp}
+  alias ParrotMedia.MOS
 
   # Child spec for supervisor
   def child_spec(opts) do
@@ -105,7 +114,9 @@ defmodule ParrotMedia.MediaSession do
       # DTMF collection state: %{max: int, terminators: list, timeout: int, digits: string, timer_ref: ref}
       :dtmf_collection,
       # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
-      direction: :sendrecv
+      direction: :sendrecv,
+      # MOS Calculator PID (if MOS monitoring is enabled)
+      mos_calculator_pid: nil
     ]
 
     @type t :: %__MODULE__{
@@ -137,7 +148,8 @@ defmodule ParrotMedia.MediaSession do
             advertised_ip: String.t() | tuple() | nil,
             notify_pid: pid() | nil,
             dtmf_collection: map() | nil,
-            direction: :sendrecv | :sendonly | :recvonly | :inactive
+            direction: :sendrecv | :sendonly | :recvonly | :inactive,
+            mos_calculator_pid: pid() | nil
           }
   end
 
@@ -527,6 +539,9 @@ defmodule ParrotMedia.MediaSession do
 
     updated_data = %{updated_data | rtp_socket: nil}
 
+    # Start MOS Calculator if MOS monitoring is enabled
+    updated_data = maybe_start_mos_calculator(updated_data)
+
     # Start media pipeline
     case start_media_pipeline(updated_data) do
       {:ok, pipeline_pid, monitor_ref} ->
@@ -542,7 +557,9 @@ defmodule ParrotMedia.MediaSession do
           "MediaSession #{data.id}: Failed to start media pipeline: #{inspect(reason)}"
         )
 
-        {:next_state, :ready, updated_data, [{:reply, from, error}]}
+        # Stop MOS calculator if pipeline failed to start
+        maybe_stop_mos_calculator(updated_data)
+        {:next_state, :ready, %{updated_data | mos_calculator_pid: nil}, [{:reply, from, error}]}
     end
   end
 
@@ -1511,6 +1528,9 @@ defmodule ParrotMedia.MediaSession do
       ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
     end
 
+    # Stop MOS Calculator if running
+    maybe_stop_mos_calculator(data)
+
     # Close RTP socket if still open
     if data.rtp_socket do
       Logger.debug("MediaSession #{data.id}: Closing RTP socket")
@@ -1589,6 +1609,70 @@ defmodule ParrotMedia.MediaSession do
         error
     end
   end
+
+  # ===========================================================================
+  # MOS Calculator Integration
+  # ===========================================================================
+
+  @doc false
+  # Start MOS Calculator if MOS monitoring is enabled in config
+  defp maybe_start_mos_calculator(data) do
+    if MOS.Config.enabled?() do
+      config = MOS.Config.merge([])
+      codec = map_selected_codec_to_mos_codec(data.selected_codec)
+
+      case MOS.Calculator.start_link(
+             session_id: data.id,
+             codec: codec,
+             config: config
+           ) do
+        {:ok, calc_pid} ->
+          Logger.info("MediaSession #{data.id}: MOS Calculator started")
+          %{data | mos_calculator_pid: calc_pid}
+
+        {:error, reason} ->
+          Logger.warning(
+            "MediaSession #{data.id}: Failed to start MOS Calculator: #{inspect(reason)}"
+          )
+
+          data
+      end
+    else
+      data
+    end
+  end
+
+  @doc false
+  # Stop MOS Calculator if running, returning the call summary
+  defp maybe_stop_mos_calculator(%{mos_calculator_pid: nil}), do: :ok
+
+  defp maybe_stop_mos_calculator(%{mos_calculator_pid: pid, id: session_id}) when is_pid(pid) do
+    if Process.alive?(pid) do
+      Logger.info("MediaSession #{session_id}: Stopping MOS Calculator")
+
+      case MOS.Calculator.stop(pid) do
+        %{} = summary ->
+          Logger.info(
+            "MediaSession #{session_id}: MOS summary - avg: #{summary[:avg_mos]}, " <>
+              "min: #{summary[:min_mos]}, max: #{summary[:max_mos]}"
+          )
+
+          :ok
+
+        :ok ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_stop_mos_calculator(_data), do: :ok
+
+  # Map the selected codec atom to MOS E-model codec identifier
+  defp map_selected_codec_to_mos_codec(:pcma), do: :g711
+  defp map_selected_codec_to_mos_codec(:opus), do: :opus
+  defp map_selected_codec_to_mos_codec(_), do: :g711
 
   @impl true
   def terminate(reason, _state, data) do
