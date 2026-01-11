@@ -348,6 +348,154 @@ defmodule Parrot.CallBidirectionalWsTest do
   end
 
   # ============================================================================
+  # Auto-cleanup on call end tests (US4)
+  # ============================================================================
+
+  describe "auto-cleanup on call end (US4)" do
+    test "disconnect_bidirectional_ws/1 adds correct operation to call" do
+      call = %Call{} |> Call.disconnect_bidirectional_ws()
+
+      assert [operation] = Call.get_operations(call)
+      assert {:disconnect_bidirectional_ws, []} = operation
+    end
+
+    test "the operation is pipeable with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.connect_bidirectional_ws("wss://api.example.com/stream")
+        |> Call.send_ws_message(~s({"type": "init"}))
+        |> Call.disconnect_bidirectional_ws()
+        |> Call.hangup()
+
+      operations = Call.get_operations(call)
+      assert length(operations) == 5
+
+      assert {:answer, []} = Enum.at(operations, 0)
+      assert {:connect_bidirectional_ws, _, _} = Enum.at(operations, 1)
+      assert {:send_ws_message, _} = Enum.at(operations, 2)
+      assert {:disconnect_bidirectional_ws, []} = Enum.at(operations, 3)
+      assert {:hangup, []} = Enum.at(operations, 4)
+    end
+
+    test "disconnect_bidirectional_ws can appear multiple times (for multiple connections)" do
+      # Scenario: connect to two different AI services sequentially
+      call =
+        %Call{}
+        |> Call.connect_bidirectional_ws("wss://api.openai.com/stream")
+        |> Call.disconnect_bidirectional_ws()
+        |> Call.connect_bidirectional_ws("wss://api.elevenlabs.com/stream")
+        |> Call.disconnect_bidirectional_ws()
+
+      operations = Call.get_operations(call)
+      assert length(operations) == 4
+
+      disconnect_count =
+        Enum.count(operations, fn
+          {:disconnect_bidirectional_ws, _} -> true
+          _ -> false
+        end)
+
+      assert disconnect_count == 2
+    end
+
+    test "send_ws_message/2 adds correct operation with message content" do
+      message = ~s({"type": "response.create", "modalities": ["audio"]})
+      call = %Call{} |> Call.send_ws_message(message)
+
+      assert [{:send_ws_message, ^message}] = Call.get_operations(call)
+    end
+
+    test "send_ws_message/2 works with binary messages" do
+      binary_msg = <<0x00, 0x01, 0x02, 0xFF>>
+      call = %Call{} |> Call.send_ws_message(binary_msg)
+
+      assert [{:send_ws_message, ^binary_msg}] = Call.get_operations(call)
+    end
+
+    test "send_ws_message/2 can be used after connect in pipeline" do
+      call =
+        %Call{}
+        |> Call.connect_bidirectional_ws("wss://api.example.com/stream")
+        |> Call.send_ws_message(~s({"type": "session.update"}))
+        |> Call.send_ws_message(~s({"type": "response.create"}))
+
+      operations = Call.get_operations(call)
+      assert length(operations) == 3
+
+      assert {:connect_bidirectional_ws, _, _} = Enum.at(operations, 0)
+      assert {:send_ws_message, ~s({"type": "session.update"})} = Enum.at(operations, 1)
+      assert {:send_ws_message, ~s({"type": "response.create"})} = Enum.at(operations, 2)
+    end
+
+    test "bidirectional operations work in complete call lifecycle" do
+      # Simulates a full call with AI interaction
+      call =
+        Call.new(from: "sip:user@example.com", to: "sip:ai@service.local", method: "INVITE")
+        |> Call.answer()
+        |> Call.play("welcome.wav")
+        |> Call.connect_bidirectional_ws("wss://api.openai.com/v1/realtime",
+          headers: [{"Authorization", "Bearer token"}],
+          callback_module: MyApp.OpenAICallback,
+          sample_rate: 24000
+        )
+        |> Call.send_ws_message(Jason.encode!(%{type: "session.update"}))
+        |> Call.mute_outbound()
+        |> Call.send_ws_message(Jason.encode!(%{type: "response.create"}))
+        |> Call.unmute_outbound()
+        |> Call.disconnect_bidirectional_ws()
+        |> Call.play("goodbye.wav")
+        |> Call.hangup()
+
+      operations = Call.get_operations(call)
+      assert length(operations) == 10
+
+      # Verify order
+      assert {:answer, []} = Enum.at(operations, 0)
+      assert {:play, "welcome.wav", []} = Enum.at(operations, 1)
+      assert {:connect_bidirectional_ws, "wss://api.openai.com/v1/realtime", _opts} =
+               Enum.at(operations, 2)
+
+      assert {:send_ws_message, _} = Enum.at(operations, 3)
+      assert {:mute_bidirectional, :outbound} = Enum.at(operations, 4)
+      assert {:send_ws_message, _} = Enum.at(operations, 5)
+      assert {:unmute_bidirectional, :outbound} = Enum.at(operations, 6)
+      assert {:disconnect_bidirectional_ws, []} = Enum.at(operations, 7)
+      assert {:play, "goodbye.wav", []} = Enum.at(operations, 8)
+      assert {:hangup, []} = Enum.at(operations, 9)
+    end
+
+    test "disconnect before hangup ensures proper cleanup order" do
+      # This is the recommended pattern - disconnect WebSocket before hangup
+      call =
+        %Call{}
+        |> Call.connect_bidirectional_ws("wss://api.example.com/stream")
+        |> Call.disconnect_bidirectional_ws()
+        |> Call.hangup()
+
+      operations = Call.get_operations(call)
+      disconnect_index = Enum.find_index(operations, &match?({:disconnect_bidirectional_ws, _}, &1))
+      hangup_index = Enum.find_index(operations, &match?({:hangup, _}, &1))
+
+      # disconnect should come before hangup
+      assert disconnect_index < hangup_index
+    end
+
+    test "hangup without explicit disconnect should still work" do
+      # User might forget to disconnect - hangup should handle cleanup
+      call =
+        %Call{}
+        |> Call.connect_bidirectional_ws("wss://api.example.com/stream")
+        |> Call.hangup()
+
+      operations = Call.get_operations(call)
+      assert length(operations) == 2
+      assert {:connect_bidirectional_ws, _, _} = Enum.at(operations, 0)
+      assert {:hangup, []} = Enum.at(operations, 1)
+    end
+  end
+
+  # ============================================================================
   # Complex Pipeline Integration
   # ============================================================================
 

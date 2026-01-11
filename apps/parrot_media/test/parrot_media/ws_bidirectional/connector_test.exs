@@ -1932,6 +1932,682 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
   end
 
   # ============================================================================
+  # Lifecycle events tests (US2 - T023)
+  # ============================================================================
+
+  describe "lifecycle events (US2)" do
+    test "invokes callback with {:connected} when WebSocket connects", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      test_pid = self()
+
+      defmodule US2ConnectedCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:connected}, state) do
+          send(state.test_pid, {:lifecycle_event, :connected})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2ConnectedCallback,
+          callback_state: %{test_pid: test_pid}
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Should receive connected callback when WebSocket handshake completes
+      assert_receive {:lifecycle_event, :connected}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "invokes callback with {:disconnected, reason} when connection drops", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2DisconnectedCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:disconnected, reason}, state) do
+          send(state.test_pid, {:lifecycle_event, :disconnected, reason})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2DisconnectedCallback,
+          callback_state: %{test_pid: test_pid},
+          # Set max_retries to 0 so it fails immediately without reconnection attempts
+          max_retries: 0
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection to establish
+      Process.sleep(100)
+
+      # Stop the mock server to simulate connection drop
+      stop_supervised({:mock_ws_server, port})
+
+      # Should receive disconnected callback with reason
+      assert_receive {:lifecycle_event, :disconnected, _reason}, 2000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "invokes callback with {:reconnecting, attempt} during reconnection attempts", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2ReconnectingCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:reconnecting, attempt}, state) do
+          send(state.test_pid, {:lifecycle_event, :reconnecting, attempt})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2ReconnectingCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: 3
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop the mock server to trigger reconnection
+      stop_supervised({:mock_ws_server, port})
+
+      # Should receive reconnecting callback with attempt number
+      assert_receive {:lifecycle_event, :reconnecting, 1}, 2000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "invokes callback with {:failed, reason} when max retries exceeded", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2FailedCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:failed, reason}, state) do
+          send(state.test_pid, {:lifecycle_event, :failed, reason})
+          {:ok, state}
+        end
+
+        def handle_event({:reconnecting, _attempt}, state) do
+          # Track reconnection attempts
+          send(state.test_pid, :reconnecting_attempt)
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2FailedCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: 2
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop the mock server - no server to reconnect to
+      stop_supervised({:mock_ws_server, port})
+
+      # Should receive failed callback after max retries exceeded
+      # Allow time for the retries
+      assert_receive {:lifecycle_event, :failed, _reason}, 10_000
+
+      # The connector should have transitioned to :failed state
+      {:ok, status} = Connector.status(pid)
+      assert status.connection_state == :failed
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "forwards WebSocket text/JSON messages to callback as {:ws_message, data}", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      test_pid = self()
+
+      defmodule US2WsMessageCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:ws_message, data}, state) do
+          send(state.test_pid, {:lifecycle_event, :ws_message, data})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2WsMessageCallback,
+          callback_state: %{test_pid: test_pid}
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Simulate receiving a text/JSON message from WebSocket
+      json_message = ~s({"type": "transcript", "text": "Hello world"})
+      send(pid, {:connection_event, {:ws_message, json_message}})
+
+      # Should receive the message via callback
+      assert_receive {:lifecycle_event, :ws_message, ^json_message}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "transitions through correct state sequence on connect", %{
+      connection_id: connection_id,
+      url: url
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Initial state should be :connecting
+      {:ok, initial_status} = Connector.status(pid)
+      assert initial_status.connection_state == :connecting
+
+      # Wait for connection to establish
+      Process.sleep(100)
+
+      # After connection, state should be :connected
+      {:ok, connected_status} = Connector.status(pid)
+      assert connected_status.connection_state == :connected
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "transitions through correct state sequence on disconnect and reconnect", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          max_retries: 3
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      {:ok, connected_status} = Connector.status(pid)
+      assert connected_status.connection_state == :connected
+
+      # Stop server to trigger reconnection
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for disconnect detection and reconnection attempt
+      Process.sleep(200)
+
+      # State should be :reconnecting or :disconnected
+      {:ok, reconnecting_status} = Connector.status(pid)
+      assert reconnecting_status.connection_state in [:reconnecting, :disconnected]
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+  end
+
+  # ============================================================================
+  # Reconnection behavior tests (US2 - T024)
+  # ============================================================================
+
+  describe "reconnection behavior (US2)" do
+    test "attempts reconnection when connection drops unexpectedly", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2ReconnectAttemptCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:reconnecting, attempt}, state) do
+          send(state.test_pid, {:reconnect_attempt, attempt})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2ReconnectAttemptCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: 5
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop server to trigger reconnection
+      stop_supervised({:mock_ws_server, port})
+
+      # Should attempt reconnection
+      assert_receive {:reconnect_attempt, 1}, 2000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "uses exponential backoff between retries", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2BackoffCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:reconnecting, attempt}, state) do
+          # Record timestamp of each reconnection attempt
+          send(state.test_pid, {:reconnect_at, attempt, System.monotonic_time(:millisecond)})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2BackoffCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: 4
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop server - no way to reconnect, will keep retrying
+      stop_supervised({:mock_ws_server, port})
+
+      # Collect timestamps of reconnection attempts
+      assert_receive {:reconnect_at, 1, t1}, 2000
+      assert_receive {:reconnect_at, 2, t2}, 5000
+      assert_receive {:reconnect_at, 3, t3}, 10_000
+
+      # Calculate delays between attempts
+      delay_1_to_2 = t2 - t1
+      delay_2_to_3 = t3 - t2
+
+      # Verify exponential backoff: second delay should be larger than first
+      # Allow some tolerance for timing variations
+      assert delay_2_to_3 > delay_1_to_2 * 0.8,
+             "Expected exponential backoff: delay_2_to_3 (#{delay_2_to_3}ms) should be >= delay_1_to_2 (#{delay_1_to_2}ms)"
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "respects max_retries config", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2MaxRetriesCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:reconnecting, attempt}, state) do
+          send(state.test_pid, {:reconnect_attempt, attempt})
+          {:ok, state}
+        end
+
+        def handle_event({:failed, _reason}, state) do
+          send(state.test_pid, :connection_failed)
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      max_retries = 3
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2MaxRetriesCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: max_retries
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop server - no way to reconnect
+      stop_supervised({:mock_ws_server, port})
+
+      # Should receive exactly max_retries reconnection attempts
+      for attempt <- 1..max_retries do
+        assert_receive {:reconnect_attempt, ^attempt}, 10_000
+      end
+
+      # After max_retries, should receive failure notification
+      assert_receive :connection_failed, 5000
+
+      # Should NOT receive more reconnection attempts
+      refute_receive {:reconnect_attempt, _}, 500
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "stops attempting after max_retries exceeded", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      test_pid = self()
+
+      defmodule US2StopAttemptsCallback do
+        @behaviour ParrotMedia.WsBidirectional.Callback
+
+        def handle_event({:reconnecting, attempt}, state) do
+          send(state.test_pid, {:reconnect_attempt, attempt})
+          {:ok, state}
+        end
+
+        def handle_event({:failed, reason}, state) do
+          send(state.test_pid, {:failed, reason})
+          {:ok, state}
+        end
+
+        def handle_event(_event, state), do: {:ok, state}
+      end
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          callback_module: US2StopAttemptsCallback,
+          callback_state: %{test_pid: test_pid},
+          max_retries: 2
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop server
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for all retries to complete and failure
+      assert_receive {:reconnect_attempt, 1}, 2000
+      assert_receive {:reconnect_attempt, 2}, 5000
+      assert_receive {:failed, _reason}, 5000
+
+      # Verify state is :failed
+      {:ok, status} = Connector.status(pid)
+      assert status.connection_state == :failed
+
+      # Ensure no more reconnection attempts after failure
+      refute_receive {:reconnect_attempt, _}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "buffers audio during reconnection up to buffer_size frames", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      buffer_capacity = 5
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          buffer_size: buffer_capacity,
+          max_retries: 3
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Stop server to trigger reconnection state
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for disconnect detection
+      Process.sleep(200)
+
+      # Send audio frames while disconnected - they should be buffered
+      for i <- 1..buffer_capacity do
+        Connector.send_audio(pid, <<i::8>>)
+      end
+
+      # Give time for buffering
+      Process.sleep(50)
+
+      # Verify frames are buffered
+      {:ok, status} = Connector.status(pid)
+      assert status.buffer_size == buffer_capacity
+      assert status.frames_dropped == 0
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "resumes sending buffered audio after reconnection", %{
+      connection_id: connection_id,
+      port: port
+    } do
+      buffer_capacity = 3
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: "ws://localhost:#{port}/ws",
+          buffer_size: buffer_capacity,
+          max_retries: 5
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      # Stop server to trigger disconnection
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for disconnect
+      Process.sleep(200)
+
+      # Send audio while disconnected (will be buffered)
+      frame1 = <<0xAA>>
+      frame2 = <<0xBB>>
+      frame3 = <<0xCC>>
+      Connector.send_audio(pid, frame1)
+      Connector.send_audio(pid, frame2)
+      Connector.send_audio(pid, frame3)
+
+      # Verify buffered
+      Process.sleep(50)
+      {:ok, status_before} = Connector.status(pid)
+      assert status_before.buffer_size == 3
+
+      # Restart the mock server to allow reconnection
+      {:ok, _server_pid} =
+        start_supervised(
+          {ParrotMedia.Test.MockWsServer, port: port, test_pid: self()},
+          id: {:mock_ws_server_2, port}
+        )
+
+      # Wait for reconnection and buffer flush
+      Process.sleep(500)
+
+      # After reconnection, buffer should be flushed
+      {:ok, status_after} = Connector.status(pid)
+      assert status_after.buffer_size == 0
+
+      # The buffered frames should have been sent to the WebSocket
+      # (Order may vary based on timing, so we just check they were sent)
+      assert_receive {:ws_frame, ^frame1}, 1000
+      assert_receive {:ws_frame, ^frame2}, 1000
+      assert_receive {:ws_frame, ^frame3}, 1000
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "drops oldest frames when buffer exceeds buffer_size during reconnection", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      buffer_capacity = 3
+
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          buffer_size: buffer_capacity,
+          max_retries: 3
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Stop server to trigger reconnection state
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for disconnect
+      Process.sleep(200)
+
+      # Send more frames than buffer can hold
+      for i <- 1..6 do
+        Connector.send_audio(pid, <<i::8>>)
+      end
+
+      Process.sleep(50)
+
+      {:ok, status} = Connector.status(pid)
+      # Buffer should be at capacity
+      assert status.buffer_size == buffer_capacity
+      # Should have dropped 3 frames (6 sent - 3 capacity)
+      assert status.frames_dropped == 3
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+
+    test "increments reconnect_count on each reconnection", %{
+      connection_id: connection_id,
+      url: url,
+      port: port
+    } do
+      {:ok, config} =
+        Config.new(
+          connection_id: connection_id,
+          url: url,
+          max_retries: 5
+        )
+
+      {:ok, pid} = Connector.start_link(config)
+
+      # Wait for initial connection
+      Process.sleep(100)
+
+      {:ok, initial_status} = Connector.status(pid)
+      assert initial_status.reconnect_count == 0
+
+      # Stop server to trigger reconnection
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for reconnection attempts
+      Process.sleep(1000)
+
+      {:ok, status} = Connector.status(pid)
+      assert status.reconnect_count > 0
+
+      # Clean up
+      Connector.disconnect(pid)
+    end
+  end
+
+  # ============================================================================
   # Edge case tests
   # ============================================================================
 
