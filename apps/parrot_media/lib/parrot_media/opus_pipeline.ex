@@ -25,6 +25,7 @@ defmodule ParrotMedia.OpusPipeline do
 
   alias ParrotMedia.ForkConfig
   alias ParrotMedia.ForkSink
+  alias ParrotMedia.MOS.Observer
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -208,11 +209,16 @@ defmodule ParrotMedia.OpusPipeline do
     Logger.debug("  Full notification: #{inspect(notification)}")
 
     # Create a pipeline to handle incoming RTP audio
+    # Observer is placed after depayloader to collect metrics for MOS calculation
     receive_audio_spec = [
       get_child(:rtp)
       |> via_out(Pad.ref(:output, ssrc),
         options: [depayloader: Membrane.RTP.Opus.Depayloader]
       )
+      |> child({:mos_observer, ssrc}, %Observer{
+        session_id: state.session_id,
+        stats_interval_ms: 1000
+      })
       |> child({:opus_decoder, ssrc}, Membrane.Opus.Decoder)
       |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
     ]
