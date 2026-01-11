@@ -96,9 +96,13 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandler do
   def handle_cdr(cdr, %{level: level, metadata_keys: keys}) do
     metadata = build_metadata(cdr, keys)
 
-    Logger.log(level, fn ->
-      "CDR generated: #{cdr.id} - #{cdr.disposition} - #{cdr.caller_uri} -> #{cdr.callee_uri}"
-    end, metadata)
+    Logger.log(
+      level,
+      fn ->
+        "CDR generated: #{cdr.id} - #{cdr.disposition} - #{cdr.caller_uri} -> #{cdr.callee_uri}"
+      end,
+      metadata
+    )
 
     :ok
   end
