@@ -445,7 +445,11 @@ defmodule ParrotMedia.MOS.TelemetryTest do
 
       # Emit threshold event
       {:ok, threshold} = Threshold.new(name: :good, value: 3.5)
-      Telemetry.emit_threshold_crossed(3.4, 3.6, threshold, session_id: "all-events", direction: :falling)
+
+      Telemetry.emit_threshold_crossed(3.4, 3.6, threshold,
+        session_id: "all-events",
+        direction: :falling
+      )
 
       assert_receive {:event_received, [:parrot_media, :mos, :threshold_crossed]}
 
