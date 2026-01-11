@@ -422,6 +422,98 @@ defmodule ParrotMedia.MOS.CallSummaryTest do
 
       assert summary.duration_ms == 0
     end
+
+    test "returns error when min_mos is greater than avg_mos" do
+      assert {:error, :min_mos_exceeds_avg_mos} =
+               CallSummary.new(
+                 session_id: "test-123",
+                 min_mos: 4.0,
+                 max_mos: 4.5,
+                 avg_mos: 3.5,
+                 total_packets: 1000,
+                 total_lost: 10,
+                 intervals_calculated: 5,
+                 duration_ms: 25_000,
+                 status: :complete
+               )
+    end
+
+    test "returns error when avg_mos is greater than max_mos" do
+      assert {:error, :avg_mos_exceeds_max_mos} =
+               CallSummary.new(
+                 session_id: "test-123",
+                 min_mos: 3.0,
+                 max_mos: 3.5,
+                 avg_mos: 4.0,
+                 total_packets: 1000,
+                 total_lost: 10,
+                 intervals_calculated: 5,
+                 duration_ms: 25_000,
+                 status: :complete
+               )
+    end
+
+    test "returns error when min_mos is greater than max_mos" do
+      assert {:error, :min_mos_exceeds_max_mos} =
+               CallSummary.new(
+                 session_id: "test-123",
+                 min_mos: 4.5,
+                 max_mos: 3.5,
+                 avg_mos: 4.0,
+                 total_packets: 1000,
+                 total_lost: 10,
+                 intervals_calculated: 5,
+                 duration_ms: 25_000,
+                 status: :complete
+               )
+    end
+
+    test "returns error when total_lost exceeds total_packets" do
+      assert {:error, :total_lost_exceeds_total_packets} =
+               CallSummary.new(
+                 session_id: "test-123",
+                 min_mos: 3.0,
+                 max_mos: 4.0,
+                 avg_mos: 3.5,
+                 total_packets: 100,
+                 total_lost: 150,
+                 intervals_calculated: 5,
+                 duration_ms: 25_000,
+                 status: :complete
+               )
+    end
+
+    test "returns error when quality_events is not a list" do
+      assert {:error, :invalid_quality_events} =
+               CallSummary.new(
+                 session_id: "test-123",
+                 min_mos: 3.0,
+                 max_mos: 4.0,
+                 avg_mos: 3.5,
+                 total_packets: 1000,
+                 total_lost: 10,
+                 intervals_calculated: 5,
+                 duration_ms: 25_000,
+                 status: :complete,
+                 quality_events: "not a list"
+               )
+    end
+
+    test "returns error when quality_events is a map" do
+      assert {:error, :invalid_quality_events} =
+               CallSummary.new(
+                 session_id: "test-123",
+                 min_mos: 3.0,
+                 max_mos: 4.0,
+                 avg_mos: 3.5,
+                 total_packets: 1000,
+                 total_lost: 10,
+                 intervals_calculated: 5,
+                 duration_ms: 25_000,
+                 status: :complete,
+                 quality_events: %{type: :threshold_crossed}
+               )
+    end
   end
 
   describe "struct definition" do

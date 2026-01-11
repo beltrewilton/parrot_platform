@@ -140,7 +140,9 @@ defmodule ParrotMedia.MOS.CallSummary do
          {:ok, intervals_calculated} <- validate_non_neg_integer(opts, :intervals_calculated),
          {:ok, duration_ms} <- validate_non_neg_integer(opts, :duration_ms),
          {:ok, status} <- validate_status(opts),
-         {:ok, quality_events} <- validate_quality_events(opts) do
+         {:ok, quality_events} <- validate_quality_events(opts),
+         :ok <- validate_mos_ordering(min_mos, avg_mos, max_mos),
+         :ok <- validate_packet_counts(total_packets, total_lost) do
       overall_loss_percent = calculate_loss_percent(total_packets, total_lost)
 
       summary = %__MODULE__{
@@ -236,8 +238,35 @@ defmodule ParrotMedia.MOS.CallSummary do
       {:ok, events} when is_list(events) ->
         {:ok, events}
 
+      {:ok, _non_list} ->
+        {:error, :invalid_quality_events}
+
       :error ->
         {:ok, []}
+    end
+  end
+
+  defp validate_mos_ordering(min_mos, avg_mos, max_mos) do
+    cond do
+      min_mos > max_mos ->
+        {:error, :min_mos_exceeds_max_mos}
+
+      min_mos > avg_mos ->
+        {:error, :min_mos_exceeds_avg_mos}
+
+      avg_mos > max_mos ->
+        {:error, :avg_mos_exceeds_max_mos}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_packet_counts(total_packets, total_lost) do
+    if total_lost > total_packets do
+      {:error, :total_lost_exceeds_total_packets}
+    else
+      :ok
     end
   end
 
