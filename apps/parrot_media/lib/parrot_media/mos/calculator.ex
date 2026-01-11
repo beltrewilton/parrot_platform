@@ -68,7 +68,9 @@ defmodule ParrotMedia.MOS.Calculator do
           handlers: [pid()],
           interval_timer: reference() | nil,
           total_packets: non_neg_integer(),
-          total_lost: non_neg_integer()
+          total_lost: non_neg_integer(),
+          inbound_packets: non_neg_integer(),
+          outbound_packets: non_neg_integer()
         }
 
   # ===========================================================================
@@ -227,7 +229,9 @@ defmodule ParrotMedia.MOS.Calculator do
       handlers: [],
       interval_timer: nil,
       total_packets: 0,
-      total_lost: 0
+      total_lost: 0,
+      inbound_packets: 0,
+      outbound_packets: 0
     }
 
     {:ok, state}
@@ -286,12 +290,17 @@ defmodule ParrotMedia.MOS.Calculator do
     # Start the interval timer
     timer_ref = schedule_interval_tick(state.config.interval_ms)
 
+    # Track direction if provided
+    {inbound_delta, outbound_delta} = extract_direction_counts(metrics)
+
     new_state = %{
       state
       | status: :active,
         media_started_at: DateTime.utc_now(),
         current_interval: interval,
-        interval_timer: timer_ref
+        interval_timer: timer_ref,
+        inbound_packets: state.inbound_packets + inbound_delta,
+        outbound_packets: state.outbound_packets + outbound_delta
     }
 
     {:noreply, new_state}
@@ -300,7 +309,18 @@ defmodule ParrotMedia.MOS.Calculator do
   def handle_cast({:add_metrics, metrics}, %{status: :active} = state) do
     # Accumulate metrics in current interval
     updated_interval = Interval.add_metrics(state.current_interval, metrics)
-    {:noreply, %{state | current_interval: updated_interval}}
+
+    # Track direction if provided
+    {inbound_delta, outbound_delta} = extract_direction_counts(metrics)
+
+    new_state = %{
+      state
+      | current_interval: updated_interval,
+        inbound_packets: state.inbound_packets + inbound_delta,
+        outbound_packets: state.outbound_packets + outbound_delta
+    }
+
+    {:noreply, new_state}
   end
 
   def handle_cast({:add_metrics, _metrics}, state) do
@@ -339,6 +359,34 @@ defmodule ParrotMedia.MOS.Calculator do
 
   defp schedule_interval_tick(interval_ms) do
     Process.send_after(self(), :interval_tick, interval_ms)
+  end
+
+  # Extracts direction-specific packet counts from metrics.
+  # Returns {inbound_delta, outbound_delta} tuple.
+  # If direction is not specified, returns {0, 0} for backward compatibility.
+  defp extract_direction_counts(%{direction: :inbound, packets_received: count})
+       when is_integer(count) do
+    {count, 0}
+  end
+
+  defp extract_direction_counts(%{direction: :outbound, packets_received: count})
+       when is_integer(count) do
+    {0, count}
+  end
+
+  defp extract_direction_counts(%{direction: :inbound}) do
+    # Direction specified but no packet count - use 1 as a signal
+    {1, 0}
+  end
+
+  defp extract_direction_counts(%{direction: :outbound}) do
+    # Direction specified but no packet count - use 1 as a signal
+    {0, 1}
+  end
+
+  defp extract_direction_counts(_metrics) do
+    # No direction specified - backward compatible, don't track direction
+    {0, 0}
   end
 
   defp complete_interval(state) do
@@ -464,12 +512,39 @@ defmodule ParrotMedia.MOS.Calculator do
     end)
   end
 
+  # Determines the call status based on scores and direction tracking.
+  # Returns :complete, :insufficient_data, or :one_way_audio.
+  defp determine_call_status(%{scores: []}) do
+    # No scores calculated - insufficient data
+    :insufficient_data
+  end
+
+  defp determine_call_status(%{inbound_packets: 0, outbound_packets: 0}) do
+    # No direction tracking data - assume bidirectional (backward compatibility)
+    :complete
+  end
+
+  defp determine_call_status(%{inbound_packets: inbound, outbound_packets: outbound})
+       when inbound > 0 and outbound > 0 do
+    # Both directions have packets - normal bidirectional call
+    :complete
+  end
+
+  defp determine_call_status(%{inbound_packets: inbound, outbound_packets: outbound})
+       when inbound > 0 or outbound > 0 do
+    # Only one direction has packets - one-way audio
+    :one_way_audio
+  end
+
   defp generate_summary(state) do
     scores = state.scores
     duration_ms = DateTime.diff(DateTime.utc_now(), state.start_time, :millisecond)
 
     # Convert internal quality_events format to CallSummary format
     formatted_events = format_quality_events(state.quality_events)
+
+    # Determine call status based on direction tracking and scores
+    status = determine_call_status(state)
 
     if Enum.empty?(scores) do
       # Insufficient data - use placeholder MOS values (1.0 is minimum valid MOS)
@@ -504,7 +579,7 @@ defmodule ParrotMedia.MOS.Calculator do
           total_lost: state.total_lost,
           intervals_calculated: length(scores),
           duration_ms: duration_ms,
-          status: :complete,
+          status: status,
           quality_events: formatted_events
         )
 
