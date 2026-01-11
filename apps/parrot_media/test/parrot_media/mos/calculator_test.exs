@@ -293,7 +293,12 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
       # Add sufficient metrics
       for _ <- 1..5 do
-        Calculator.add_metrics(pid, %{packets_received: 10, packets_expected: 10, jitter_ms: 10.0, delay_ms: 50.0})
+        Calculator.add_metrics(pid, %{
+          packets_received: 10,
+          packets_expected: 10,
+          jitter_ms: 10.0,
+          delay_ms: 50.0
+        })
       end
 
       # Wait for interval to complete (100ms interval + some buffer)
@@ -768,7 +773,8 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       # Use via tuple for query
       via = {:via, Registry, {ParrotMedia.MOS.Registry, ctx.session_id}}
       score = GenServer.call(via, :current_score)
-      assert score == nil  # No intervals completed yet
+      # No intervals completed yet
+      assert score == nil
 
       Calculator.stop(via)
     end
@@ -798,7 +804,8 @@ defmodule ParrotMedia.MOS.CalculatorTest do
     end
 
     test "calculates min/max/avg MOS from multiple scores", ctx do
-      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
 
       # First interval: good metrics
       for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
@@ -823,7 +830,8 @@ defmodule ParrotMedia.MOS.CalculatorTest do
     end
 
     test "calculates duration_ms from start_time", ctx do
-      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
 
       # Add some metrics and wait
       for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
@@ -837,14 +845,31 @@ defmodule ParrotMedia.MOS.CalculatorTest do
     end
 
     test "tracks total_packets and total_lost across intervals", ctx do
-      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
 
       # First interval: no loss
-      for _ <- 1..5, do: Calculator.add_metrics(pid, %{packets_received: 10, packets_expected: 10, jitter_ms: 10.0, delay_ms: 50.0})
+      for _ <- 1..5,
+          do:
+            Calculator.add_metrics(pid, %{
+              packets_received: 10,
+              packets_expected: 10,
+              jitter_ms: 10.0,
+              delay_ms: 50.0
+            })
+
       Process.sleep(100)
 
       # Second interval: some loss
-      for _ <- 1..5, do: Calculator.add_metrics(pid, %{packets_received: 8, packets_expected: 10, jitter_ms: 10.0, delay_ms: 50.0})
+      for _ <- 1..5,
+          do:
+            Calculator.add_metrics(pid, %{
+              packets_received: 8,
+              packets_expected: 10,
+              jitter_ms: 10.0,
+              delay_ms: 50.0
+            })
+
       Process.sleep(100)
 
       summary = Calculator.stop(pid)
@@ -911,7 +936,8 @@ defmodule ParrotMedia.MOS.CalculatorTest do
         nil
       )
 
-      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
 
       for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
       Process.sleep(100)
@@ -919,7 +945,9 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
 
       # Should receive telemetry event
-      assert_receive {:telemetry_event, [:parrot_media, :mos, :call_summary], measurements, metadata}, 500
+      assert_receive {:telemetry_event, [:parrot_media, :mos, :call_summary], measurements,
+                      metadata},
+                     500
 
       assert measurements.min_mos != nil
       assert measurements.max_mos != nil
@@ -945,18 +973,21 @@ defmodule ParrotMedia.MOS.CalculatorTest do
         nil
       )
 
-      {:ok, pid} = start_calculator(ctx,
-        codec: :opus,
-        call_id: "my-call-123",
-        config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
-      )
+      {:ok, pid} =
+        start_calculator(ctx,
+          codec: :opus,
+          call_id: "my-call-123",
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
 
       for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
       Process.sleep(100)
 
       Calculator.stop(pid)
 
-      assert_receive {:telemetry_event, [:parrot_media, :mos, :call_summary], _measurements, metadata}, 500
+      assert_receive {:telemetry_event, [:parrot_media, :mos, :call_summary], _measurements,
+                      metadata},
+                     500
 
       assert metadata.codec == :opus
       assert metadata.call_id == "my-call-123"
@@ -991,7 +1022,8 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
   describe "handler notification on terminate" do
     test "notifies registered handlers with CallSummary on stop", ctx do
-      {:ok, pid} = start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
 
       Calculator.register_handler(pid, self())
 

@@ -250,7 +250,10 @@ defmodule ParrotMedia.MOS.Calculator do
     emit_summary_telemetry(summary, state)
 
     # Notify handlers of summary
-    notify_handlers(state.handlers, {:mos_summary, %{session_id: state.session_id, summary: summary}})
+    notify_handlers(
+      state.handlers,
+      {:mos_summary, %{session_id: state.session_id, summary: summary}}
+    )
 
     # Cancel interval timer if running
     if state.interval_timer do
@@ -361,11 +364,15 @@ defmodule ParrotMedia.MOS.Calculator do
 
       # Notify of threshold crossings
       Enum.each(new_events, fn event ->
-        notify_handlers(state.handlers, {:mos_threshold_crossed, %{
-          session_id: state.session_id,
-          threshold: event.threshold_name,
-          direction: event.direction
-        }})
+        notify_handlers(
+          state.handlers,
+          {:mos_threshold_crossed,
+           %{
+             session_id: state.session_id,
+             threshold: event.threshold_name,
+             direction: event.direction
+           }}
+        )
       end)
 
       %{
@@ -390,23 +397,25 @@ defmodule ParrotMedia.MOS.Calculator do
       end
 
     # Calculate R-factor and MOS using E-Model
-    r_factor = EModel.calculate_r_factor(
-      interval.packet_loss_percent,
-      interval.jitter_ms,
-      delay_ms,
-      codec
-    )
+    r_factor =
+      EModel.calculate_r_factor(
+        interval.packet_loss_percent,
+        interval.jitter_ms,
+        delay_ms,
+        codec
+      )
 
     mos_value = EModel.r_to_mos(r_factor)
 
-    {:ok, score} = Score.new(
-      value: mos_value,
-      timestamp: DateTime.utc_now(),
-      packet_loss_percent: interval.packet_loss_percent,
-      jitter_ms: interval.jitter_ms,
-      delay_ms: delay_ms,
-      r_factor: r_factor
-    )
+    {:ok, score} =
+      Score.new(
+        value: mos_value,
+        timestamp: DateTime.utc_now(),
+        packet_loss_percent: interval.packet_loss_percent,
+        jitter_ms: interval.jitter_ms,
+        delay_ms: delay_ms,
+        r_factor: r_factor
+      )
 
     score
   end
@@ -462,20 +471,21 @@ defmodule ParrotMedia.MOS.Calculator do
     # Convert internal quality_events format to CallSummary format
     formatted_events = format_quality_events(state.quality_events)
 
-    if length(scores) == 0 do
+    if Enum.empty?(scores) do
       # Insufficient data - use placeholder MOS values (1.0 is minimum valid MOS)
-      {:ok, summary} = CallSummary.new(
-        session_id: state.session_id,
-        min_mos: 1.0,
-        max_mos: 1.0,
-        avg_mos: 1.0,
-        total_packets: state.total_packets,
-        total_lost: state.total_lost,
-        intervals_calculated: 0,
-        duration_ms: duration_ms,
-        status: :insufficient_data,
-        quality_events: formatted_events
-      )
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: state.session_id,
+          min_mos: 1.0,
+          max_mos: 1.0,
+          avg_mos: 1.0,
+          total_packets: state.total_packets,
+          total_lost: state.total_lost,
+          intervals_calculated: 0,
+          duration_ms: duration_ms,
+          status: :insufficient_data,
+          quality_events: formatted_events
+        )
 
       summary
     else
@@ -484,18 +494,19 @@ defmodule ParrotMedia.MOS.Calculator do
       min = Enum.min(mos_values)
       max = Enum.max(mos_values)
 
-      {:ok, summary} = CallSummary.new(
-        session_id: state.session_id,
-        min_mos: min,
-        max_mos: max,
-        avg_mos: avg,
-        total_packets: state.total_packets,
-        total_lost: state.total_lost,
-        intervals_calculated: length(scores),
-        duration_ms: duration_ms,
-        status: :complete,
-        quality_events: formatted_events
-      )
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: state.session_id,
+          min_mos: min,
+          max_mos: max,
+          avg_mos: avg,
+          total_packets: state.total_packets,
+          total_lost: state.total_lost,
+          intervals_calculated: length(scores),
+          duration_ms: duration_ms,
+          status: :complete,
+          quality_events: formatted_events
+        )
 
       summary
     end
