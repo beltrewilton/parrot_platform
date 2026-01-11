@@ -328,7 +328,8 @@ defmodule ParrotSip.CDR.GeneratorTest do
         ended_at: now
       }
 
-      termination_cause = build_termination_cause(sip_code: 480, reason: "Temporarily Unavailable")
+      termination_cause =
+        build_termination_cause(sip_code: 480, reason: "Temporarily Unavailable")
 
       {:ok, cdr} = Generator.generate(dialog, timing, termination_cause)
 

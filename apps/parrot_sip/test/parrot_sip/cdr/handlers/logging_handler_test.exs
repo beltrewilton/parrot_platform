@@ -159,10 +159,11 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandlerTest do
 
     @tag capture_log: true
     test "includes caller and callee URIs in log message" do
-      cdr = build_test_cdr(%{
-        caller_uri: "sip:custom-caller@domain.com",
-        callee_uri: "sip:custom-callee@domain.com"
-      })
+      cdr =
+        build_test_cdr(%{
+          caller_uri: "sip:custom-caller@domain.com",
+          callee_uri: "sip:custom-callee@domain.com"
+        })
 
       {:ok, state} = LoggingHandler.init([])
 
@@ -209,11 +210,12 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandlerTest do
 
     test "builds correct metadata with custom fields" do
       # Test that custom metadata fields are properly configured
-      cdr = build_test_cdr(%{
-        call_id: "meta-test@example.com",
-        disposition: :busy,
-        direction: :outbound
-      })
+      cdr =
+        build_test_cdr(%{
+          call_id: "meta-test@example.com",
+          disposition: :busy,
+          direction: :outbound
+        })
 
       {:ok, state} = LoggingHandler.init(metadata: [:call_id, :disposition, :direction])
 
@@ -301,13 +303,14 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandlerTest do
   describe "edge cases" do
     @tag capture_log: true
     test "handles CDR with nil optional fields" do
-      cdr = build_test_cdr(%{
-        caller_display_name: nil,
-        callee_display_name: nil,
-        answered_at: nil,
-        media_info: nil,
-        callee_tag: nil
-      })
+      cdr =
+        build_test_cdr(%{
+          caller_display_name: nil,
+          callee_display_name: nil,
+          answered_at: nil,
+          media_info: nil,
+          callee_tag: nil
+        })
 
       {:ok, state} = LoggingHandler.init([])
 
@@ -326,10 +329,11 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandlerTest do
 
     @tag capture_log: true
     test "handles CDR with special characters in URIs" do
-      cdr = build_test_cdr(%{
-        caller_uri: "sip:user+tag@domain.com",
-        callee_uri: "sip:+15551234567@gateway.com"
-      })
+      cdr =
+        build_test_cdr(%{
+          caller_uri: "sip:user+tag@domain.com",
+          callee_uri: "sip:+15551234567@gateway.com"
+        })
 
       {:ok, state} = LoggingHandler.init([])
 

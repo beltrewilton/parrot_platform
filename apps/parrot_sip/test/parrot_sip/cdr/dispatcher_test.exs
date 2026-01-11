@@ -494,17 +494,18 @@ defmodule ParrotSip.CDR.DispatcherTest do
 
   describe "dispatch/2 - various dispositions" do
     test "dispatches CDR with :cancelled disposition" do
-      cdr = build_test_cdr(%{
-        disposition: :cancelled,
-        termination_cause: %TerminationCause{
-          party: :caller,
-          sip_code: 487,
-          reason: "Request Terminated",
-          method: :cancel
-        },
-        answered_at: nil,
-        talk_duration_ms: 0
-      })
+      cdr =
+        build_test_cdr(%{
+          disposition: :cancelled,
+          termination_cause: %TerminationCause{
+            party: :caller,
+            sip_code: 487,
+            reason: "Request Terminated",
+            method: :cancel
+          },
+          answered_at: nil,
+          talk_duration_ms: 0
+        })
 
       handlers = [{CollectorHandler, %{collector_pid: self()}}]
 
@@ -515,17 +516,18 @@ defmodule ParrotSip.CDR.DispatcherTest do
     end
 
     test "dispatches CDR with :no_answer disposition" do
-      cdr = build_test_cdr(%{
-        disposition: :no_answer,
-        termination_cause: %TerminationCause{
-          party: :callee,
-          sip_code: 480,
-          reason: "Temporarily Unavailable",
-          method: nil
-        },
-        answered_at: nil,
-        talk_duration_ms: 0
-      })
+      cdr =
+        build_test_cdr(%{
+          disposition: :no_answer,
+          termination_cause: %TerminationCause{
+            party: :callee,
+            sip_code: 480,
+            reason: "Temporarily Unavailable",
+            method: nil
+          },
+          answered_at: nil,
+          talk_duration_ms: 0
+        })
 
       handlers = [{CollectorHandler, %{collector_pid: self()}}]
 
@@ -536,17 +538,18 @@ defmodule ParrotSip.CDR.DispatcherTest do
     end
 
     test "dispatches CDR with :server_error disposition" do
-      cdr = build_test_cdr(%{
-        disposition: :server_error,
-        termination_cause: %TerminationCause{
-          party: :system,
-          sip_code: 500,
-          reason: "Internal Server Error",
-          method: :error
-        },
-        answered_at: nil,
-        talk_duration_ms: 0
-      })
+      cdr =
+        build_test_cdr(%{
+          disposition: :server_error,
+          termination_cause: %TerminationCause{
+            party: :system,
+            sip_code: 500,
+            reason: "Internal Server Error",
+            method: :error
+          },
+          answered_at: nil,
+          talk_duration_ms: 0
+        })
 
       handlers = [{CollectorHandler, %{collector_pid: self()}}]
 

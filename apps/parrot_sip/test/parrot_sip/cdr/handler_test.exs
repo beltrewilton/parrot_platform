@@ -256,7 +256,10 @@ defmodule ParrotSip.CDR.HandlerTest do
       CDR.register_handler(StateTrackingHandler, custom_state)
 
       handlers = CDR.list_handlers()
-      {StateTrackingHandler, state} = Enum.find(handlers, fn {mod, _} -> mod == StateTrackingHandler end)
+
+      {StateTrackingHandler, state} =
+        Enum.find(handlers, fn {mod, _} -> mod == StateTrackingHandler end)
+
       assert state.counter == 42
     end
 
@@ -420,10 +423,11 @@ defmodule ParrotSip.CDR.HandlerTest do
     end
 
     test "each handler receives the exact same CDR" do
-      cdr = build_test_cdr(%{
-        call_id: "multi-handler-test@example.com",
-        disposition: :busy
-      })
+      cdr =
+        build_test_cdr(%{
+          call_id: "multi-handler-test@example.com",
+          disposition: :busy
+        })
 
       handlers = [
         {NotifyingHandler, %{test_pid: self(), handler_id: :handler_a}},
