@@ -215,7 +215,8 @@ defmodule ParrotMedia.MOS do
       ParrotMedia.MOS.register_handler("call-123", {MyHandler, %{notify: true}})
   """
   @spec register_handler(String.t(), pid() | {module(), term()}) :: :ok | {:error, :not_found}
-  def register_handler(session_id, handler_pid) when is_binary(session_id) and is_pid(handler_pid) do
+  def register_handler(session_id, handler_pid)
+      when is_binary(session_id) and is_pid(handler_pid) do
     case lookup_calculator(session_id) do
       {:ok, pid} ->
         Calculator.register_handler(pid, handler_pid)
@@ -325,7 +326,10 @@ defmodule ParrotMedia.MOS do
 
       {:error, reason} ->
         require Logger
-        Logger.error("Failed to initialize MOS handler #{inspect(handler_module)}: #{inspect(reason)}")
+
+        Logger.error(
+          "Failed to initialize MOS handler #{inspect(handler_module)}: #{inspect(reason)}"
+        )
     end
   end
 
