@@ -48,6 +48,7 @@ defmodule ParrotMedia.WsBidirectional do
   """
 
   alias ParrotMedia.WsBidirectional.Config
+  alias ParrotMedia.WsBidirectional.Connector
 
   @typedoc """
   Reference to a connection, either a PID or the connection_id string.
@@ -86,8 +87,8 @@ defmodule ParrotMedia.WsBidirectional do
       {:ok, pid} = WsBidirectional.start_link(config)
   """
   @spec start_link(Config.t()) :: {:ok, pid()} | {:error, term()}
-  def start_link(%Config{} = _config) do
-    {:error, :not_implemented}
+  def start_link(%Config{} = config) do
+    Connector.start_link(config)
   end
 
   @doc """
@@ -140,8 +141,10 @@ defmodule ParrotMedia.WsBidirectional do
       :ok = WsBidirectional.disconnect(pid)
   """
   @spec disconnect(connection_ref()) :: :ok | {:error, :not_found}
-  def disconnect(_connection_ref) do
-    {:error, :not_implemented}
+  def disconnect(connection_ref) do
+    with pid when is_pid(pid) <- resolve_ref(connection_ref) do
+      Connector.disconnect(pid)
+    end
   end
 
   # ============================================================================
@@ -173,8 +176,10 @@ defmodule ParrotMedia.WsBidirectional do
   """
   @spec send_audio(connection_ref(), binary(), keyword()) ::
           :ok | {:error, :not_found | :muted}
-  def send_audio(_connection_ref, _audio_data, _opts \\ []) do
-    {:error, :not_implemented}
+  def send_audio(connection_ref, audio_data, _opts \\ []) do
+    with pid when is_pid(pid) <- resolve_ref(connection_ref) do
+      Connector.send_audio(pid, audio_data)
+    end
   end
 
   @doc """
@@ -199,8 +204,10 @@ defmodule ParrotMedia.WsBidirectional do
       :ok = WsBidirectional.mute(:inbound, "call_123_ai")
   """
   @spec mute(direction(), connection_ref()) :: :ok | {:error, :not_found}
-  def mute(_direction, _connection_ref) do
-    {:error, :not_implemented}
+  def mute(direction, connection_ref) do
+    with pid when is_pid(pid) <- resolve_ref(connection_ref) do
+      Connector.mute(pid, direction)
+    end
   end
 
   @doc """
@@ -222,8 +229,10 @@ defmodule ParrotMedia.WsBidirectional do
       :ok = WsBidirectional.unmute(:inbound, "call_123_ai")
   """
   @spec unmute(direction(), connection_ref()) :: :ok | {:error, :not_found}
-  def unmute(_direction, _connection_ref) do
-    {:error, :not_implemented}
+  def unmute(direction, connection_ref) do
+    with pid when is_pid(pid) <- resolve_ref(connection_ref) do
+      Connector.unmute(pid, direction)
+    end
   end
 
   # ============================================================================
@@ -254,8 +263,10 @@ defmodule ParrotMedia.WsBidirectional do
   """
   @spec send_message(connection_ref(), String.t() | binary()) ::
           :ok | {:error, :not_found | :not_connected}
-  def send_message(_connection_ref, _message) do
-    {:error, :not_implemented}
+  def send_message(connection_ref, message) do
+    with pid when is_pid(pid) <- resolve_ref(connection_ref) do
+      Connector.send_message(pid, message)
+    end
   end
 
   # ============================================================================
@@ -294,8 +305,10 @@ defmodule ParrotMedia.WsBidirectional do
       {:ok, %{frames_sent: sent, frames_received: received}} = WsBidirectional.status("call_123_ai")
   """
   @spec status(connection_ref()) :: {:ok, map()} | {:error, :not_found}
-  def status(_connection_ref) do
-    {:error, :not_implemented}
+  def status(connection_ref) do
+    with pid when is_pid(pid) <- resolve_ref(connection_ref) do
+      Connector.status(pid)
+    end
   end
 
   @doc """
@@ -317,8 +330,12 @@ defmodule ParrotMedia.WsBidirectional do
       false = WsBidirectional.connected?("call_123_ai")
   """
   @spec connected?(connection_ref()) :: boolean() | {:error, :not_found}
-  def connected?(_connection_ref) do
-    {:error, :not_implemented}
+  def connected?(connection_ref) do
+    case status(connection_ref) do
+      {:ok, %{connection_state: :connected}} -> true
+      {:ok, _} -> false
+      {:error, _} = error -> error
+    end
   end
 
   # ============================================================================
@@ -343,7 +360,21 @@ defmodule ParrotMedia.WsBidirectional do
       {:error, :not_found} = WsBidirectional.whereis("nonexistent")
   """
   @spec whereis(String.t()) :: {:ok, pid()} | {:error, :not_found}
-  def whereis(_connection_id) do
-    {:error, :not_implemented}
+  def whereis(connection_id) when is_binary(connection_id) do
+    Connector.whereis(connection_id)
+  end
+
+  # ============================================================================
+  # Private Helpers
+  # ============================================================================
+
+  # Helper to resolve pid or string to pid
+  defp resolve_ref(pid) when is_pid(pid), do: pid
+
+  defp resolve_ref(connection_id) when is_binary(connection_id) do
+    case whereis(connection_id) do
+      {:ok, pid} -> pid
+      {:error, _} = error -> error
+    end
   end
 end
