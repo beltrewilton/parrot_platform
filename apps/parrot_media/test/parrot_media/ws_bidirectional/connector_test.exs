@@ -28,6 +28,12 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
   # Base port offset to avoid conflicts with other tests
   @base_port 15_000
 
+  # Timeout constants for US4 disconnect tests
+  @ws_close_timeout 2000
+  @process_down_timeout 1000
+  @callback_timeout 1000
+  @registry_cleanup_wait 100
+
   setup do
     # Generate unique port for this test to avoid conflicts
     port = @base_port + :rand.uniform(1000)
@@ -1636,7 +1642,7 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
       assert :ok = Connector.disconnect(pid)
 
       # The mock server should receive a close notification
-      assert_receive {:ws_closed, _reason}, 2000
+      assert_receive {:ws_closed, _reason}, @ws_close_timeout
     end
 
     test "disconnect/1 stops the Connector process", %{connection_id: connection_id, url: url} do
@@ -1656,10 +1662,10 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
       ref = Process.monitor(pid)
 
       # Disconnect
-      :ok = Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Process should terminate
-      assert_receive {:DOWN, ^ref, :process, ^pid, reason}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^pid, reason}, @process_down_timeout
       assert reason == :normal or reason == :shutdown or match?({:shutdown, _}, reason)
       refute Process.alive?(pid)
     end
@@ -1682,10 +1688,10 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
 
       # Wait for connection then disconnect
       Process.sleep(100)
-      :ok = Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Wait for termination
-      Process.sleep(100)
+      Process.sleep(@registry_cleanup_wait)
 
       # Verify unregistered
       assert [] =
@@ -1731,10 +1737,10 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
       Process.sleep(100)
 
       # Disconnect
-      Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Should receive callback with :user_requested reason
-      assert_receive {:callback_disconnect_reason, :user_requested}, 1000
+      assert_receive {:callback_disconnect_reason, :user_requested}, @callback_timeout
     end
 
     test "disconnect during reconnection stops retry attempts", %{
@@ -1782,10 +1788,10 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
 
       # Disconnect while potentially reconnecting
       ref = Process.monitor(pid)
-      :ok = Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Process should terminate
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, @process_down_timeout
 
       # Verify no more reconnection messages come after disconnect
       refute_receive {:reconnecting, _}, 500
@@ -1811,13 +1817,13 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
       connector_ref = Process.monitor(pid)
 
       # Disconnect
-      :ok = Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Wait for connector to terminate
-      assert_receive {:DOWN, ^connector_ref, :process, ^pid, _reason}, 1000
+      assert_receive {:DOWN, ^connector_ref, :process, ^pid, _reason}, @process_down_timeout
 
       # Wait for registry cleanup to propagate (registry is eventually consistent)
-      Process.sleep(50)
+      Process.sleep(@registry_cleanup_wait)
 
       # Verify no processes are registered for this connection
       assert [] =
@@ -1851,7 +1857,7 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
         Process.sleep(50)
 
         # Disconnect
-        :ok = Connector.disconnect(pid)
+        assert :ok = Connector.disconnect(pid)
         Process.sleep(50)
 
         # Verify cleaned up
@@ -1882,20 +1888,33 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
       Process.sleep(100)
 
       # Send frames that will be buffered
-      Connector.send_audio(pid, <<0x01>>)
-      Connector.send_audio(pid, <<0x02>>)
-      Connector.send_audio(pid, <<0x03>>)
+      buffered_frame_1 = <<0x01>>
+      buffered_frame_2 = <<0x02>>
+      buffered_frame_3 = <<0x03>>
+      Connector.send_audio(pid, buffered_frame_1)
+      Connector.send_audio(pid, buffered_frame_2)
+      Connector.send_audio(pid, buffered_frame_3)
 
       # Verify frames are buffered
       {:ok, status} = Connector.status(pid)
       assert status.buffer_size > 0
+      buffered_count = status.buffer_size
 
       # Disconnect - should clean up buffer without sending
       ref = Process.monitor(pid)
-      :ok = Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Wait for termination
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, @process_down_timeout
+
+      # Verify no buffered frames were sent to WebSocket during disconnect
+      # The mock server would have received {:ws_frame, data} messages if frames were sent
+      refute_receive {:ws_frame, ^buffered_frame_1}, @registry_cleanup_wait
+      refute_receive {:ws_frame, ^buffered_frame_2}, 0
+      refute_receive {:ws_frame, ^buffered_frame_3}, 0
+
+      # Confirm the buffer had frames that were discarded, not sent
+      assert buffered_count == 3
     end
 
     test "disconnect stops source audio forwarding", %{connection_id: connection_id, url: url} do
@@ -1917,14 +1936,14 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
 
       # Simulate receiving audio - should forward
       send(pid, {:connection_event, {:ws_audio, <<0x01>>}})
-      assert_receive {:ws_audio, <<0x01>>}, 100
+      assert_receive {:ws_audio, <<0x01>>}, @registry_cleanup_wait
 
       # Disconnect
       ref = Process.monitor(pid)
-      :ok = Connector.disconnect(pid)
+      assert :ok = Connector.disconnect(pid)
 
       # Wait for termination
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, @process_down_timeout
 
       # Verify no more audio forwarding (process is dead anyway)
       refute Process.alive?(pid)
