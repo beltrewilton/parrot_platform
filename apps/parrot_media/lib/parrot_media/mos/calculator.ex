@@ -44,10 +44,12 @@ defmodule ParrotMedia.MOS.Calculator do
 
   use GenServer
 
+  alias ParrotMedia.MOS.CallSummary
   alias ParrotMedia.MOS.Config
   alias ParrotMedia.MOS.EModel
   alias ParrotMedia.MOS.Interval
   alias ParrotMedia.MOS.Score
+  alias ParrotMedia.MOS.Telemetry
   alias ParrotMedia.MOS.Threshold
 
   @type state :: %{
@@ -64,7 +66,9 @@ defmodule ParrotMedia.MOS.Calculator do
           last_mos: float() | nil,
           quality_events: [map()],
           handlers: [pid()],
-          interval_timer: reference() | nil
+          interval_timer: reference() | nil,
+          total_packets: non_neg_integer(),
+          total_lost: non_neg_integer()
         }
 
   # ===========================================================================
@@ -221,7 +225,9 @@ defmodule ParrotMedia.MOS.Calculator do
       last_mos: nil,
       quality_events: [],
       handlers: [],
-      interval_timer: nil
+      interval_timer: nil,
+      total_packets: 0,
+      total_lost: 0
     }
 
     {:ok, state}
@@ -239,6 +245,9 @@ defmodule ParrotMedia.MOS.Calculator do
 
   def handle_call(:stop, _from, state) do
     summary = generate_summary(state)
+
+    # Emit telemetry for call summary
+    emit_summary_telemetry(summary, state)
 
     # Notify handlers of summary
     notify_handlers(state.handlers, {:mos_summary, %{session_id: state.session_id, summary: summary}})
@@ -332,13 +341,20 @@ defmodule ParrotMedia.MOS.Calculator do
   defp complete_interval(state) do
     completed = Interval.complete(state.current_interval)
 
+    # Always accumulate packet counts, even if insufficient data for scoring
+    updated_state = %{
+      state
+      | total_packets: state.total_packets + completed.packets_expected,
+        total_lost: state.total_lost + completed.packets_lost
+    }
+
     # Check if we have sufficient data
     if Interval.sufficient_data?(completed, min_packets: state.config.min_packets_per_interval) do
       # Calculate MOS score
       score = calculate_score(completed, state.codec, state.config)
 
       # Check for threshold crossings
-      {quality_events, new_events} = check_thresholds(state, score.value)
+      {quality_events, new_events} = check_thresholds(updated_state, score.value)
 
       # Notify handlers
       notify_handlers(state.handlers, {:mos_score, %{session_id: state.session_id, score: score}})
@@ -353,14 +369,14 @@ defmodule ParrotMedia.MOS.Calculator do
       end)
 
       %{
-        state
+        updated_state
         | scores: [score | state.scores],
           last_mos: score.value,
           quality_events: quality_events
       }
     else
-      # Insufficient data - don't add a score
-      state
+      # Insufficient data - don't add a score, but keep packet counts
+      updated_state
     end
   end
 
@@ -441,32 +457,80 @@ defmodule ParrotMedia.MOS.Calculator do
 
   defp generate_summary(state) do
     scores = state.scores
+    duration_ms = DateTime.diff(DateTime.utc_now(), state.start_time, :millisecond)
+
+    # Convert internal quality_events format to CallSummary format
+    formatted_events = format_quality_events(state.quality_events)
 
     if length(scores) == 0 do
-      %{
+      # Insufficient data - use placeholder MOS values (1.0 is minimum valid MOS)
+      {:ok, summary} = CallSummary.new(
         session_id: state.session_id,
-        status: :insufficient_data,
+        min_mos: 1.0,
+        max_mos: 1.0,
+        avg_mos: 1.0,
+        total_packets: state.total_packets,
+        total_lost: state.total_lost,
         intervals_calculated: 0,
-        avg_mos: nil,
-        min_mos: nil,
-        max_mos: nil,
-        quality_events: state.quality_events
-      }
+        duration_ms: duration_ms,
+        status: :insufficient_data,
+        quality_events: formatted_events
+      )
+
+      summary
     else
       mos_values = Enum.map(scores, & &1.value)
       avg = Enum.sum(mos_values) / length(mos_values)
       min = Enum.min(mos_values)
       max = Enum.max(mos_values)
 
-      %{
+      {:ok, summary} = CallSummary.new(
         session_id: state.session_id,
-        status: :complete,
-        intervals_calculated: length(scores),
-        avg_mos: avg,
         min_mos: min,
         max_mos: max,
-        quality_events: state.quality_events
-      }
+        avg_mos: avg,
+        total_packets: state.total_packets,
+        total_lost: state.total_lost,
+        intervals_calculated: length(scores),
+        duration_ms: duration_ms,
+        status: :complete,
+        quality_events: formatted_events
+      )
+
+      summary
     end
+  end
+
+  defp format_quality_events(events) do
+    Enum.map(events, fn event ->
+      %{
+        type: :threshold_crossed,
+        mos: event.mos_score,
+        threshold: event.threshold_name,
+        timestamp: event.timestamp,
+        direction: event.direction
+      }
+    end)
+  end
+
+  defp emit_summary_telemetry(%CallSummary{} = summary, state) do
+    telemetry_summary = %{
+      min_mos: summary.min_mos,
+      max_mos: summary.max_mos,
+      avg_mos: summary.avg_mos,
+      total_packets: summary.total_packets,
+      total_lost: summary.total_lost,
+      overall_loss_percent: summary.overall_loss_percent,
+      quality_events_count: length(summary.quality_events),
+      call_duration_ms: summary.duration_ms,
+      intervals_calculated: summary.intervals_calculated
+    }
+
+    Telemetry.emit_call_summary(telemetry_summary,
+      session_id: state.session_id,
+      call_id: state.call_id,
+      codec: state.codec,
+      status: summary.status
+    )
   end
 end
