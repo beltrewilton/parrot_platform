@@ -39,6 +39,7 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:play, String.t() | [String.t()], keyword()}
           | {:record, String.t(), keyword()}
           | {:stop_record, keyword()}
+          | {:collect_dtmf, keyword()}
           | {:connect_bidirectional_ws, String.t(), keyword()}
           | {:disconnect_bidirectional_ws, list()}
           | {:mute_bidirectional, :inbound | :outbound}
@@ -273,6 +274,37 @@ defmodule Parrot.Bridge.ActionExecutor do
     {:ok, call}
   end
 
+  @doc """
+  Execute the `:collect_dtmf` operation.
+
+  1. Verify call is in `:answered` state
+  2. Verify media_pid is available
+  3. Send `{:collect_dtmf, opts}` to MediaSession
+
+  Emits debug-level logging per FR-013 requirement:
+  "System MUST emit debug-level log entries when DTMF digits are received,
+  showing digit value and collection state."
+  """
+  @spec execute_collect_dtmf(Call.t(), context(), keyword()) :: execute_result()
+  def execute_collect_dtmf(%Call{state: state}, _context, _opts) when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_collect_dtmf(_call, %{media_pid: nil}, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_collect_dtmf(call, %{media_pid: media_pid} = _context, opts) do
+    Logger.debug(
+      "[ActionExecutor] Starting DTMF collection: max=#{opts[:max]}, timeout=#{opts[:timeout]}ms, terminators=#{inspect(opts[:terminators])}"
+    )
+
+    # Send collect_dtmf command to media session
+    send(media_pid, {:collect_dtmf, opts})
+
+    {:ok, call}
+  end
+
   # ============================================================================
   # Private Functions
   # ============================================================================
@@ -322,6 +354,13 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   defp execute_operation({:stop_record, opts}, call, context) do
     case execute_stop_record(call, context, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:collect_dtmf, opts}, call, context) do
+    case execute_collect_dtmf(call, context, opts) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
       error -> error
     end
