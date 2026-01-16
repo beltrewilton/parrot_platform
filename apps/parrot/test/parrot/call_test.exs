@@ -437,6 +437,35 @@ defmodule Parrot.CallTest do
     end
   end
 
+  describe "collect_dtmf/2" do
+    test "adds {:collect_dtmf, opts} operation to the call" do
+      call = %Call{} |> Call.collect_dtmf(max: 4, timeout: 10_000)
+
+      assert [operation] = call.__operations__
+      assert {:collect_dtmf, opts} = operation
+      assert opts[:max] == 4
+      assert opts[:timeout] == 10_000
+    end
+
+    test "passes all options through" do
+      call = %Call{} |> Call.collect_dtmf(max: 6, timeout: 15_000, terminators: ["#", "*"])
+
+      [{:collect_dtmf, opts}] = Call.get_operations(call)
+      assert opts[:max] == 6
+      assert opts[:timeout] == 15_000
+      assert opts[:terminators] == ["#", "*"]
+    end
+
+    test "uses default options when not specified" do
+      call = %Call{} |> Call.collect_dtmf([])
+
+      [{:collect_dtmf, opts}] = Call.get_operations(call)
+      assert opts[:max] == 20
+      assert opts[:timeout] == 30_000
+      assert opts[:terminators] == []
+    end
+  end
+
   describe "get_operations/1" do
     test "returns operations in execution order" do
       call =
