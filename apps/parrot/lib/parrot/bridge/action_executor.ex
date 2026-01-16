@@ -123,8 +123,13 @@ defmodule Parrot.Bridge.ActionExecutor do
     # send an empty body response.
     sdp_answer = Map.get(context, :sdp_answer)
 
+    # Build Contact header with our local address
+    # The Contact tells the remote party where to send subsequent requests (BYE, etc.)
+    local_contact = build_local_contact(sip_msg.source)
+
     response =
       Message.reply(sip_msg, 200, "OK")
+      |> Message.put_contact(local_contact)
       |> put_sdp_body(sdp_answer)
 
     # Send the response - returns {:ok, final_response} with To tag added
@@ -150,7 +155,8 @@ defmodule Parrot.Bridge.ActionExecutor do
   @spec start_media_if_present(context()) :: :ok
   defp start_media_if_present(%{media_pid: media_pid}) when is_pid(media_pid) do
     Logger.debug("[ActionExecutor] Starting media session #{inspect(media_pid)}")
-    send(media_pid, {:start_media})
+    # Use the public API instead of sending a message directly
+    ParrotMedia.MediaSession.start_media(media_pid)
     :ok
   end
 
@@ -336,7 +342,8 @@ defmodule Parrot.Bridge.ActionExecutor do
   # Execute a single operation
   defp execute_operation({:answer, opts}, call, context) do
     case execute_answer(call, context, opts) do
-      {:ok, updated_call} -> {:ok, updated_call, :stop}
+      # Answer continues so subsequent operations (play, collect_dtmf) can execute
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
       error -> error
     end
   end
@@ -575,4 +582,38 @@ defmodule Parrot.Bridge.ActionExecutor do
     # Phase 4 implementation will send message via WsBidirectional connection
     {:ok, call}
   end
+
+  # Build a Contact header with our local address
+  # Per RFC 3261, the Contact in a 2xx response tells the remote party
+  # where to send subsequent requests (BYE, re-INVITE, etc.)
+  @spec build_local_contact(ParrotSip.Source.t() | nil) :: ParrotSip.Headers.Contact.t() | nil
+  defp build_local_contact(%ParrotSip.Source{local: {{_, _, _, _} = ip, port}}) do
+    %ParrotSip.Headers.Contact{
+      uri: %ParrotSip.Uri{
+        scheme: "sip",
+        host: :inet.ntoa(ip) |> to_string(),
+        port: port,
+        host_type: :ipv4,
+        parameters: %{},
+        headers: %{}
+      },
+      parameters: %{}
+    }
+  end
+
+  defp build_local_contact(%ParrotSip.Source{local: {{_, _, _, _, _, _, _, _} = ip, port}}) do
+    %ParrotSip.Headers.Contact{
+      uri: %ParrotSip.Uri{
+        scheme: "sip",
+        host: :inet.ntoa(ip) |> to_string(),
+        port: port,
+        host_type: :ipv6,
+        parameters: %{},
+        headers: %{}
+      },
+      parameters: %{}
+    }
+  end
+
+  defp build_local_contact(_), do: nil
 end
