@@ -23,6 +23,7 @@ defmodule Parrot.Bridge.ActionExecutor do
   - `:uas` - The UAS transaction reference (for sending responses)
   - `:sip_msg` - The original SIP request message
   - `:media_pid` - The MediaSession process (if started)
+  - `:sdp_answer` - The SDP answer string (if SDP negotiation was performed)
   """
 
   require Logger
@@ -50,6 +51,7 @@ defmodule Parrot.Bridge.ActionExecutor do
           required(:uas) => term(),
           required(:sip_msg) => ParrotSip.Message.t(),
           required(:media_pid) => pid() | nil,
+          required(:sdp_answer) => String.t() | nil,
           optional(:response_fn) => (Message.t(), term() -> :ok)
         }
 
@@ -112,11 +114,26 @@ defmodule Parrot.Bridge.ActionExecutor do
     Logger.debug("[ActionExecutor] Executing answer operation")
 
     # Build 200 OK response
-    # Note: SDP body for media negotiation is not included in this basic implementation.
-    # The current behavior sends a 200 OK without SDP, which means no media session
-    # parameters are exchanged. Full SDP negotiation requires integration with
-    # MediaSession to generate an SDP answer based on the offer in the INVITE.
-    response = Message.reply(sip_msg, 200, "OK")
+    #
+    # LIMITATION: This basic implementation does NOT perform SDP offer/answer negotiation.
+    # Message.reply copies the request body, which would incorrectly echo back the
+    # client's SDP offer. We clear the body to avoid this, but it means:
+    #
+    # 1. No SDP answer is sent to the client
+    # 2. Standard SIP clients (pjsua, etc.) will reject the call
+    # 3. Only works with SIPp scenarios that don't require SDP answers
+    #
+    # For full SDP negotiation, the Bridge.Handler needs to:
+    # - Start MediaSession during INVITE handling
+    # - Call MediaSession.process_offer() to generate an SDP answer
+    # - Pass the SDP answer through context to this function
+    #
+    # See DTMFTestHandler for a working implementation with SDP negotiation.
+    response =
+      Message.reply(sip_msg, 200, "OK")
+      |> Map.put(:body, "")
+      |> Map.put(:content_length, 0)
+      |> Map.put(:content_type, nil)
 
     # Send the response - returns {:ok, final_response} with To tag added
     {:ok, final_response} = send_response(context, response)
