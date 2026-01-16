@@ -25,9 +25,13 @@ if sip_trace do
     level: log_level,
     format: "$time $metadata[$level] $message\n"
 else
-  # Suppress logs during tests but keep handlers available
-  # so they can be re-enabled at runtime with LOG_LEVEL or SIP_TRACE
-  config :logger, level: :emergency
+  # Set logger level to :warning to allow capture_log to work for tests
+  # that verify warning log output. Console output is suppressed via
+  # the console handler level.
+  config :logger, level: :warning
+
+  # Configure console to not output anything by default
+  config :logger, :default_handler, level: :emergency
 end
 
 # Configure each umbrella app separately
