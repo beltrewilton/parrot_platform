@@ -77,6 +77,12 @@ defmodule Parrot.DSL.MediaHandler do
   # ===========================================================================
 
   @impl true
+  def handle_play_complete(file, state) do
+    Logger.debug("[DSL.MediaHandler] Play complete: #{file}")
+    {:noreply, %{state | playing: false}}
+  end
+
+  @impl true
   def handle_info({:play_files, files, opts}, state) do
     Logger.debug("[DSL.MediaHandler] Play files: #{inspect(files)} opts: #{inspect(opts)}")
 
