@@ -466,6 +466,57 @@ defmodule Parrot.CallTest do
     end
   end
 
+  describe "prompt/3" do
+    # T016: Test that prompt/3 works as convenience function for play-then-collect pattern
+    test "stores collect options in __pending_collect__ assign" do
+      call = %Call{} |> Call.prompt("enter-pin.wav", max: 4, timeout: 10_000)
+
+      assert call.assigns[:__pending_collect__] == [max: 4, timeout: 10_000]
+    end
+
+    # T017: Test that prompt/3 stores the collect options in call.assigns[:__pending_collect__]
+    test "preserves existing assigns while adding __pending_collect__" do
+      call =
+        %Call{}
+        |> Call.assign(:menu, :pin_entry)
+        |> Call.prompt("enter-pin.wav", max: 4)
+
+      assert call.assigns[:menu] == :pin_entry
+      assert call.assigns[:__pending_collect__] == [max: 4]
+    end
+
+    # T018: Test that prompt/3 queues a play operation (NOT a collect_dtmf operation yet)
+    test "queues play operation for the audio file" do
+      call = %Call{} |> Call.prompt("enter-pin.wav", max: 4)
+
+      operations = Call.get_operations(call)
+      assert [{:play, "enter-pin.wav", []}] = operations
+    end
+
+    test "does not queue collect_dtmf operation directly" do
+      call = %Call{} |> Call.prompt("enter-pin.wav", max: 4)
+
+      operations = Call.get_operations(call)
+      refute Enum.any?(operations, fn op -> match?({:collect_dtmf, _}, op) end)
+    end
+
+    test "chains with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.prompt("enter-pin.wav", max: 4, timeout: 10_000)
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:play, "enter-pin.wav", []}
+             ] = operations
+
+      assert call.assigns[:__pending_collect__] == [max: 4, timeout: 10_000]
+    end
+  end
+
   describe "get_operations/1" do
     test "returns operations in execution order" do
       call =
