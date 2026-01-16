@@ -1,5 +1,14 @@
 import Config
 
+# Logger configuration - respects LOG_LEVEL env var
+log_level =
+  case System.get_env("LOG_LEVEL") do
+    nil -> :debug
+    level -> String.to_existing_atom(level)
+  end
+
+config :logger, level: log_level
+
 # Shared Registry Configuration
 # This is the ONLY place where apps know about each other
 config :parrot_transport,
