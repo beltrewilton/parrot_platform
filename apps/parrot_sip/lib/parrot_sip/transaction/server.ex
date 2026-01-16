@@ -31,9 +31,16 @@ defmodule ParrotSip.Transaction.Server do
         Logger.debug("UAS: process_request #{inspect(sip_msg.method)}")
 
         # Check if this is an in-dialog request
-        DialogStatem.uas_request(sip_msg)
-        Logger.debug("UAS: process_request process #{inspect(sip_msg.method)}")
-        {:process, sip_msg}
+        # RFC 3261 Section 15.1.2: BYE for non-existent dialog gets 481
+        case DialogStatem.uas_request(sip_msg) do
+          {:reply, _response} = reply ->
+            Logger.debug("UAS: dialog returned reply for #{inspect(sip_msg.method)}")
+            reply
+
+          :process ->
+            Logger.debug("UAS: process_request process #{inspect(sip_msg.method)}")
+            {:process, sip_msg}
+        end
       end,
       fn sip_msg ->
         case sip_msg.method == :cancel do
