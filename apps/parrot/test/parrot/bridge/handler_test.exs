@@ -860,4 +860,42 @@ defmodule Parrot.Bridge.HandlerTest do
       source: %{ip: {127, 0, 0, 1}, port: 5080}
     }
   end
+
+  # ===========================================================================
+  # US1: SDP Negotiation Tests (T006-T007)
+  # ===========================================================================
+
+  describe "extract_sdp_offer/1 (T006)" do
+    @sample_sdp """
+    v=0
+    o=user1 123 123 IN IP4 127.0.0.1
+    s=Session
+    c=IN IP4 127.0.0.1
+    t=0 0
+    m=audio 5004 RTP/AVP 0
+    a=rtpmap:0 PCMU/8000
+    """
+
+    test "returns {:ok, sdp_string} when body contains valid SDP" do
+      invite = create_test_invite() |> Map.put(:body, @sample_sdp)
+      assert {:ok, sdp} = Handler.extract_sdp_offer(invite)
+      assert String.contains?(sdp, "v=0")
+      assert String.contains?(sdp, "m=audio")
+    end
+
+    test "returns {:error, :no_sdp} when body is nil" do
+      invite = create_test_invite() |> Map.put(:body, nil)
+      assert {:error, :no_sdp} = Handler.extract_sdp_offer(invite)
+    end
+
+    test "returns {:error, :no_sdp} when body is empty string" do
+      invite = create_test_invite() |> Map.put(:body, "")
+      assert {:error, :no_sdp} = Handler.extract_sdp_offer(invite)
+    end
+
+    test "returns {:error, :no_sdp} when body is whitespace only" do
+      invite = create_test_invite() |> Map.put(:body, "   \n  ")
+      assert {:error, :no_sdp} = Handler.extract_sdp_offer(invite)
+    end
+  end
 end

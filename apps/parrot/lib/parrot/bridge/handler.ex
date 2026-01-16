@@ -119,6 +119,16 @@ defmodule Parrot.Bridge.Handler do
 
   Routes through the Parrot router to find the appropriate handler,
   then dispatches to the handler's `handle_invite/1` callback.
+
+  ## SDP Negotiation (FR-001 to FR-004)
+
+  When the INVITE contains an SDP offer in the body:
+  1. Creates a MediaSession for the call
+  2. Calls MediaSession.process_offer() to generate an SDP answer
+  3. Passes the SDP answer through context to ActionExecutor
+  4. ActionExecutor includes the SDP answer in the 200 OK response
+
+  This enables standard SIP clients (pjsua, linphone) to connect successfully.
   """
   @impl true
   def handle_invite(uas, req_sip_msg, %{router: router} = args) do
@@ -131,19 +141,23 @@ defmodule Parrot.Bridge.Handler do
     # 2. Route through dispatcher to find handler
     case Dispatcher.dispatch(router, req_sip_msg) do
       {:ok, handler_module, _opts} ->
-        # 3. Create Call struct from SIP message
+        # 3. Extract SDP offer and create MediaSession if present (FR-001, FR-002)
+        {media_pid, sdp_answer} = setup_media_session(req_sip_msg, args)
+
+        # 4. Create Call struct from SIP message
         call = create_call_from_sip(req_sip_msg, handler_module)
 
-        # 4. Invoke handler's handle_invite/1
+        # 5. Invoke handler's handle_invite/1
         result_call = handler_module.handle_invite(call)
 
-        # 5. Execute returned operations via ActionExecutor
+        # 6. Execute returned operations via ActionExecutor
         operations = Call.get_operations(result_call)
 
         context = %{
           uas: uas,
           sip_msg: req_sip_msg,
-          media_pid: nil,
+          media_pid: media_pid,
+          sdp_answer: sdp_answer,
           response_fn: Map.get(args, :response_fn)
         }
 
@@ -385,6 +399,101 @@ defmodule Parrot.Bridge.Handler do
     send_response(uas, response, args)
 
     :ok
+  end
+
+  # ============================================================================
+  # SDP Extraction and MediaSession Creation (US1: SDP Negotiation)
+  # ============================================================================
+
+  @doc """
+  Extracts the SDP offer from an INVITE message body.
+
+  Returns `{:ok, sdp_string}` if the body contains SDP content,
+  or `{:error, :no_sdp}` if the body is nil, empty, or whitespace-only.
+
+  ## Examples
+
+      iex> extract_sdp_offer(%Message{body: "v=0\\r\\n..."})
+      {:ok, "v=0\\r\\n..."}
+
+      iex> extract_sdp_offer(%Message{body: nil})
+      {:error, :no_sdp}
+  """
+  @spec extract_sdp_offer(Message.t()) :: {:ok, String.t()} | {:error, :no_sdp}
+  def extract_sdp_offer(%Message{body: nil}), do: {:error, :no_sdp}
+  def extract_sdp_offer(%Message{body: ""}), do: {:error, :no_sdp}
+
+  def extract_sdp_offer(%Message{body: body}) when is_binary(body) do
+    trimmed = String.trim(body)
+
+    if trimmed == "" do
+      {:error, :no_sdp}
+    else
+      {:ok, body}
+    end
+  end
+
+  @doc """
+  Sets up a MediaSession for the call if SDP offer is present.
+
+  Creates a MediaSession, calls process_offer to negotiate SDP, and returns
+  the media PID and SDP answer. If no SDP is present in the INVITE body,
+  returns {nil, nil} for late-offer flow.
+
+  ## Parameters
+  - `sip_msg` - The INVITE SIP message
+  - `args` - Handler args (may contain media configuration)
+
+  ## Returns
+  - `{media_pid, sdp_answer}` - If SDP negotiation succeeds
+  - `{nil, nil}` - If no SDP in INVITE body (late-offer flow)
+  """
+  @spec setup_media_session(Message.t(), map()) :: {pid() | nil, String.t() | nil}
+  def setup_media_session(sip_msg, _args) do
+    case extract_sdp_offer(sip_msg) do
+      {:ok, sdp_offer} ->
+        # Create MediaSession for the call
+        session_id = "call_#{sip_msg.call_id}"
+        dialog_id = sip_msg.call_id
+
+        media_opts = [
+          id: session_id,
+          dialog_id: dialog_id,
+          role: :uas,
+          media_handler: Parrot.DSL.MediaHandler,
+          handler_args: %{call_id: sip_msg.call_id},
+          audio_source: :silence,
+          audio_sink: :none,
+          supported_codecs: [:pcmu, :pcma]
+        ]
+
+        Logger.debug("[Bridge.Handler] Creating MediaSession for call #{sip_msg.call_id}")
+
+        case ParrotMedia.MediaSessionSupervisor.start_session(media_opts) do
+          {:ok, media_pid} ->
+            # Call process_offer to get SDP answer (FR-003)
+            case ParrotMedia.MediaSession.process_offer(media_pid, sdp_offer) do
+              {:ok, sdp_answer} ->
+                Logger.debug("[Bridge.Handler] SDP negotiation successful")
+                {media_pid, sdp_answer}
+
+              {:error, reason} ->
+                Logger.error("[Bridge.Handler] SDP negotiation failed: #{inspect(reason)}")
+                # Stop the media session on failure
+                send(media_pid, {:stop_media})
+                {nil, nil}
+            end
+
+          {:error, reason} ->
+            Logger.error("[Bridge.Handler] Failed to create MediaSession: #{inspect(reason)}")
+            {nil, nil}
+        end
+
+      {:error, :no_sdp} ->
+        # No SDP in INVITE - late-offer flow, defer to ACK
+        Logger.debug("[Bridge.Handler] No SDP in INVITE - late-offer flow")
+        {nil, nil}
+    end
   end
 
   # ============================================================================
