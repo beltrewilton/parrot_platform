@@ -1716,10 +1716,10 @@ defmodule ParrotMedia.MediaSession do
       Logger.info("MediaSession #{session_id}: Stopping MOS Calculator")
 
       case MOS.Calculator.stop(pid) do
-        %{} = summary ->
+        %MOS.CallSummary{} = summary ->
           Logger.info(
-            "MediaSession #{session_id}: MOS summary - avg: #{summary[:avg_mos]}, " <>
-              "min: #{summary[:min_mos]}, max: #{summary[:max_mos]}"
+            "MediaSession #{session_id}: MOS summary - avg: #{summary.avg_mos}, " <>
+              "min: #{summary.min_mos}, max: #{summary.max_mos}"
           )
 
           :ok

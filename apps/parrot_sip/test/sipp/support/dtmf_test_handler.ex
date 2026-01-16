@@ -139,8 +139,13 @@ defmodule SippTest.DTMFTestHandler do
     call_id = sip_msg.call_id
 
     case get_media_session(args, call_id) do
-      nil -> :ok
-      media_pid -> GenServer.stop(media_pid, :normal)
+      nil ->
+        :ok
+
+      media_pid ->
+        if Process.alive?(media_pid) do
+          GenServer.stop(media_pid, :normal)
+        end
     end
 
     response = Message.reply(sip_msg, 200, "OK")
