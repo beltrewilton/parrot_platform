@@ -464,6 +464,8 @@ When working with these modules, understand gen_statem concepts:
 - CDR System: Call Detail Records with handler-based dispatch, JSON/CSV serialization (006-cdr-system)
 - Elixir ~> 1.16 with OTP 26+ + ParrotSip, ParrotMedia (MediaSession), ParrotTranspor (007-dsl-dtmf-collect)
 - N/A (in-memory process state via Registry) (007-dsl-dtmf-collect)
+- Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotMedia (MediaSession, pipelines), ParrotTransport (UDP) (008-dsl-sdp-negotiation)
+- In-memory process state, ETS via Registry for call/session lookups (008-dsl-sdp-negotiation)
 
 ## Recent Changes
 - 001-dsl-sip-bridge: Added Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines)

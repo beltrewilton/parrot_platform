@@ -708,6 +708,63 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "extended context with sdp_answer" do
+    test "accepts context with sdp_answer: nil" do
+      call = Call.new()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+      assert updated_call.state == :answered
+      assert_receive {:response_sent, response}
+      assert response.status_code == 200
+    end
+
+    test "accepts context with sdp_answer string" do
+      call = Call.new()
+      sdp_answer = """
+      v=0
+      o=- 1234 1234 IN IP4 127.0.0.1
+      s=-
+      c=IN IP4 127.0.0.1
+      t=0 0
+      m=audio 5004 RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      """
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: sdp_answer
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+      assert updated_call.state == :answered
+      assert_receive {:response_sent, response}
+      assert response.status_code == 200
+    end
+
+    test "backwards compatible - context without sdp_answer still works" do
+      # This test ensures backward compatibility during migration
+      call = Call.new()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+      assert updated_call.state == :answered
+    end
+  end
+
   describe "reject with options" do
     test "handles reject with options tuple" do
       # Manually create a reject operation with options
