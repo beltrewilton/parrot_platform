@@ -26,6 +26,7 @@ defmodule ParrotMedia.AlawPipeline do
   alias ParrotMedia.ForkConfig
   alias ParrotMedia.ForkSink
   alias ParrotMedia.Elements.TelephoneEventParser
+  alias ParrotMedia.MOS.Observer
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -307,6 +308,13 @@ defmodule ParrotMedia.AlawPipeline do
     {[spec: noop_spec], state}
   end
 
+  # G.711 A-law audio via dynamic SDP encoding (pjsua includes pcma in offer)
+  defp handle_rtp_stream_by_encoding(ssrc, pt, "pcma", state) do
+    Logger.info("AlawPipeline #{state.session_id}: Detected pcma stream via SDP (PT=#{pt})")
+    # Reuse the same PCMA handler logic
+    handle_pcma_stream(ssrc, pt, state)
+  end
+
   # No dynamic encoding found - check static payload types
   defp handle_rtp_stream_by_encoding(ssrc, pt, nil, state) do
     case pt do
@@ -319,21 +327,6 @@ defmodule ParrotMedia.AlawPipeline do
         Logger.warning("AlawPipeline #{state.session_id}: Unknown payload type #{pt}, ignoring stream")
         {[], state}
     end
-  end
-
-  # Find telephone-event payload type from pt_to_encoding map
-  defp find_telephone_event_pt(pt_to_encoding) do
-    Enum.find_value(pt_to_encoding, fn
-      {pt, "telephone-event"} -> pt
-      _ -> nil
-    end)
-  end
-
-  # G.711 A-law audio via dynamic SDP encoding (pjsua includes pcma in offer)
-  defp handle_rtp_stream_by_encoding(ssrc, pt, "pcma", state) do
-    Logger.info("AlawPipeline #{state.session_id}: Detected pcma stream via SDP (PT=#{pt})")
-    # Reuse the same PCMA handler logic
-    handle_pcma_stream(ssrc, pt, state)
   end
 
   # Other dynamic encoding we recognize but don't specifically handle
@@ -350,6 +343,14 @@ defmodule ParrotMedia.AlawPipeline do
     {[spec: other_spec], state}
   end
 
+  # Find telephone-event payload type from pt_to_encoding map
+  defp find_telephone_event_pt(pt_to_encoding) do
+    Enum.find_value(pt_to_encoding, fn
+      {pt, "telephone-event"} -> pt
+      _ -> nil
+    end)
+  end
+
   # Common handler for PCMA streams (from both static PT and SDP encoding)
   defp handle_pcma_stream(ssrc, pt, state) do
     # Find telephone-event PT from SDP negotiation (RFC 4733 DTMF)
@@ -363,11 +364,16 @@ defmodule ParrotMedia.AlawPipeline do
 
       # Insert TelephoneEventParser to detect DTMF before depayloading
       # TelephoneEventParser passes through non-DTMF packets unchanged
+      # MOS Observer collects metrics for quality monitoring
       receive_audio_spec = [
         get_child(:rtp)
         |> via_out(Pad.ref(:output, ssrc))
         |> child({:dtmf_parser, ssrc}, %TelephoneEventParser{payload_type: telephone_event_pt})
         |> child({:g711_depayloader, ssrc}, Membrane.RTP.G711.Depayloader)
+        |> child({:mos_observer, ssrc}, %Observer{
+          session_id: state.session_id,
+          stats_interval_ms: 1000
+        })
         |> child({:g711_decoder, ssrc}, Membrane.G711.Decoder)
         |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
       ]
@@ -377,11 +383,16 @@ defmodule ParrotMedia.AlawPipeline do
       Logger.info("AlawPipeline #{state.session_id}: Detected G.711 A-law audio stream (PT=#{pt})")
 
       # No telephone-event negotiated - standard audio pipeline
+      # MOS Observer collects metrics for quality monitoring
       receive_audio_spec = [
         get_child(:rtp)
         |> via_out(Pad.ref(:output, ssrc),
           options: [depayloader: Membrane.RTP.G711.Depayloader]
         )
+        |> child({:mos_observer, ssrc}, %Observer{
+          session_id: state.session_id,
+          stats_interval_ms: 1000
+        })
         |> child({:g711_decoder, ssrc}, Membrane.G711.Decoder)
         |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
       ]

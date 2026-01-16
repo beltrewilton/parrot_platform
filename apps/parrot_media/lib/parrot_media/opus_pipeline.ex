@@ -26,6 +26,7 @@ defmodule ParrotMedia.OpusPipeline do
   alias ParrotMedia.ForkConfig
   alias ParrotMedia.ForkSink
   alias ParrotMedia.Elements.TelephoneEventParser
+  alias ParrotMedia.MOS.Observer
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -308,6 +309,7 @@ defmodule ParrotMedia.OpusPipeline do
   end
 
   # Opus audio stream (dynamic PT, typically 111)
+  # MOS Observer collects metrics for quality monitoring
   defp handle_rtp_stream_by_encoding(ssrc, pt, "opus", state) do
     Logger.info("OpusPipeline #{state.session_id}: Detected Opus audio stream (PT=#{pt})")
 
@@ -316,6 +318,10 @@ defmodule ParrotMedia.OpusPipeline do
       |> via_out(Pad.ref(:output, ssrc),
         options: [depayloader: Membrane.RTP.Opus.Depayloader]
       )
+      |> child({:mos_observer, ssrc}, %Observer{
+        session_id: state.session_id,
+        stats_interval_ms: 1000
+      })
       |> child({:opus_decoder, ssrc}, Membrane.Opus.Decoder)
       |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
     ]
