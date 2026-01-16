@@ -38,6 +38,29 @@ defmodule Parrot.InviteHandler do
         end
       end
 
+  ## The `prompt/3` Pattern
+
+  The `prompt/3` function provides a convenient way to play an audio file
+  and then collect DTMF digits. It works by storing the collection options
+  in `assigns[:__pending_collect__]` and queuing a play operation.
+
+  When the audio finishes, your `handle_play_complete/2` callback is invoked.
+  You must check for pending collect options and start DTMF collection:
+
+      def handle_play_complete(_file, %{assigns: %{__pending_collect__: opts}} = call)
+          when not is_nil(opts) do
+        call
+        |> assign(:__pending_collect__, nil)
+        |> collect_dtmf(opts)
+      end
+
+      def handle_play_complete(_file, call) do
+        {:noreply, call}
+      end
+
+  This two-phase approach allows the play operation to complete before
+  starting DTMF collection, ensuring proper timing of the IVR flow.
+
   ## Callbacks
 
   All callbacks receive a `Parrot.Call` struct and should return either:
@@ -245,6 +268,8 @@ defmodule Parrot.InviteHandler do
           stop_record: 1,
           collect_dtmf: 1,
           collect_dtmf: 2,
+          prompt: 2,
+          prompt: 3,
           bridge: 2,
           bridge: 3,
           fork: 2,

@@ -287,6 +287,37 @@ defmodule Parrot.Call do
     add_operation(call, {:collect_dtmf, opts})
   end
 
+  @doc """
+  Plays an audio file then starts DTMF collection after playback completes.
+
+  The handler must check for `__pending_collect__` in `handle_play_complete/2`:
+
+      def handle_play_complete(file, %{assigns: %{__pending_collect__: opts}} = call)
+          when not is_nil(opts) do
+        call
+        |> assign(:__pending_collect__, nil)
+        |> collect_dtmf(opts)
+      end
+
+  ## Options
+
+  Same as `collect_dtmf/2`:
+    * `:max` - Maximum digits to collect (default: 20)
+    * `:timeout` - Timeout in milliseconds (default: 30,000)
+    * `:terminators` - Digits that end collection early (default: [])
+
+  ## Examples
+
+      call |> prompt("enter-pin.wav", max: 4, timeout: 10_000)
+
+  """
+  @spec prompt(t(), String.t(), keyword()) :: t()
+  def prompt(%__MODULE__{} = call, file, opts \\ []) do
+    call
+    |> assign(:__pending_collect__, opts)
+    |> play(file)
+  end
+
   # ---------------------------------------------------------------------------
   # Recording Operations
   # ---------------------------------------------------------------------------
