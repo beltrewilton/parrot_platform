@@ -453,6 +453,86 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "execute_collect_dtmf/3" do
+    test "sends {:collect_dtmf, opts} to media session" do
+      # Setup: Use self() as the media session to receive messages
+      media_pid = self()
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid
+      }
+
+      # Execute the collect_dtmf operation directly
+      {:ok, _updated_call} = ActionExecutor.execute_collect_dtmf(call, context, max: 4, timeout: 10_000)
+
+      # Verify message was sent to media session
+      assert_receive {:collect_dtmf, opts}
+      assert opts[:max] == 4
+      assert opts[:timeout] == 10_000
+    end
+
+    test "returns {:error, :no_media_session} when media session is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} = ActionExecutor.execute_collect_dtmf(call, context, max: 4)
+    end
+
+    test "returns {:error, :invalid_state} when call is not in answered state" do
+      call = Call.new(state: :incoming)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      assert {:error, :invalid_state} = ActionExecutor.execute_collect_dtmf(call, context, max: 4)
+    end
+  end
+
+  describe "execute/3 with :collect_dtmf operation" do
+    test "executes collect_dtmf operation via pipeline" do
+      # Manually create a collect_dtmf operation (until Call.collect_dtmf/2 is implemented)
+      call = %Call{Call.new(state: :answered) | __operations__: [{:collect_dtmf, [max: 4, timeout: 10_000]}]}
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Verify message was sent to media session
+      assert_receive {:collect_dtmf, opts}
+      assert opts[:max] == 4
+      assert opts[:timeout] == 10_000
+    end
+
+    test "returns error when collect_dtmf fails due to missing media_pid" do
+      call = %Call{Call.new(state: :answered) | __operations__: [{:collect_dtmf, [max: 4]}]}
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} = ActionExecutor.execute(operations, call, context)
+    end
+  end
+
   describe "error handling in execute/3" do
     test "returns error when answer fails" do
       call = Call.new() |> Call.answer()
