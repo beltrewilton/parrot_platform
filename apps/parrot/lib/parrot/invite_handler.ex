@@ -240,6 +240,42 @@ defmodule Parrot.InviteHandler do
   @callback handle_hangup(call :: Call.t()) :: {:noreply, Call.t()} | Call.t()
 
   @doc """
+  Called when SDP negotiation fails (FR-009, FR-012).
+
+  This callback is invoked when `MediaSession.process_offer/2` fails, typically due to:
+  - `:codec_mismatch` - No common codec between offer and server capabilities
+  - `:invalid_sdp` - Malformed SDP in the INVITE body
+  - `:media_session_error` - MediaSession creation or process_offer failed
+
+  The default implementation rejects the call with 488 Not Acceptable Here.
+  Override this to implement custom error handling (e.g., logging, alternative responses).
+
+  ## Arguments
+
+  - `reason` - The error reason (atom)
+  - `call` - The current call state
+
+  ## Example
+
+      # Custom handler that logs and rejects with a different code
+      def handle_sdp_error(reason, call) do
+        Logger.error("SDP negotiation failed: \#{inspect(reason)}")
+        call |> reject(406)
+      end
+
+      # Handler that accepts calls without SDP (late-offer flow)
+      def handle_sdp_error(:no_sdp, call) do
+        call |> answer()  # Will use late-offer flow
+      end
+
+      def handle_sdp_error(_reason, call) do
+        call |> reject(488)
+      end
+  """
+  @callback handle_sdp_error(reason :: atom(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
   Provides default implementations and imports Call functions.
 
   When you `use Parrot.InviteHandler`, you get:
@@ -329,6 +365,12 @@ defmodule Parrot.InviteHandler do
         {:noreply, call}
       end
 
+      @impl Parrot.InviteHandler
+      def handle_sdp_error(_reason, call) do
+        # Default: reject with 488 Not Acceptable Here (FR-012)
+        call |> reject(488)
+      end
+
       defoverridable handle_play_complete: 2,
                      handle_dtmf: 2,
                      handle_prompt_complete: 3,
@@ -338,7 +380,8 @@ defmodule Parrot.InviteHandler do
                      handle_conference_join: 2,
                      handle_conference_leave: 3,
                      handle_fork_media_connected: 2,
-                     handle_hangup: 1
+                     handle_hangup: 1,
+                     handle_sdp_error: 2
     end
   end
 end

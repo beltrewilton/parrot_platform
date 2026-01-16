@@ -233,6 +233,30 @@ defmodule Parrot.Call.Server do
   end
 
   @impl true
+  def handle_info({:media_event, _session_id, {:prompt_complete, filename, digits}}, state) do
+    state = dispatch_event({:prompt_complete, filename, digits}, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:media_event, _session_id, {:conference_join, room}}, state) do
+    state = dispatch_event({:conference_join, room}, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:media_event, _session_id, {:conference_leave, room, reason}}, state) do
+    state = dispatch_event({:conference_leave, room, reason}, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:media_event, _session_id, {:fork_media_connected, url}}, state) do
+    state = dispatch_event({:fork_media_connected, url}, state)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(msg, state) do
     Logger.debug("Call.Server received unhandled message: #{inspect(msg)}")
     {:noreply, state}
@@ -260,6 +284,22 @@ defmodule Parrot.Call.Server do
 
   defp dispatch_event({:record_complete, filename, duration_ms}, state) do
     invoke_callback(:handle_record_complete, [filename, duration_ms], state)
+  end
+
+  defp dispatch_event({:prompt_complete, filename, digits}, state) do
+    invoke_callback(:handle_prompt_complete, [filename, digits], state)
+  end
+
+  defp dispatch_event({:conference_join, room}, state) do
+    invoke_callback(:handle_conference_join, [room], state)
+  end
+
+  defp dispatch_event({:conference_leave, room, reason}, state) do
+    invoke_callback(:handle_conference_leave, [room, reason], state)
+  end
+
+  defp dispatch_event({:fork_media_connected, url}, state) do
+    invoke_callback(:handle_fork_media_connected, [url], state)
   end
 
   defp dispatch_event(:hangup, state) do
