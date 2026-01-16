@@ -135,11 +135,26 @@ defmodule Parrot.Bridge.ActionExecutor do
     dialog_id = compute_dialog_id(sip_msg, final_response)
     Logger.debug("[ActionExecutor] Dialog established: #{dialog_id}")
 
+    # Start media session if present (FR-006)
+    # Per RFC 3261, media can start after 200 OK is sent
+    # This enables audio playback and recording operations
+    start_media_if_present(context)
+
     # Update call state with dialog_id
     updated_call = %{call | state: :answered, __dialog_id__: dialog_id}
 
     {:ok, updated_call}
   end
+
+  # Start media session if media_pid is present in context
+  @spec start_media_if_present(context()) :: :ok
+  defp start_media_if_present(%{media_pid: media_pid}) when is_pid(media_pid) do
+    Logger.debug("[ActionExecutor] Starting media session #{inspect(media_pid)}")
+    send(media_pid, {:start_media})
+    :ok
+  end
+
+  defp start_media_if_present(_context), do: :ok
 
   @doc """
   Execute the `:reject` operation.

@@ -936,6 +936,81 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "media lifecycle after answer (T021)" do
+    test "calls start_media on media_pid after 200 OK when media_pid present" do
+      call = Call.new()
+
+      # Use self() as mock media_pid to receive messages
+      media_pid = self()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        sdp_answer: "v=0\r\n"
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Should receive start_media message
+      assert_receive {:start_media}, 1000
+    end
+
+    test "does not call start_media when media_pid is nil" do
+      call = Call.new()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Should NOT receive start_media (no media session)
+      refute_receive {:start_media}, 100
+    end
+  end
+
+  describe "media cleanup on hangup (T022)" do
+    test "sends stop_media to media_pid on hangup" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      media_pid =
+        spawn(fn ->
+          receive do
+            {:stop_media} -> send(test_pid, :stop_media_received)
+          end
+        end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+      assert_receive :stop_media_received, 500
+    end
+
+    test "handles nil media_pid gracefully on hangup" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      # Should not crash even with nil media_pid
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+    end
+  end
+
   # Helper functions
 
   defp build_invite_message do
