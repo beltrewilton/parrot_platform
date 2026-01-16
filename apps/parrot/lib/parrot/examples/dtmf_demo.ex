@@ -75,20 +75,16 @@ defmodule Parrot.Examples.DTMFDemo do
       |> collect_dtmf(opts)
     end
 
+    def handle_play_complete("priv/audio/parrot-welcome.wav", %{assigns: %{step: :pin}} = call) do
+      # PIN step - collect 4 digits
+      Logger.info("[DTMFDemo] PIN prompt complete, collecting PIN")
+      call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
+    end
+
     def handle_play_complete("priv/audio/parrot-welcome.wav", call) do
+      # Menu step (default) - collect 1 digit
       Logger.info("[DTMFDemo] Welcome playback complete, collecting menu selection")
       call |> collect_dtmf(max: 1, timeout: 5_000)
-    end
-
-    def handle_play_complete("priv/audio/enter-pin.wav", %{assigns: %{step: :pin}} = call) do
-      Logger.info("[DTMFDemo] PIN prompt complete, collecting PIN")
-      call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
-    end
-
-    def handle_play_complete("priv/audio/parrot-welcome.wav", %{assigns: %{step: :pin}} = call) do
-      # Using same audio for PIN prompt since we only have one audio file
-      Logger.info("[DTMFDemo] PIN prompt complete, collecting PIN")
-      call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
     end
 
     def handle_play_complete(file, call) do
