@@ -152,6 +152,8 @@ defmodule Parrot.Bridge.HandlerTest do
     end
 
     test "exports all required callbacks" do
+      # Ensure module is loaded before checking exports
+      Code.ensure_loaded!(Handler)
       # Required callbacks from ParrotSip.Handler
       assert function_exported?(Handler, :transp_request, 2)
       assert function_exported?(Handler, :transaction, 3)
@@ -162,6 +164,8 @@ defmodule Parrot.Bridge.HandlerTest do
     end
 
     test "exports optional method-specific callbacks" do
+      # Ensure module is loaded before checking exports
+      Code.ensure_loaded!(Handler)
       # Optional method-specific callbacks
       assert function_exported?(Handler, :handle_invite, 3)
       assert function_exported?(Handler, :handle_bye, 3)
