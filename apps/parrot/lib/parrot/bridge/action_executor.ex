@@ -113,27 +113,19 @@ defmodule Parrot.Bridge.ActionExecutor do
   def execute_answer(call, %{sip_msg: sip_msg} = context, _opts) do
     Logger.debug("[ActionExecutor] Executing answer operation")
 
-    # Build 200 OK response
+    # Build 200 OK response with optional SDP answer body
     #
-    # LIMITATION: This basic implementation does NOT perform SDP offer/answer negotiation.
-    # Message.reply copies the request body, which would incorrectly echo back the
-    # client's SDP offer. We clear the body to avoid this, but it means:
+    # When sdp_answer is provided in context (from Bridge.Handler's setup_media_session),
+    # include it in the 200 OK body with proper Content-Type and Content-Length headers.
+    # This enables standard SIP clients to complete the offer/answer exchange.
     #
-    # 1. No SDP answer is sent to the client
-    # 2. Standard SIP clients (pjsua, etc.) will reject the call
-    # 3. Only works with SIPp scenarios that don't require SDP answers
-    #
-    # For full SDP negotiation, the Bridge.Handler needs to:
-    # - Start MediaSession during INVITE handling
-    # - Call MediaSession.process_offer() to generate an SDP answer
-    # - Pass the SDP answer through context to this function
-    #
-    # See DTMFTestHandler for a working implementation with SDP negotiation.
+    # For late-offer scenarios (no SDP in INVITE), sdp_answer will be nil and we
+    # send an empty body response.
+    sdp_answer = Map.get(context, :sdp_answer)
+
     response =
       Message.reply(sip_msg, 200, "OK")
-      |> Map.put(:body, "")
-      |> Map.put(:content_length, 0)
-      |> Map.put(:content_type, nil)
+      |> put_sdp_body(sdp_answer)
 
     # Send the response - returns {:ok, final_response} with To tag added
     {:ok, final_response} = send_response(context, response)
@@ -495,6 +487,23 @@ defmodule Parrot.Bridge.ActionExecutor do
         Logger.warning("[ActionExecutor] Timeout looking up dialog #{dialog_id}")
         :ok
     end
+  end
+
+  # Set SDP body on response (or empty body if no SDP answer)
+  # Per RFC 3261 Section 13.2.1: 200 OK to INVITE includes SDP answer
+  @spec put_sdp_body(Message.t(), String.t() | nil) :: Message.t()
+  defp put_sdp_body(response, nil) do
+    response
+    |> Map.put(:body, "")
+    |> Map.put(:content_length, 0)
+    |> Map.put(:content_type, nil)
+  end
+
+  defp put_sdp_body(response, sdp_answer) when is_binary(sdp_answer) do
+    response
+    |> Map.put(:body, sdp_answer)
+    |> Map.put(:content_length, byte_size(sdp_answer))
+    |> Map.put(:content_type, "application/sdp")
   end
 
   # Map status codes to reason phrases

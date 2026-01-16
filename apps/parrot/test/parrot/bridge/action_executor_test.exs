@@ -765,6 +765,100 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "execute_answer/3 with SDP body (T015-T016)" do
+    test "includes sdp_answer in response body when present" do
+      call = Call.new()
+      sdp_answer = """
+      v=0
+      o=- 1234 1234 IN IP4 127.0.0.1
+      s=-
+      c=IN IP4 127.0.0.1
+      t=0 0
+      m=audio 5004 RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      """
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: sdp_answer
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      assert response.body == sdp_answer
+    end
+
+    test "sets Content-Type to application/sdp when sdp_answer present" do
+      call = Call.new()
+      sdp_answer = "v=0\r\no=- 1234 1234 IN IP4 127.0.0.1\r\n"
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: sdp_answer
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      assert response.content_type == "application/sdp"
+    end
+
+    test "sets Content-Length to correct byte size when sdp_answer present" do
+      call = Call.new()
+      sdp_answer = "v=0\r\no=- 1234 1234 IN IP4 127.0.0.1\r\n"
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: sdp_answer
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      assert response.content_length == byte_size(sdp_answer)
+    end
+
+    test "sends empty body when sdp_answer is nil" do
+      call = Call.new()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      assert response.body == ""
+      assert response.content_length == 0
+    end
+
+    test "sends empty body when sdp_answer not in context (backward compat)" do
+      call = Call.new()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      assert response.body == ""
+      assert response.content_length == 0
+    end
+  end
+
   describe "reject with options" do
     test "handles reject with options tuple" do
       # Manually create a reject operation with options
