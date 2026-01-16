@@ -47,6 +47,30 @@ defmodule Parrot.Call.ServerTest do
     end
 
     @impl true
+    def handle_prompt_complete(filename, digits, call) do
+      call
+      |> assign(:prompt_complete, {filename, digits})
+    end
+
+    @impl true
+    def handle_conference_join(room, call) do
+      call
+      |> assign(:conference_joined, room)
+    end
+
+    @impl true
+    def handle_conference_leave(room, reason, call) do
+      call
+      |> assign(:conference_left, {room, reason})
+    end
+
+    @impl true
+    def handle_fork_media_connected(url, call) do
+      call
+      |> assign(:fork_media_connected, url)
+    end
+
+    @impl true
     def handle_hangup(call) do
       {:noreply, assign(call, :hangup_handled, true)}
     end
@@ -840,6 +864,101 @@ defmodule Parrot.Call.ServerTest do
 
       call = Server.get_call(pid)
       assert call.assigns[:dtmf_received] == "9"
+    end
+  end
+
+  # ===========================================================================
+  # US4: Additional Media Callbacks (T038-T045)
+  # ===========================================================================
+
+  describe "prompt_complete event dispatch (T038)" do
+    setup do
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+      %{pid: pid}
+    end
+
+    test "dispatches prompt_complete to handle_prompt_complete/3", %{pid: pid} do
+      Server.dispatch(pid, {:prompt_complete, "menu.wav", "5"})
+
+      call = Server.get_call(pid)
+      assert call.assigns[:prompt_complete] == {"menu.wav", "5"}
+    end
+
+    test "handles prompt_complete via media_event message", %{pid: pid} do
+      send(pid, {:media_event, "session-123", {:prompt_complete, "greeting.wav", "1234"}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:prompt_complete] == {"greeting.wav", "1234"}
+    end
+  end
+
+  describe "conference events dispatch (T039, T040)" do
+    setup do
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+      %{pid: pid}
+    end
+
+    test "dispatches conference_join to handle_conference_join/2", %{pid: pid} do
+      Server.dispatch(pid, {:conference_join, "room-123"})
+
+      call = Server.get_call(pid)
+      assert call.assigns[:conference_joined] == "room-123"
+    end
+
+    test "dispatches conference_leave to handle_conference_leave/3", %{pid: pid} do
+      Server.dispatch(pid, {:conference_leave, "room-123", :normal})
+
+      call = Server.get_call(pid)
+      assert call.assigns[:conference_left] == {"room-123", :normal}
+    end
+
+    test "handles conference_leave with kicked reason", %{pid: pid} do
+      Server.dispatch(pid, {:conference_leave, "room-456", :kicked})
+
+      call = Server.get_call(pid)
+      assert call.assigns[:conference_left] == {"room-456", :kicked}
+    end
+
+    test "handles conference_join via media_event message", %{pid: pid} do
+      send(pid, {:media_event, "session-123", {:conference_join, "conf-room"}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:conference_joined] == "conf-room"
+    end
+
+    test "handles conference_leave via media_event message", %{pid: pid} do
+      send(pid, {:media_event, "session-123", {:conference_leave, "conf-room", :timeout}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:conference_left] == {"conf-room", :timeout}
+    end
+  end
+
+  describe "fork_media_connected event dispatch (T041)" do
+    setup do
+      invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+      %{pid: pid}
+    end
+
+    test "dispatches fork_media_connected to handle_fork_media_connected/2", %{pid: pid} do
+      Server.dispatch(pid, {:fork_media_connected, "ws://asr.example.com/stream"})
+
+      call = Server.get_call(pid)
+      assert call.assigns[:fork_media_connected] == "ws://asr.example.com/stream"
+    end
+
+    test "handles fork_media_connected via media_event message", %{pid: pid} do
+      send(pid, {:media_event, "session-123", {:fork_media_connected, "wss://transcribe.ai/ws"}})
+      Process.sleep(10)
+
+      call = Server.get_call(pid)
+      assert call.assigns[:fork_media_connected] == "wss://transcribe.ai/ws"
     end
   end
 end

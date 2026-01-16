@@ -866,6 +866,151 @@ defmodule Parrot.Bridge.HandlerTest do
   end
 
   # ===========================================================================
+  # US3: SDP Error Handling Tests (T034-T036)
+  # ===========================================================================
+
+  describe "handle_sdp_error callback invocation (T034, T035)" do
+    # Handler that overrides handle_sdp_error to track invocation
+    defmodule SdpErrorTrackingHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      @impl true
+      def handle_sdp_error(reason, call) do
+        # Track that we were called by sending a message
+        send(Application.get_env(:parrot, :test_pid), {:sdp_error_called, reason})
+        # Return a custom rejection
+        call |> reject(488)
+      end
+    end
+
+    # Handler that uses default handle_sdp_error behavior (returns reject 488)
+    defmodule DefaultSdpErrorHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      # Uses default handle_sdp_error which rejects with 488
+    end
+
+    # Handler that returns {:noreply, call} from handle_sdp_error
+    defmodule NoReplyErrorHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      @impl true
+      def handle_sdp_error(_reason, call) do
+        {:noreply, call}
+      end
+    end
+
+    defmodule SdpErrorTrackingRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.SdpErrorTrackingHandler)
+    end
+
+    defmodule DefaultSdpErrorRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.DefaultSdpErrorHandler)
+    end
+
+    defmodule NoReplyErrorRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.NoReplyErrorHandler)
+    end
+
+    test "invokes handler.handle_sdp_error/2 when SDP negotiation fails (T034, T035)" do
+      # Store test PID for tracking
+      Application.put_env(:parrot, :test_pid, self())
+
+      test_pid = self()
+      # INVITE with SDP body (will be processed but we force an error)
+      invite = create_test_invite() |> Map.put(:body, "v=0\r\nsome sdp")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+
+      # Use test injection to force SDP error
+      args = %{
+        router: SdpErrorTrackingRouter,
+        response_fn: response_fn,
+        force_sdp_error: true,
+        sdp_error_reason: :codec_mismatch
+      }
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      # Handler's handle_sdp_error should have been called
+      assert_receive {:sdp_error_called, :codec_mismatch}, 1000
+    end
+
+    test "default handle_sdp_error rejects with 488 Not Acceptable Here (T035, FR-012)" do
+      test_pid = self()
+      # INVITE with SDP body
+      invite = create_test_invite() |> Map.put(:body, "v=0\r\nsome sdp")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+
+      # Use test injection to force SDP error
+      args = %{
+        router: DefaultSdpErrorRouter,
+        response_fn: response_fn,
+        force_sdp_error: true,
+        sdp_error_reason: :codec_mismatch
+      }
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      # Should receive 100 Trying then 488 Not Acceptable Here
+      responses = collect_responses(2)
+      rejection = Enum.find(responses, fn r -> r.status_code >= 400 end)
+
+      assert rejection != nil
+      assert rejection.status_code == 488
+      assert rejection.reason_phrase == "Not Acceptable Here"
+    end
+
+    test "auto-rejects with 488 when handler returns {:noreply, call} (T036)" do
+      test_pid = self()
+      # INVITE with SDP body
+      invite = create_test_invite() |> Map.put(:body, "v=0\r\nsome sdp")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+
+      # Use test injection to force SDP error
+      args = %{
+        router: NoReplyErrorRouter,
+        response_fn: response_fn,
+        force_sdp_error: true,
+        sdp_error_reason: :codec_mismatch
+      }
+
+      :ok = Handler.handle_invite(uas, invite, args)
+
+      # Should receive 100 Trying then 488 Not Acceptable Here (auto-reject)
+      responses = collect_responses(2)
+      rejection = Enum.find(responses, fn r -> r.status_code >= 400 end)
+
+      assert rejection != nil
+      assert rejection.status_code == 488
+      assert rejection.reason_phrase == "Not Acceptable Here"
+    end
+  end
+
+  # ===========================================================================
   # US1: SDP Negotiation Tests (T006-T007)
   # ===========================================================================
 

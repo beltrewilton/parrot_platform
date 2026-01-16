@@ -59,9 +59,14 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_hangup, 1} in callbacks
     end
 
-    test "defines all 11 expected callbacks" do
+    test "defines all 12 expected callbacks" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 11
+      assert length(callbacks) == 12
+    end
+
+    test "defines handle_sdp_error/2 callback (T029)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_sdp_error, 2} in callbacks
     end
   end
 
@@ -126,6 +131,14 @@ defmodule Parrot.InviteHandlerTest do
     test "provides default handle_hangup/1 implementation" do
       call = Call.new()
       assert {:noreply, ^call} = MinimalHandler.handle_hangup(call)
+    end
+
+    test "provides default handle_sdp_error/2 implementation that rejects with 488 (T029, FR-012)" do
+      call = Call.new()
+      # Default implementation should reject with 488 Not Acceptable Here
+      result = MinimalHandler.handle_sdp_error(:codec_mismatch, call)
+      operations = Call.get_operations(result)
+      assert [{:reject, 488}] = operations
     end
 
     test "imports Parrot.Call functions for pipeline operations" do

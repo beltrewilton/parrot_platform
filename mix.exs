@@ -6,7 +6,10 @@ defmodule ParrotPlatform.MixProject do
       apps_path: "apps",
       version: "0.0.1-alpha.4",
       start_permanent: Mix.env() == :prod,
-      consolidate_protocols: Mix.env() != :dev,
+      # Note: Disabled for test env due to root-owned files in _build/test/consolidated/
+      # Run: sudo rm -rf _build/test/consolidated && sudo chown -R $(whoami) _build/
+      # to restore full protocol consolidation
+      consolidate_protocols: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
 

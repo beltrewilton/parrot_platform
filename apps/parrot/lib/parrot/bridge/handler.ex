@@ -142,35 +142,30 @@ defmodule Parrot.Bridge.Handler do
     case Dispatcher.dispatch(router, req_sip_msg) do
       {:ok, handler_module, _opts} ->
         # 3. Extract SDP offer and create MediaSession if present (FR-001, FR-002)
-        {media_pid, sdp_answer} = setup_media_session(req_sip_msg, args)
+        case setup_media_session(req_sip_msg, args) do
+          {:ok, media_pid, sdp_answer} ->
+            # SDP negotiation succeeded - proceed with normal flow
+            process_invite_with_media(
+              uas,
+              req_sip_msg,
+              args,
+              handler_module,
+              media_pid,
+              sdp_answer
+            )
 
-        # 4. Create Call struct from SIP message
-        call = create_call_from_sip(req_sip_msg, handler_module)
-
-        # 5. Invoke handler's handle_invite/1
-        result_call = handler_module.handle_invite(call)
-
-        # 6. Execute returned operations via ActionExecutor
-        operations = Call.get_operations(result_call)
-
-        context = %{
-          uas: uas,
-          sip_msg: req_sip_msg,
-          media_pid: media_pid,
-          sdp_answer: sdp_answer,
-          response_fn: Map.get(args, :response_fn)
-        }
-
-        case ActionExecutor.execute(operations, result_call, context) do
-          {:ok, _updated_call} ->
-            :ok
+          :no_sdp ->
+            # Late-offer flow - no SDP in INVITE, proceed without media
+            process_invite_with_media(uas, req_sip_msg, args, handler_module, nil, nil)
 
           {:error, reason} ->
-            Logger.error("[Bridge.Handler] ActionExecutor failed: #{inspect(reason)}")
-            # Send 500 error on failure
-            error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
-            send_response(uas, error_response, args)
-            :ok
+            # SDP negotiation failed (FR-009, FR-012) - invoke handle_sdp_error
+            Logger.warning(
+              "[Bridge.Handler] SDP negotiation failed, invoking handle_sdp_error: #{inspect(reason)}"
+            )
+
+            call = create_call_from_sip(req_sip_msg, handler_module)
+            handle_sdp_error_result(handler_module, reason, call, uas, req_sip_msg, args)
         end
 
       {:no_match, _reason} ->
@@ -179,6 +174,76 @@ defmodule Parrot.Bridge.Handler do
         not_found = Message.reply(req_sip_msg, 404, "Not Found")
         send_response(uas, not_found, args)
         :ok
+    end
+  end
+
+  # Process INVITE with media (normal flow or late-offer)
+  defp process_invite_with_media(uas, req_sip_msg, args, handler_module, media_pid, sdp_answer) do
+    # 4. Create Call struct from SIP message
+    call = create_call_from_sip(req_sip_msg, handler_module)
+
+    # 5. Invoke handler's handle_invite/1
+    result_call = handler_module.handle_invite(call)
+
+    # 6. Execute returned operations via ActionExecutor
+    operations = Call.get_operations(result_call)
+
+    context = %{
+      uas: uas,
+      sip_msg: req_sip_msg,
+      media_pid: media_pid,
+      sdp_answer: sdp_answer,
+      response_fn: Map.get(args, :response_fn)
+    }
+
+    case ActionExecutor.execute(operations, result_call, context) do
+      {:ok, _updated_call} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("[Bridge.Handler] ActionExecutor failed: #{inspect(reason)}")
+        # Send 500 error on failure
+        error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+        send_response(uas, error_response, args)
+        :ok
+    end
+  end
+
+  # Handle the result of handler.handle_sdp_error/2 (T034, T035, T036)
+  defp handle_sdp_error_result(handler_module, reason, call, uas, req_sip_msg, args) do
+    # Invoke handler's handle_sdp_error/2 callback
+    result = handler_module.handle_sdp_error(reason, call)
+
+    case result do
+      {:noreply, _call} ->
+        # Handler didn't handle the error - auto-reject with 488 (T036, FR-012)
+        Logger.debug("[Bridge.Handler] Handler returned {:noreply, _}, auto-rejecting with 488")
+        error_response = Message.reply(req_sip_msg, 488, "Not Acceptable Here")
+        send_response(uas, error_response, args)
+        :ok
+
+      %Call{} = result_call ->
+        # Handler returned operations - execute them
+        operations = Call.get_operations(result_call)
+
+        context = %{
+          uas: uas,
+          sip_msg: req_sip_msg,
+          media_pid: nil,
+          sdp_answer: nil,
+          response_fn: Map.get(args, :response_fn)
+        }
+
+        case ActionExecutor.execute(operations, result_call, context) do
+          {:ok, _updated_call} ->
+            :ok
+
+          {:error, exec_reason} ->
+            Logger.error("[Bridge.Handler] ActionExecutor failed: #{inspect(exec_reason)}")
+            error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+            send_response(uas, error_response, args)
+            :ok
+        end
     end
   end
 
@@ -438,18 +503,32 @@ defmodule Parrot.Bridge.Handler do
 
   Creates a MediaSession, calls process_offer to negotiate SDP, and returns
   the media PID and SDP answer. If no SDP is present in the INVITE body,
-  returns {nil, nil} for late-offer flow.
+  returns {:no_sdp} for late-offer flow.
 
   ## Parameters
   - `sip_msg` - The INVITE SIP message
   - `args` - Handler args (may contain media configuration)
 
   ## Returns
-  - `{media_pid, sdp_answer}` - If SDP negotiation succeeds
-  - `{nil, nil}` - If no SDP in INVITE body (late-offer flow)
+  - `{:ok, media_pid, sdp_answer}` - If SDP negotiation succeeds
+  - `{:error, reason}` - If SDP negotiation fails (FR-009, FR-012)
+  - `:no_sdp` - If no SDP in INVITE body (late-offer flow)
   """
-  @spec setup_media_session(Message.t(), map()) :: {pid() | nil, String.t() | nil}
-  def setup_media_session(sip_msg, _args) do
+  @spec setup_media_session(Message.t(), map()) ::
+          {:ok, pid(), String.t()} | {:error, atom()} | :no_sdp
+  def setup_media_session(sip_msg, args) do
+    # Test injection: allow forcing SDP errors for testing (T034-T036)
+    if Map.get(args, :force_sdp_error) do
+      error_reason = Map.get(args, :sdp_error_reason, :codec_mismatch)
+      Logger.debug("[Bridge.Handler] Test mode: forcing SDP error #{inspect(error_reason)}")
+      {:error, error_reason}
+    else
+      setup_media_session_impl(sip_msg, args)
+    end
+  end
+
+  # Actual implementation of setup_media_session
+  defp setup_media_session_impl(sip_msg, _args) do
     case extract_sdp_offer(sip_msg) do
       {:ok, sdp_offer} ->
         # Create MediaSession for the call
@@ -475,24 +554,24 @@ defmodule Parrot.Bridge.Handler do
             case ParrotMedia.MediaSession.process_offer(media_pid, sdp_offer) do
               {:ok, sdp_answer} ->
                 Logger.debug("[Bridge.Handler] SDP negotiation successful")
-                {media_pid, sdp_answer}
+                {:ok, media_pid, sdp_answer}
 
               {:error, reason} ->
                 Logger.error("[Bridge.Handler] SDP negotiation failed: #{inspect(reason)}")
                 # Stop the media session on failure
                 send(media_pid, {:stop_media})
-                {nil, nil}
+                {:error, reason}
             end
 
           {:error, reason} ->
             Logger.error("[Bridge.Handler] Failed to create MediaSession: #{inspect(reason)}")
-            {nil, nil}
+            {:error, :media_session_error}
         end
 
       {:error, :no_sdp} ->
         # No SDP in INVITE - late-offer flow, defer to ACK
         Logger.debug("[Bridge.Handler] No SDP in INVITE - late-offer flow")
-        {nil, nil}
+        :no_sdp
     end
   end
 
