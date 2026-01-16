@@ -55,6 +55,8 @@ defmodule Parrot.PresenceTest do
 
   describe "notify/2" do
     test "notify/2 is defined and callable" do
+      # Ensure module is fully loaded before checking
+      Code.ensure_loaded!(Presence)
       # The notify function should exist and be callable
       assert function_exported?(Presence, :notify, 2)
     end

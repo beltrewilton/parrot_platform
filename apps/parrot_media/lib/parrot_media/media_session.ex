@@ -104,6 +104,10 @@ defmodule ParrotMedia.MediaSession do
       :notify_pid,
       # DTMF collection state: %{max: int, terminators: list, timeout: int, digits: string, timer_ref: ref}
       :dtmf_collection,
+      # Dynamic payload types from remote SDP (encoding name -> PT)
+      # Per RFC 3551, PTs 96-127 are dynamically assigned
+      # Example: %{"telephone-event" => 96, "no-op" => 97}
+      :dynamic_payload_types,
       # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
       direction: :sendrecv
     ]
@@ -137,6 +141,7 @@ defmodule ParrotMedia.MediaSession do
             advertised_ip: String.t() | tuple() | nil,
             notify_pid: pid() | nil,
             dtmf_collection: map() | nil,
+            dynamic_payload_types: %{String.t() => non_neg_integer()} | nil,
             direction: :sendrecv | :sendonly | :recvonly | :inactive
           }
   end
@@ -690,6 +695,12 @@ defmodule ParrotMedia.MediaSession do
     {:keep_state_and_data, []}
   end
 
+  # Handle DTMF digit from pipeline (RFC 4733 telephone-event)
+  defp handle_media_message({:pipeline_event, :dtmf, digit}, data) do
+    # Delegate to standard DTMF handler
+    handle_media_message({:dtmf, digit}, data)
+  end
+
   # Handle DTMF collection messages
   defp handle_media_message({:collect_dtmf, opts}, data) do
     Logger.info("MediaSession #{data.id}: Starting DTMF collection with opts: #{inspect(opts)}")
@@ -926,19 +937,34 @@ defmodule ParrotMedia.MediaSession do
       data_with_handler_state = %{data | handler_state: handler_state}
       {local_rtp_port, rtp_socket} = get_or_allocate_rtp_port(data_with_handler_state)
 
+      # Extract ALL dynamic payload types from SDP (RFC 3551: PTs 96-127)
+      # This gives us a map like %{"telephone-event" => 96, "no-op" => 97}
+      dynamic_payload_types = extract_dynamic_payload_types(audio_media)
+
+      if map_size(dynamic_payload_types) > 0 do
+        Logger.info(
+          "MediaSession #{data.id}: Remote dynamic payload types: #{inspect(dynamic_payload_types)}"
+        )
+      end
+
       # Get the IP address to use in SDP
       sdp_ip = get_sdp_ip(data_with_handler_state)
 
-      # Use Sdp module to generate answer
-      case Sdp.build_offer(
+      # Use Sdp module to generate answer (includes telephone-event if offered)
+      case Sdp.build_answer_for_codec(selected_codec,
              local_ip: sdp_ip,
              local_port: local_rtp_port,
-             supported_codecs: [selected_codec],
-             direction: data_with_handler_state.direction
+             direction: data_with_handler_state.direction,
+             offer_audio_media: audio_media
            ) do
         {:ok, sdp_answer} ->
           pipeline_module =
             get_pipeline_module_for_config(selected_codec, data_with_handler_state)
+
+          # Update dynamic_payload_types to use the negotiated telephone-event PT from our answer
+          # (not the offer's PT which might have a different clock rate)
+          negotiated_dyn_pts =
+            update_dynamic_pts_from_answer(sdp_answer, dynamic_payload_types)
 
           session_data =
             build_session_data(
@@ -949,7 +975,8 @@ defmodule ParrotMedia.MediaSession do
               local_rtp_port,
               rtp_socket,
               sdp_answer,
-              pipeline_module
+              pipeline_module,
+              negotiated_dyn_pts
             )
 
           {:ok, final_data} =
@@ -1047,7 +1074,8 @@ defmodule ParrotMedia.MediaSession do
          local_rtp_port,
          rtp_socket,
          sdp_answer,
-         pipeline_module
+         pipeline_module,
+         dynamic_payload_types \\ %{}
        ) do
     %{
       data
@@ -1058,7 +1086,8 @@ defmodule ParrotMedia.MediaSession do
         remote_rtp_port: remote_info.port,
         remote_rtp_address: remote_info.address,
         selected_codec: selected_codec,
-        pipeline_module: pipeline_module
+        pipeline_module: pipeline_module,
+        dynamic_payload_types: dynamic_payload_types
     }
   end
 
@@ -1111,6 +1140,49 @@ defmodule ParrotMedia.MediaSession do
     audio_media.fmt
     |> Enum.map(fn pt -> codec_map[pt] end)
     |> Enum.reject(&is_nil/1)
+  end
+
+  # Extract ALL dynamic payload types from SDP rtpmap attributes
+  # Returns a map of encoding name (lowercase) -> {payload_type, clock_rate}
+  # Per RFC 3551, PTs 96-127 are dynamically assigned via SDP
+  # Example: %{"telephone-event" => {96, 8000}, "opus" => {111, 48000}}
+  defp extract_dynamic_payload_types(audio_media) do
+    audio_media.attributes
+    |> Enum.filter(&match?(%ExSDP.Attribute.RTPMapping{}, &1))
+    |> Enum.map(fn %ExSDP.Attribute.RTPMapping{
+                     encoding: encoding,
+                     payload_type: pt,
+                     clock_rate: clock_rate
+                   } ->
+      {String.downcase(encoding), {pt, clock_rate}}
+    end)
+    |> Map.new()
+  end
+
+  # Update dynamic payload types from the SDP answer
+  # This ensures we use the negotiated telephone-event PT (which matches the codec clock rate)
+  # rather than the offer's telephone-event which might have a different clock rate
+  defp update_dynamic_pts_from_answer(sdp_answer, original_dyn_pts) do
+    case Sdp.parse(sdp_answer) do
+      {:ok, parsed_answer} ->
+        case Enum.find(parsed_answer.media, &(&1.type == :audio)) do
+          nil ->
+            original_dyn_pts
+
+          audio_media ->
+            # Extract telephone-event from answer and update the map
+            answer_dyn_pts = extract_dynamic_payload_types(audio_media)
+
+            # Merge answer's telephone-event over original (answer takes precedence)
+            case Map.get(answer_dyn_pts, "telephone-event") do
+              nil -> original_dyn_pts
+              te_pt -> Map.put(original_dyn_pts, "telephone-event", te_pt)
+            end
+        end
+
+      {:error, _} ->
+        original_dyn_pts
+    end
   end
 
   defp process_sdp_answer(sdp_answer, data) do
@@ -1207,7 +1279,12 @@ defmodule ParrotMedia.MediaSession do
       input_device_id: data.input_device_id,
       output_device_id: data.output_device_id,
       # Pass the selected codec
-      selected_codec: data.selected_codec
+      selected_codec: data.selected_codec,
+      # Pass MediaSession PID for pipeline events (DTMF, play_complete, etc.)
+      media_session_pid: self(),
+      # Dynamic payload types from SDP (encoding name -> PT)
+      # Per RFC 3551, PTs 96-127 are dynamically assigned
+      dynamic_payload_types: data.dynamic_payload_types || %{}
     }
 
     Logger.info("MediaSession #{data.id}: Pipeline init args: #{inspect(init_arg)}")

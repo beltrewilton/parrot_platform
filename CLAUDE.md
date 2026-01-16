@@ -397,6 +397,7 @@ When working with these modules, understand gen_statem concepts:
 ### Implementation Guides
 - **Production Roadmap:** `docs/PRODUCTION_ROADMAP.md`
 - **Project Status:** `docs/PROJECT_STATUS.md`
+- **Ad-hoc SIP Testing (pjsua):** `docs/pjsua-testing.md`
 
 ### Usage Rules (AI Agent Context)
 - **SIP Rules:** `usage-rules/sip.md`
