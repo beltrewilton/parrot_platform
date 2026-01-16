@@ -56,7 +56,9 @@ defmodule Parrot.CallBidirectionalWsTest do
 
     test "options include headers" do
       headers = [{"Authorization", "Bearer token123"}, {"X-Custom", "value"}]
-      call = %Call{} |> Call.connect_bidirectional_ws("wss://api.example.com/stream", headers: headers)
+
+      call =
+        %Call{} |> Call.connect_bidirectional_ws("wss://api.example.com/stream", headers: headers)
 
       assert [{:connect_bidirectional_ws, _, opts}] = Call.get_operations(call)
       assert Keyword.get(opts, :headers) == headers
@@ -89,7 +91,9 @@ defmodule Parrot.CallBidirectionalWsTest do
     test "options include inbound_format" do
       call =
         %Call{}
-        |> Call.connect_bidirectional_ws("wss://api.example.com/stream", inbound_format: :pcm_16le)
+        |> Call.connect_bidirectional_ws("wss://api.example.com/stream",
+          inbound_format: :pcm_16le
+        )
 
       assert [{:connect_bidirectional_ws, _, opts}] = Call.get_operations(call)
       assert Keyword.get(opts, :inbound_format) == :pcm_16le
@@ -453,6 +457,7 @@ defmodule Parrot.CallBidirectionalWsTest do
       # Verify order
       assert {:answer, []} = Enum.at(operations, 0)
       assert {:play, "welcome.wav", []} = Enum.at(operations, 1)
+
       assert {:connect_bidirectional_ws, "wss://api.openai.com/v1/realtime", _opts} =
                Enum.at(operations, 2)
 
@@ -474,7 +479,10 @@ defmodule Parrot.CallBidirectionalWsTest do
         |> Call.hangup()
 
       operations = Call.get_operations(call)
-      disconnect_index = Enum.find_index(operations, &match?({:disconnect_bidirectional_ws, _}, &1))
+
+      disconnect_index =
+        Enum.find_index(operations, &match?({:disconnect_bidirectional_ws, _}, &1))
+
       hangup_index = Enum.find_index(operations, &match?({:hangup, _}, &1))
 
       # disconnect should come before hangup

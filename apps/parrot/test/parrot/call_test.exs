@@ -423,8 +423,7 @@ defmodule Parrot.CallTest do
       assert [operation] = call.__operations__
 
       assert operation ==
-               {:fork_media, "192.168.1.100:5000",
-                [fork_id: "transcription", transport: :rtp]}
+               {:fork_media, "192.168.1.100:5000", [fork_id: "transcription", transport: :rtp]}
     end
   end
 

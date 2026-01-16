@@ -179,11 +179,12 @@ defmodule Parrot.Call.ServerTest do
     test "accepts optional name for registration" do
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
 
-      {:ok, pid} = Server.start_link(
-        handler: TestHandler,
-        invite: invite_data,
-        name: {:global, :test_call_server}
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: TestHandler,
+          invite: invite_data,
+          name: {:global, :test_call_server}
+        )
 
       assert GenServer.whereis({:global, :test_call_server}) == pid
     end
@@ -489,11 +490,12 @@ defmodule Parrot.Call.ServerTest do
         media_pid: media_pid
       }
 
-      {:ok, pid} = Server.start_link(
-        handler: ChainedPlayHandler,
-        invite: invite_data,
-        context: context
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: ChainedPlayHandler,
+          invite: invite_data,
+          context: context
+        )
 
       # Initial handle_invite calls answer() and play()
       # ActionExecutor should execute these
@@ -508,17 +510,19 @@ defmodule Parrot.Call.ServerTest do
       media_pid = spawn(fn -> receive_loop([]) end)
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+
       context = %{
         uas: self(),
         sip_msg: build_test_sip_message(),
         media_pid: media_pid
       }
 
-      {:ok, pid} = Server.start_link(
-        handler: ChainedPlayHandler,
-        invite: invite_data,
-        context: context
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: ChainedPlayHandler,
+          invite: invite_data,
+          context: context
+        )
 
       # Consume initial response
       assert_receive {:response_sent, _}, 100
@@ -536,6 +540,7 @@ defmodule Parrot.Call.ServerTest do
       media_pid = spawn(fn -> receive_loop([]) end)
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+
       context = %{
         uas: self(),
         sip_msg: build_test_sip_message(),
@@ -543,11 +548,12 @@ defmodule Parrot.Call.ServerTest do
         dialog_id: "dialog-123"
       }
 
-      {:ok, pid} = Server.start_link(
-        handler: TestHandler,
-        invite: invite_data,
-        context: context
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: TestHandler,
+          invite: invite_data,
+          context: context
+        )
 
       call = Server.get_call(pid)
       assert call.__uas__ == self()
@@ -629,17 +635,19 @@ defmodule Parrot.Call.ServerTest do
       media_pid = spawn(fn -> receive_loop([]) end)
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+
       context = %{
         uas: self(),
         sip_msg: build_test_sip_message(),
         media_pid: media_pid
       }
 
-      {:ok, pid} = Server.start_link(
-        handler: HangupAfterPlayHandler,
-        invite: invite_data,
-        context: context
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: HangupAfterPlayHandler,
+          invite: invite_data,
+          context: context
+        )
 
       # Consume initial 200 OK response from answer()
       assert_receive {:response_sent, _}, 100
@@ -660,10 +668,11 @@ defmodule Parrot.Call.ServerTest do
     test "hangup callback is invoked when :hangup event is dispatched" do
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
 
-      {:ok, pid} = Server.start_link(
-        handler: HangupAfterPlayHandler,
-        invite: invite_data
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: HangupAfterPlayHandler,
+          invite: invite_data
+        )
 
       # Dispatch :hangup event (simulating remote party hanging up)
       Server.dispatch(pid, :hangup)
@@ -677,17 +686,19 @@ defmodule Parrot.Call.ServerTest do
       media_pid = spawn(fn -> receive_loop([]) end)
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
+
       context = %{
         uas: self(),
         sip_msg: build_test_sip_message(),
         media_pid: media_pid
       }
 
-      {:ok, pid} = Server.start_link(
-        handler: TestHandler,
-        invite: invite_data,
-        context: context
-      )
+      {:ok, pid} =
+        Server.start_link(
+          handler: TestHandler,
+          invite: invite_data,
+          context: context
+        )
 
       # Consume initial response
       assert_receive {:response_sent, _}, 100

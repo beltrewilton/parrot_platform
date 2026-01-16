@@ -154,8 +154,8 @@ defmodule Parrot.Examples.DTMFDemo do
     use Parrot.Router
 
     # Route INVITE requests to our DTMF demo handler
-    invite "dtmf-demo@*", Parrot.Examples.DTMFDemo.Handler
-    invite "*", Parrot.Examples.DTMFDemo.Handler
+    invite("dtmf-demo@*", Parrot.Examples.DTMFDemo.Handler)
+    invite("*", Parrot.Examples.DTMFDemo.Handler)
   end
 
   # ============================================================================

@@ -462,6 +462,8 @@ When working with these modules, understand gen_statem concepts:
 - Elixir ~> 1.16, OTP 26+ + Membrane Framework, Fresh (WebSocket), ExSDP, Telemetry (004-bidirectional-ws)
 - N/A (in-memory process state, Registry for lookups) (004-bidirectional-ws)
 - CDR System: Call Detail Records with handler-based dispatch, JSON/CSV serialization (006-cdr-system)
+- Elixir ~> 1.16 with OTP 26+ + ParrotSip, ParrotMedia (MediaSession), ParrotTranspor (007-dsl-dtmf-collect)
+- N/A (in-memory process state via Registry) (007-dsl-dtmf-collect)
 
 ## Recent Changes
 - 001-dsl-sip-bridge: Added Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines)

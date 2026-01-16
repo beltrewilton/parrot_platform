@@ -118,7 +118,9 @@ defmodule Parrot.InviteHandlerTest do
 
     test "provides default handle_fork_media_connected/2 implementation" do
       call = Call.new()
-      assert {:noreply, ^call} = MinimalHandler.handle_fork_media_connected("wss://service.com", call)
+
+      assert {:noreply, ^call} =
+               MinimalHandler.handle_fork_media_connected("wss://service.com", call)
     end
 
     test "provides default handle_hangup/1 implementation" do
@@ -379,7 +381,8 @@ defmodule Parrot.InviteHandlerTest do
       end
 
       def handle_conference_leave(room, reason, call) do
-        {:noreply, %{call | assigns: Map.merge(call.assigns, %{left_room: room, leave_reason: reason})}}
+        {:noreply,
+         %{call | assigns: Map.merge(call.assigns, %{left_room: room, leave_reason: reason})}}
       end
     end
 
@@ -410,10 +413,15 @@ defmodule Parrot.InviteHandlerTest do
       end
 
       def handle_record_complete(filename, duration, call) do
-        {:noreply, %{call | assigns: Map.merge(call.assigns, %{
-          recording: filename,
-          duration: duration
-        })}}
+        {:noreply,
+         %{
+           call
+           | assigns:
+               Map.merge(call.assigns, %{
+                 recording: filename,
+                 duration: duration
+               })
+         }}
       end
     end
 
@@ -442,7 +450,9 @@ defmodule Parrot.InviteHandlerTest do
 
     test "tracks media fork connection" do
       call = Call.new()
-      {:noreply, result} = MediaForkHandler.handle_fork_media_connected("wss://ai-service.com/stream", call)
+
+      {:noreply, result} =
+        MediaForkHandler.handle_fork_media_connected("wss://ai-service.com/stream", call)
 
       assert result.assigns.ai_stream == "wss://ai-service.com/stream"
     end
@@ -503,7 +513,9 @@ defmodule Parrot.InviteHandlerTest do
 
     test "tracks which destination answered" do
       call = Call.new()
-      {:noreply, result} = ForkHandler.handle_fork_complete({:answered, "sip:alice@device2"}, call)
+
+      {:noreply, result} =
+        ForkHandler.handle_fork_complete({:answered, "sip:alice@device2"}, call)
 
       assert result.assigns.answered_by == "sip:alice@device2"
     end

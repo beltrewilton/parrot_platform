@@ -52,7 +52,7 @@ defmodule Parrot.Sipp.DSL.BasicAnswerTest do
     """
     use Parrot.Router
 
-    invite "*", Parrot.Sipp.DSL.BasicAnswerTest.TestHandler
+    invite("*", Parrot.Sipp.DSL.BasicAnswerTest.TestHandler)
   end
 
   # ===========================================================================
@@ -99,7 +99,8 @@ defmodule Parrot.Sipp.DSL.BasicAnswerTest do
       Process.sleep(100)
 
       # Get absolute path to scenario file
-      scenario_file = umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
+      scenario_file =
+        umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
 
       # Run SIPp UAC basic call scenario
       result =
@@ -119,7 +120,8 @@ defmodule Parrot.Sipp.DSL.BasicAnswerTest do
       Process.sleep(100)
 
       # Get absolute path to scenario file
-      scenario_file = umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
+      scenario_file =
+        umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
 
       # Run multiple calls sequentially
       result =
