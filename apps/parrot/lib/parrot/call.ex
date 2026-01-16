@@ -262,6 +262,32 @@ defmodule Parrot.Call do
   end
 
   # ---------------------------------------------------------------------------
+  # DTMF Operations
+  # ---------------------------------------------------------------------------
+
+  @default_collect_opts [max: 20, timeout: 30_000, terminators: []]
+
+  @doc """
+  Starts DTMF digit collection on the active call.
+
+  ## Options
+
+    * `:max` - Maximum digits to collect (default: 20)
+    * `:timeout` - Timeout in milliseconds (default: 30,000)
+    * `:terminators` - Digits that end collection early (default: [])
+
+  ## Examples
+
+      call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
+
+  """
+  @spec collect_dtmf(t(), keyword()) :: t()
+  def collect_dtmf(%__MODULE__{} = call, opts \\ []) do
+    opts = Keyword.merge(@default_collect_opts, opts)
+    add_operation(call, {:collect_dtmf, opts})
+  end
+
+  # ---------------------------------------------------------------------------
   # Recording Operations
   # ---------------------------------------------------------------------------
 

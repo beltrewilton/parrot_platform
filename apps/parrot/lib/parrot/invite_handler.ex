@@ -243,6 +243,8 @@ defmodule Parrot.InviteHandler do
           record: 2,
           record: 3,
           stop_record: 1,
+          collect_dtmf: 1,
+          collect_dtmf: 2,
           bridge: 2,
           bridge: 3,
           fork: 2,
