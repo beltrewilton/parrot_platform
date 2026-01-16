@@ -61,7 +61,7 @@ defmodule Parrot.Examples.DTMFDemo do
       call
       |> answer()
       |> assign(:step, :menu)
-      |> play("priv/audio/welcome.wav")
+      |> play("priv/audio/parrot-welcome.wav")
     end
 
     @impl true
@@ -75,19 +75,20 @@ defmodule Parrot.Examples.DTMFDemo do
       |> collect_dtmf(opts)
     end
 
-    def handle_play_complete("priv/audio/welcome.wav", call) do
+    def handle_play_complete("priv/audio/parrot-welcome.wav", call) do
       Logger.info("[DTMFDemo] Welcome playback complete, collecting menu selection")
       call |> collect_dtmf(max: 1, timeout: 5_000)
     end
 
-    def handle_play_complete("priv/audio/enter-pin.wav", call) do
+    def handle_play_complete("priv/audio/enter-pin.wav", %{assigns: %{step: :pin}} = call) do
       Logger.info("[DTMFDemo] PIN prompt complete, collecting PIN")
       call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
     end
 
-    def handle_play_complete("priv/audio/goodbye.wav", call) do
-      Logger.info("[DTMFDemo] Goodbye playback complete")
-      {:noreply, call}
+    def handle_play_complete("priv/audio/parrot-welcome.wav", %{assigns: %{step: :pin}} = call) do
+      # Using same audio for PIN prompt since we only have one audio file
+      Logger.info("[DTMFDemo] PIN prompt complete, collecting PIN")
+      call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
     end
 
     def handle_play_complete(file, call) do
@@ -103,13 +104,13 @@ defmodule Parrot.Examples.DTMFDemo do
         "1" ->
           call
           |> assign(:step, :pin)
-          |> play("priv/audio/enter-pin.wav")
+          |> play("priv/audio/parrot-welcome.wav")
 
         "2" ->
-          call |> play("priv/audio/option-two.wav")
+          call |> play("priv/audio/parrot-welcome.wav")
 
         _ ->
-          call |> play("priv/audio/invalid.wav")
+          call |> play("priv/audio/parrot-welcome.wav")
       end
     end
 
@@ -117,18 +118,17 @@ defmodule Parrot.Examples.DTMFDemo do
       Logger.info("[DTMFDemo] PIN entered: #{pin}")
 
       if pin == "1234" do
-        call |> play("priv/audio/welcome-authorized.wav")
+        Logger.info("[DTMFDemo] PIN correct! Authorized.")
+        call |> play("priv/audio/parrot-welcome.wav")
       else
-        call |> play("priv/audio/invalid-pin.wav")
+        Logger.info("[DTMFDemo] PIN incorrect: #{pin}")
+        call |> play("priv/audio/parrot-welcome.wav")
       end
     end
 
     def handle_dtmf(:timeout, %{assigns: %{step: step}} = call) do
-      Logger.info("[DTMFDemo] DTMF timeout in step: #{step}")
-
-      call
-      |> play("priv/audio/goodbye.wav")
-      |> hangup()
+      Logger.info("[DTMFDemo] DTMF timeout in step: #{step}, hanging up")
+      call |> hangup()
     end
 
     def handle_dtmf(digits, call) do
