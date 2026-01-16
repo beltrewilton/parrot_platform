@@ -7,7 +7,7 @@ defmodule Parrot.Bridge.HandlerTest do
   defmodule TestRouter do
     @moduledoc false
     use Parrot.Router
-    invite "*", SomeHandler
+    invite("*", SomeHandler)
   end
 
   # Test handler that rejects with 486 Busy Here
@@ -36,14 +36,14 @@ defmodule Parrot.Bridge.HandlerTest do
   defmodule BusyRouter do
     @moduledoc false
     use Parrot.Router
-    invite "*", Parrot.Bridge.HandlerTest.BusyHandler
+    invite("*", Parrot.Bridge.HandlerTest.BusyHandler)
   end
 
   # Test router that routes to ForbiddenHandler
   defmodule ForbiddenRouter do
     @moduledoc false
     use Parrot.Router
-    invite "*", Parrot.Bridge.HandlerTest.ForbiddenHandler
+    invite("*", Parrot.Bridge.HandlerTest.ForbiddenHandler)
   end
 
   # Helper to create a minimal test SIP INVITE message
@@ -66,12 +66,28 @@ defmodule Parrot.Bridge.HandlerTest do
       ],
       from: %ParrotSip.Headers.From{
         display_name: nil,
-        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "127.0.0.1", port: 5080, host_type: :ipv4, parameters: %{}, headers: %{}},
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
         parameters: %{"tag" => "from-tag-123"}
       },
       to: %ParrotSip.Headers.To{
         display_name: nil,
-        uri: %ParrotSip.Uri{scheme: "sip", user: "100", host: "127.0.0.1", port: 5060, host_type: :ipv4, parameters: %{}, headers: %{}},
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "100",
+          host: "127.0.0.1",
+          port: 5060,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
         parameters: %{}
       },
       call_id: "test-call-id-123@127.0.0.1",
@@ -284,15 +300,16 @@ defmodule Parrot.Bridge.HandlerTest do
       use Parrot.Router
 
       # Extension pattern: 1xxx (1 followed by 3 digits)
-      invite "1xxx", Parrot.Bridge.HandlerTest.ExtensionHandler
+      invite("1xxx", Parrot.Bridge.HandlerTest.ExtensionHandler)
 
       # Catch-all
-      invite "*", Parrot.Bridge.HandlerTest.CatchAllHandler
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
     end
 
     test "routes 1xxx pattern to ExtensionHandler" do
       test_pid = self()
-      invite = create_invite_to("1234")  # Matches 1xxx
+      # Matches 1xxx
+      invite = create_invite_to("1234")
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
@@ -307,7 +324,8 @@ defmodule Parrot.Bridge.HandlerTest do
 
     test "routes non-matching pattern to catch-all handler" do
       test_pid = self()
-      invite = create_invite_to("5678")  # Doesn't match 1xxx, matches *
+      # Doesn't match 1xxx, matches *
+      invite = create_invite_to("5678")
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
@@ -344,11 +362,11 @@ defmodule Parrot.Bridge.HandlerTest do
 
       # Internal network scope
       scope "/", from_ip: "192.168.1.0/24" do
-        invite "*", Parrot.Bridge.HandlerTest.InternalHandler
+        invite("*", Parrot.Bridge.HandlerTest.InternalHandler)
       end
 
       # Catch-all for external
-      invite "*", Parrot.Bridge.HandlerTest.ExternalHandler
+      invite("*", Parrot.Bridge.HandlerTest.ExternalHandler)
     end
 
     test "routes requests from matching IP to scoped handler" do
@@ -367,7 +385,8 @@ defmodule Parrot.Bridge.HandlerTest do
 
     test "routes requests from non-matching IP to fallback handler" do
       test_pid = self()
-      invite = create_invite_from_ip({10, 0, 0, 1})  # Not in 192.168.1.0/24
+      # Not in 192.168.1.0/24
+      invite = create_invite_from_ip({10, 0, 0, 1})
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
@@ -398,8 +417,8 @@ defmodule Parrot.Bridge.HandlerTest do
     defmodule RegisterRouter do
       use Parrot.Router
 
-      invite "*", Parrot.Bridge.HandlerTest.CatchAllHandler
-      register Parrot.Bridge.HandlerTest.TestRegistrationHandler
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      register(Parrot.Bridge.HandlerTest.TestRegistrationHandler)
     end
 
     test "routes REGISTER to registered handler" do
@@ -423,6 +442,7 @@ defmodule Parrot.Bridge.HandlerTest do
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+
       # Router without register handler (PatternRouter is defined in pattern routing describe block)
       args = %{router: Parrot.Bridge.HandlerTest.PatternRouter, response_fn: response_fn}
 
@@ -596,7 +616,7 @@ defmodule Parrot.Bridge.HandlerTest do
 
     defmodule RichBindingRouter do
       use Parrot.Router
-      register Parrot.Bridge.HandlerTest.RichBindingRegistrationHandler
+      register(Parrot.Bridge.HandlerTest.RichBindingRegistrationHandler)
     end
 
     test "process_registration includes Contact header in 200 OK" do

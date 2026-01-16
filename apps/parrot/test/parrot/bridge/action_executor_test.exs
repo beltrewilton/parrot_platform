@@ -193,7 +193,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       files = ["intro.wav", "menu.wav"]
-      {:ok, _updated_call} = ActionExecutor.execute_play(call, context, files, [loop: true])
+      {:ok, _updated_call} = ActionExecutor.execute_play(call, context, files, loop: true)
 
       assert_receive {:play_files, ^files, [loop: true]}
     end
@@ -207,7 +207,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: nil
       }
 
-      assert {:error, :no_media_session} = ActionExecutor.execute_play(call, context, "test.wav", [])
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_play(call, context, "test.wav", [])
     end
 
     test "returns error when call is not in answered state" do
@@ -365,7 +366,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: nil
       }
 
-      assert {:error, :no_media_session} = ActionExecutor.execute_record(call, context, "test.wav", [])
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_record(call, context, "test.wav", [])
     end
 
     test "returns error when call is not in answered state" do
@@ -377,7 +379,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: self()
       }
 
-      assert {:error, :invalid_state} = ActionExecutor.execute_record(call, context, "test.wav", [])
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_record(call, context, "test.wav", [])
     end
   end
 
@@ -466,7 +469,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       # Execute the collect_dtmf operation directly
-      {:ok, _updated_call} = ActionExecutor.execute_collect_dtmf(call, context, max: 4, timeout: 10_000)
+      {:ok, _updated_call} =
+        ActionExecutor.execute_collect_dtmf(call, context, max: 4, timeout: 10_000)
 
       # Verify message was sent to media session
       assert_receive {:collect_dtmf, opts}
@@ -483,7 +487,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: nil
       }
 
-      assert {:error, :no_media_session} = ActionExecutor.execute_collect_dtmf(call, context, max: 4)
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_collect_dtmf(call, context, max: 4)
     end
 
     test "returns {:error, :invalid_state} when call is not in answered state" do
@@ -502,7 +507,11 @@ defmodule Parrot.Bridge.ActionExecutorTest do
   describe "execute/3 with :collect_dtmf operation" do
     test "executes collect_dtmf operation via pipeline" do
       # Manually create a collect_dtmf operation (until Call.collect_dtmf/2 is implemented)
-      call = %Call{Call.new(state: :answered) | __operations__: [{:collect_dtmf, [max: 4, timeout: 10_000]}]}
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [{:collect_dtmf, [max: 4, timeout: 10_000]}]
+      }
+
       operations = Call.get_operations(call)
 
       context = %{

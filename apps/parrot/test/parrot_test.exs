@@ -79,7 +79,7 @@ defmodule ParrotTest do
     defmodule ValidRouter do
       @moduledoc false
       use Parrot.Router
-      invite "*", SomeHandler
+      invite("*", SomeHandler)
     end
 
     defmodule InvalidRouter do

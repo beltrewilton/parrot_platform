@@ -57,7 +57,8 @@ defmodule Parrot.Sipp.Examples.EchoServerTest do
       Process.sleep(100)
 
       # Get absolute path to scenario file
-      scenario_file = umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
+      scenario_file =
+        umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
 
       # Run SIPp UAC basic call scenario
       result =
@@ -77,7 +78,8 @@ defmodule Parrot.Sipp.Examples.EchoServerTest do
       Process.sleep(100)
 
       # Get absolute path to scenario file
-      scenario_file = umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
+      scenario_file =
+        umbrella_root() <> "/apps/parrot_sip/test/sipp/scenarios/dsl/uac_basic_call.xml"
 
       # Run multiple calls sequentially
       result =

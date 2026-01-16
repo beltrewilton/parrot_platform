@@ -72,38 +72,43 @@ defmodule Parrot.PresenceHandlerTest do
     end
 
     test "returns :allow when subscription is authorized" do
-      assert :allow == AuthorizeAllowHandler.authorize_subscription(
-        "sip:bob@example.com",
-        "sip:alice@example.com"
-      )
+      assert :allow ==
+               AuthorizeAllowHandler.authorize_subscription(
+                 "sip:bob@example.com",
+                 "sip:alice@example.com"
+               )
     end
 
     test "returns :deny when subscription is not authorized" do
-      assert :deny == AuthorizeDenyHandler.authorize_subscription(
-        "sip:bob@example.com",
-        "sip:alice@example.com"
-      )
+      assert :deny ==
+               AuthorizeDenyHandler.authorize_subscription(
+                 "sip:bob@example.com",
+                 "sip:alice@example.com"
+               )
     end
 
     test "returns :pending for approval flows" do
-      assert :pending == AuthorizePendingHandler.authorize_subscription(
-        "sip:bob@example.com",
-        "sip:alice@example.com"
-      )
+      assert :pending ==
+               AuthorizePendingHandler.authorize_subscription(
+                 "sip:bob@example.com",
+                 "sip:alice@example.com"
+               )
     end
 
     test "can implement conditional authorization logic" do
       # Allowed watcher
-      assert :allow == AuthorizeConditionalHandler.authorize_subscription(
-        "sip:allowed@example.com",
-        "sip:alice@example.com"
-      )
+      assert :allow ==
+               AuthorizeConditionalHandler.authorize_subscription(
+                 "sip:allowed@example.com",
+                 "sip:alice@example.com"
+               )
 
       # Not allowed watcher
-      assert :deny == AuthorizeConditionalHandler.authorize_subscription(
-        "sip:bob@example.com",
-        "sip:alice@example.com"
-      )
+      assert :deny ==
+               AuthorizeConditionalHandler.authorize_subscription(
+                 "sip:bob@example.com",
+                 "sip:alice@example.com"
+               )
     end
   end
 
@@ -262,13 +267,25 @@ defmodule Parrot.PresenceHandlerTest do
 
     test "handles various presence states" do
       # Available
-      assert :ok == PublishHandler.handle_publish("sip:alice@example.com", %{status: :open, note: "Available"})
+      assert :ok ==
+               PublishHandler.handle_publish("sip:alice@example.com", %{
+                 status: :open,
+                 note: "Available"
+               })
 
       # Busy
-      assert :ok == PublishHandler.handle_publish("sip:alice@example.com", %{status: :closed, note: "On a call"})
+      assert :ok ==
+               PublishHandler.handle_publish("sip:alice@example.com", %{
+                 status: :closed,
+                 note: "On a call"
+               })
 
       # Away
-      assert :ok == PublishHandler.handle_publish("sip:alice@example.com", %{status: :closed, note: "Away"})
+      assert :ok ==
+               PublishHandler.handle_publish("sip:alice@example.com", %{
+                 status: :closed,
+                 note: "Away"
+               })
     end
   end
 
@@ -279,10 +296,11 @@ defmodule Parrot.PresenceHandlerTest do
 
     test "provides default authorize_subscription/2 implementation" do
       # Default should allow all subscriptions
-      assert :allow == MinimalHandler.authorize_subscription(
-        "sip:bob@example.com",
-        "sip:alice@example.com"
-      )
+      assert :allow ==
+               MinimalHandler.authorize_subscription(
+                 "sip:bob@example.com",
+                 "sip:alice@example.com"
+               )
     end
 
     test "provides default store_subscription/1 implementation" do
@@ -328,6 +346,7 @@ defmodule Parrot.PresenceHandlerTest do
         Agent.update(__MODULE__, fn state ->
           %{state | subscriptions: [subscription | state.subscriptions]}
         end)
+
         :ok
       end
 
@@ -347,6 +366,7 @@ defmodule Parrot.PresenceHandlerTest do
         Agent.update(__MODULE__, fn state ->
           %{state | presence: Map.put(state.presence, presentity, presence_state)}
         end)
+
         :ok
       end
 
@@ -364,17 +384,19 @@ defmodule Parrot.PresenceHandlerTest do
     end
 
     test "custom authorize_subscription allows same domain" do
-      assert :allow == CustomHandler.authorize_subscription(
-        "sip:bob@example.com",
-        "sip:alice@example.com"
-      )
+      assert :allow ==
+               CustomHandler.authorize_subscription(
+                 "sip:bob@example.com",
+                 "sip:alice@example.com"
+               )
     end
 
     test "custom authorize_subscription denies different domains" do
-      assert :deny == CustomHandler.authorize_subscription(
-        "sip:bob@other.com",
-        "sip:alice@example.com"
-      )
+      assert :deny ==
+               CustomHandler.authorize_subscription(
+                 "sip:bob@other.com",
+                 "sip:alice@example.com"
+               )
     end
 
     test "custom store_subscription persists subscriptions" do
@@ -394,18 +416,24 @@ defmodule Parrot.PresenceHandlerTest do
 
     test "custom get_presence returns stored presence" do
       # Initially offline
-      assert %{status: :closed, note: "Offline"} == CustomHandler.get_presence("sip:alice@example.com")
+      assert %{status: :closed, note: "Offline"} ==
+               CustomHandler.get_presence("sip:alice@example.com")
 
       # Publish available status
       CustomHandler.handle_publish("sip:alice@example.com", %{status: :open, note: "Available"})
 
       # Now should be available
-      assert %{status: :open, note: "Available"} == CustomHandler.get_presence("sip:alice@example.com")
+      assert %{status: :open, note: "Available"} ==
+               CustomHandler.get_presence("sip:alice@example.com")
     end
 
     test "custom handle_publish updates presence state" do
       # Update presence
-      assert :ok == CustomHandler.handle_publish("sip:alice@example.com", %{status: :closed, note: "On a call"})
+      assert :ok ==
+               CustomHandler.handle_publish("sip:alice@example.com", %{
+                 status: :closed,
+                 note: "On a call"
+               })
 
       # Verify it was updated
       presence = CustomHandler.get_presence("sip:alice@example.com")
@@ -428,6 +456,7 @@ defmodule Parrot.PresenceHandlerTest do
         Agent.update(__MODULE__, fn state ->
           %{state | subscriptions: [subscription | state.subscriptions]}
         end)
+
         :ok
       end
 
@@ -447,6 +476,7 @@ defmodule Parrot.PresenceHandlerTest do
         Agent.update(__MODULE__, fn state ->
           %{state | presence: Map.put(state.presence, presentity, presence_state)}
         end)
+
         :ok
       end
     end
@@ -469,10 +499,12 @@ defmodule Parrot.PresenceHandlerTest do
         dialog_id: "dialog-123",
         expires: 3600
       }
+
       assert :ok == ScenarioHandler.store_subscription(subscription)
 
       # 2. Presentity publishes their presence
-      assert :ok == ScenarioHandler.handle_publish(presentity, %{status: :open, note: "Available"})
+      assert :ok ==
+               ScenarioHandler.handle_publish(presentity, %{status: :open, note: "Available"})
 
       # 3. Get watchers to notify
       watchers = ScenarioHandler.get_subscriptions(presentity)

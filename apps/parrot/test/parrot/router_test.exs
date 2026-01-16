@@ -10,54 +10,54 @@ defmodule Parrot.RouterTest do
   defmodule SimpleRouter do
     use Parrot.Router
 
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule PatternRouter do
     use Parrot.Router
 
     # Specific patterns first
-    invite "1xxx", ExtensionsHandler
-    invite "9~", OutboundHandler
+    invite("1xxx", ExtensionsHandler)
+    invite("9~", OutboundHandler)
     # Catch-all last
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule PipelineRouter do
     use Parrot.Router
 
     pipeline :authenticated do
-      plug :verify_registration
-      plug :check_acl
+      plug(:verify_registration)
+      plug(:check_acl)
     end
 
     pipeline :rate_limited do
-      plug :apply_rate_limit
+      plug(:apply_rate_limit)
     end
 
     scope "/", from_ip: "192.168.1.0/24" do
-      pipe_through :authenticated
-      invite "1xxx", ExtensionsHandler
-      invite "*", InternalDefaultHandler
+      pipe_through(:authenticated)
+      invite("1xxx", ExtensionsHandler)
+      invite("*", InternalDefaultHandler)
     end
 
-    invite "*", RejectHandler
+    invite("*", RejectHandler)
   end
 
   defmodule MultiPipelineRouter do
     use Parrot.Router
 
     pipeline :first do
-      plug :step_one
+      plug(:step_one)
     end
 
     pipeline :second do
-      plug :step_two
+      plug(:step_two)
     end
 
     scope "/" do
-      pipe_through [:first, :second]
-      invite "*", MultiPipeHandler
+      pipe_through([:first, :second])
+      invite("*", MultiPipeHandler)
     end
   end
 
@@ -66,101 +66,101 @@ defmodule Parrot.RouterTest do
 
     # Single IP CIDR
     scope "/", from_ip: "192.168.1.0/24" do
-      invite "*", InternalHandler
+      invite("*", InternalHandler)
     end
 
     # List of specific IPs
     scope "/", from_ip: ["10.0.0.1", "10.0.0.2"] do
-      invite "*", TrunkHandler
+      invite("*", TrunkHandler)
     end
 
     # Exact IP match
     scope "/", from_ip: "172.16.0.100" do
-      invite "*", SpecificHostHandler
+      invite("*", SpecificHostHandler)
     end
 
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule HeaderMatchingRouter do
     use Parrot.Router
 
     scope "/", header: {"X-Tenant", "acme"} do
-      invite "*", AcmeTenantHandler
+      invite("*", AcmeTenantHandler)
     end
 
     scope "/", header: {"X-Priority", "high"} do
-      invite "*", PriorityHandler
+      invite("*", PriorityHandler)
     end
 
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule FromMatchingRouter do
     use Parrot.Router
 
     scope "/", from: "*@partner.com" do
-      invite "*", PartnerHandler
+      invite("*", PartnerHandler)
     end
 
     scope "/", from: "admin@*" do
-      invite "*", AdminHandler
+      invite("*", AdminHandler)
     end
 
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule ToMatchingRouter do
     use Parrot.Router
 
     scope "/", to: "support@*" do
-      invite "*", SupportHandler
+      invite("*", SupportHandler)
     end
 
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule CombinedMatchingRouter do
     use Parrot.Router
 
     scope "/", from_ip: "10.0.0.0/8", header: {"X-Priority", "high"} do
-      invite "*", PriorityTrunkHandler
+      invite("*", PriorityTrunkHandler)
     end
 
-    invite "*", DefaultHandler
+    invite("*", DefaultHandler)
   end
 
   defmodule MethodHandlerRouter do
     use Parrot.Router
 
-    invite "*", InviteHandler
-    register MyRegistrationHandler
-    presence MyPresenceHandler
+    invite("*", InviteHandler)
+    register(MyRegistrationHandler)
+    presence(MyPresenceHandler)
   end
 
   defmodule NestedScopeRouter do
     use Parrot.Router
 
     pipeline :outer do
-      plug :outer_plug
+      plug(:outer_plug)
     end
 
     pipeline :inner do
-      plug :inner_plug
+      plug(:inner_plug)
     end
 
     scope "/", from_ip: "192.168.0.0/16" do
-      pipe_through :outer
+      pipe_through(:outer)
 
       scope "/", header: {"X-Department", "sales"} do
-        pipe_through :inner
-        invite "1xxx", SalesExtensionsHandler
+        pipe_through(:inner)
+        invite("1xxx", SalesExtensionsHandler)
       end
 
-      invite "*", InternalDefaultHandler
+      invite("*", InternalDefaultHandler)
     end
 
-    invite "*", RejectHandler
+    invite("*", RejectHandler)
   end
 
   # ---------------------------------------------------------------------------
