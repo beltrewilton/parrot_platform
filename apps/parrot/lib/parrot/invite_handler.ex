@@ -276,6 +276,50 @@ defmodule Parrot.InviteHandler do
               {:noreply, Call.t()} | Call.t()
 
   @doc """
+  Called when TTS synthesis fails (FR-017, FR-018, FR-019).
+
+  This callback is invoked when the `say/2` or `say_prompt/3` operations fail to
+  synthesize text to audio. The default implementation logs a warning and returns
+  `{:noreply, call}`, allowing the call to continue.
+
+  Override this to implement custom error handling such as:
+  - Playing a fallback audio file
+  - Tracking error metrics
+  - Retrying with a different TTS provider
+  - Terminating the call after multiple failures
+
+  ## Arguments
+
+  - `text` - The text that failed to synthesize
+  - `error` - The error reason (may be an atom or tuple with details)
+  - `call` - The current call state
+
+  ## Return
+
+  Return `{:noreply, call}` or a `Call` struct with new operations.
+
+  ## Example
+
+      # Play fallback audio when TTS fails
+      def handle_tts_error(_text, _error, call) do
+        call |> play("tts-error-fallback.wav")
+      end
+
+      # Track errors and hang up after 3 failures
+      def handle_tts_error(_text, _error, %{assigns: %{tts_errors: n}} = call) when n >= 2 do
+        call |> play("goodbye.wav") |> hangup()
+      end
+
+      def handle_tts_error(text, error, call) do
+        Logger.warning("TTS failed for: \#{text}, error: \#{inspect(error)}")
+        count = Map.get(call.assigns, :tts_errors, 0)
+        {:noreply, %{call | assigns: Map.put(call.assigns, :tts_errors, count + 1)}}
+      end
+  """
+  @callback handle_tts_error(text :: String.t(), error :: term(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
   Provides default implementations and imports Call functions.
 
   When you `use Parrot.InviteHandler`, you get:
@@ -371,6 +415,15 @@ defmodule Parrot.InviteHandler do
         call |> reject(488)
       end
 
+      @impl Parrot.InviteHandler
+      def handle_tts_error(text, error, call) do
+        # Default: log warning and return {:noreply, call} (FR-018)
+        # This allows the call to continue without crashing
+        require Logger
+        Logger.warning("TTS synthesis failed for text #{inspect(text)}: #{inspect(error)}")
+        {:noreply, call}
+      end
+
       defoverridable handle_play_complete: 2,
                      handle_dtmf: 2,
                      handle_prompt_complete: 3,
@@ -381,7 +434,8 @@ defmodule Parrot.InviteHandler do
                      handle_conference_leave: 3,
                      handle_fork_media_connected: 2,
                      handle_hangup: 1,
-                     handle_sdp_error: 2
+                     handle_sdp_error: 2,
+                     handle_tts_error: 3
     end
   end
 end

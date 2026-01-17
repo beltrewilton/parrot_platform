@@ -398,6 +398,181 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   @doc """
+  Execute a list of pipeline operations with TTS error handler support.
+
+  Similar to `execute/3`, but uses the error-handler-aware versions of TTS operations.
+  When TTS synthesis fails, invokes the tts_error_handler from context instead of
+  returning an error, allowing the call to continue.
+
+  ## Context Options
+
+  - `:tts_error_handler` - Function `(text, error, call) -> call` to handle errors.
+    If not provided, uses a default handler that logs and returns the call unchanged.
+  """
+  @spec execute_with_error_handler([operation()], Call.t(), context()) :: execute_result()
+  def execute_with_error_handler([], call, _context), do: {:ok, call}
+
+  def execute_with_error_handler([operation | rest], call, context) do
+    case execute_operation_with_error_handler(operation, call, context) do
+      {:ok, updated_call, :continue} ->
+        execute_with_error_handler(rest, updated_call, context)
+
+      {:ok, updated_call, :stop} ->
+        {:ok, updated_call}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # Execute a single operation with TTS error handler support
+  defp execute_operation_with_error_handler({:say, text, opts}, call, context) do
+    case execute_say_with_error_handler(call, context, text, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation_with_error_handler({:say_prompt, text, opts}, call, context) do
+    case execute_say_prompt_with_error_handler(call, context, text, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  # For non-TTS operations, delegate to the regular execute_operation
+  defp execute_operation_with_error_handler(operation, call, context) do
+    execute_operation(operation, call, context)
+  end
+
+  @doc """
+  Execute the `:say` operation with error handler callback support.
+
+  When synthesis fails, invokes the tts_error_handler from context (or default)
+  instead of returning an error. This allows the call to continue after TTS failures.
+
+  ## Context Options
+
+  - `:tts_error_handler` - Function `(text, error, call) -> call` to handle errors.
+    If not provided, uses a default handler that logs and returns the call unchanged.
+  """
+  @spec execute_say_with_error_handler(Call.t(), context(), String.t(), keyword()) ::
+          {:ok, Call.t()}
+  def execute_say_with_error_handler(%Call{state: state}, _context, _text, _opts)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_say_with_error_handler(_call, %{media_pid: nil}, _text, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_say_with_error_handler(call, %{media_pid: media_pid} = context, text, opts) do
+    Logger.debug("[ActionExecutor] Executing say operation with error handler: #{inspect(text)}")
+
+    profile = Keyword.get(opts, :profile, :default)
+    synthesizer = Map.get(context, :synthesizer)
+
+    synthesis_result =
+      if synthesizer do
+        synth_fn = Agent.get(synthesizer, & &1)
+        synth_fn.(text, profile, opts)
+      else
+        try do
+          Parrot.TTS.Synthesizer.get_audio(text, profile, opts)
+        catch
+          :exit, _ -> {:error, :synthesizer_not_available}
+        end
+      end
+
+    case synthesis_result do
+      {:ok, audio_data, format} ->
+        play_opts = Keyword.put(opts, :format, format)
+        send(media_pid, {:play_audio, audio_data, play_opts})
+        {:ok, call}
+
+      {:error, reason} ->
+        Logger.warning("[ActionExecutor] TTS synthesis failed, invoking error handler: #{inspect(reason)}")
+        error_handler = Map.get(context, :tts_error_handler) || &default_tts_error_handler/3
+        handler_result = error_handler.(text, reason, call)
+        # Handle both {:noreply, call} and raw call return patterns
+        updated_call = case handler_result do
+          {:noreply, c} -> c
+          c -> c
+        end
+        {:ok, updated_call}
+    end
+  end
+
+  @doc """
+  Execute the `:say_prompt` operation with error handler callback support.
+
+  When synthesis fails, invokes the tts_error_handler from context (or default)
+  instead of returning an error. This allows the call to continue after TTS failures.
+  """
+  @spec execute_say_prompt_with_error_handler(Call.t(), context(), String.t(), keyword()) ::
+          {:ok, Call.t()}
+  def execute_say_prompt_with_error_handler(%Call{state: state}, _context, _text, _opts)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_say_prompt_with_error_handler(_call, %{media_pid: nil}, _text, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_say_prompt_with_error_handler(call, %{media_pid: media_pid} = context, text, opts) do
+    Logger.debug("[ActionExecutor] Executing say_prompt operation with error handler: #{inspect(text)}")
+
+    profile = Keyword.get(opts, :profile, :default)
+    synthesizer = Map.get(context, :synthesizer)
+
+    synthesis_result =
+      if synthesizer do
+        synth_fn = Agent.get(synthesizer, & &1)
+        synth_fn.(text, profile, opts)
+      else
+        try do
+          Parrot.TTS.Synthesizer.get_audio(text, profile, opts)
+        catch
+          :exit, _ -> {:error, :synthesizer_not_available}
+        end
+      end
+
+    case synthesis_result do
+      {:ok, audio_data, format} ->
+        play_opts = Keyword.put(opts, :format, format)
+        send(media_pid, {:play_audio, audio_data, play_opts})
+
+        # Store DTMF collection options for deferred collection
+        collect_keys = [:max, :timeout, :terminators]
+        collect_opts = Keyword.take(opts, collect_keys)
+        updated_call = %{call | assigns: Map.put(call.assigns, :__pending_collect__, collect_opts)}
+
+        {:ok, updated_call}
+
+      {:error, reason} ->
+        Logger.warning("[ActionExecutor] TTS synthesis failed for say_prompt, invoking error handler: #{inspect(reason)}")
+        error_handler = Map.get(context, :tts_error_handler) || &default_tts_error_handler/3
+        handler_result = error_handler.(text, reason, call)
+        # Handle both {:noreply, call} and raw call return patterns
+        updated_call = case handler_result do
+          {:noreply, c} -> c
+          c -> c
+        end
+        {:ok, updated_call}
+    end
+  end
+
+  # Default TTS error handler - logs warning and returns {:noreply, call}
+  # Signature matches handle_tts_error callback: (text, error, call) -> {:noreply, call} | call
+  @spec default_tts_error_handler(String.t(), term(), Call.t()) :: {:noreply, Call.t()}
+  defp default_tts_error_handler(text, error, call) do
+    Logger.warning("TTS synthesis failed for text #{inspect(text)}: #{inspect(error)}")
+    {:noreply, call}
+  end
+
+  @doc """
   Execute the `:say_prompt` operation.
 
   Combines TTS synthesis with deferred DTMF collection. This operation:
