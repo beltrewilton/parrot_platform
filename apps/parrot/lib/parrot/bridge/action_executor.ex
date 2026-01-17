@@ -39,6 +39,7 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:hangup, keyword()}
           | {:play, String.t() | [String.t()], keyword()}
           | {:say, String.t(), keyword()}
+          | {:say_prompt, String.t(), keyword()}
           | {:record, String.t(), keyword()}
           | {:stop_record, keyword()}
           | {:collect_dtmf, keyword()}
@@ -396,6 +397,85 @@ defmodule Parrot.Bridge.ActionExecutor do
     end
   end
 
+  @doc """
+  Execute the `:say_prompt` operation.
+
+  Combines TTS synthesis with deferred DTMF collection. This operation:
+  1. Verifies call is in `:answered` state
+  2. Verifies media_pid is available
+  3. Calls Synthesizer to convert text to audio
+  4. Sends `{:play_audio, audio_data, opts}` to MediaSession
+  5. Stores DTMF collection options in call.assigns[:__pending_collect__]
+
+  The DTMF collection will be triggered after playback completes via the
+  `handle_play_complete/2` callback in the handler, which checks for
+  `__pending_collect__` and starts collection.
+
+  ## Options
+
+  TTS options (passed to synthesizer):
+    * `:profile` - Named TTS profile (default: `:default`)
+    * `:voice` - Voice identifier
+    * `:language` - Language/locale code
+
+  DTMF collection options (stored in __pending_collect__):
+    * `:max` - Maximum digits to collect
+    * `:timeout` - Collection timeout in ms
+    * `:terminators` - Digits that end collection early
+  """
+  @spec execute_say_prompt(Call.t(), context(), String.t(), keyword()) :: execute_result()
+  def execute_say_prompt(%Call{state: state}, _context, _text, _opts) when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_say_prompt(_call, %{media_pid: nil}, _text, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_say_prompt(call, %{media_pid: media_pid} = context, text, opts) do
+    Logger.debug("[ActionExecutor] Executing say_prompt operation: #{inspect(text)}")
+
+    # Get the profile from opts, defaulting to :default
+    profile = Keyword.get(opts, :profile, :default)
+
+    # Get synthesizer from context (for testing) or use the default
+    synthesizer = Map.get(context, :synthesizer)
+
+    # Call synthesizer to get audio
+    synthesis_result =
+      if synthesizer do
+        # Test mode: synthesizer is a mock Agent that holds a function
+        synth_fn = Agent.get(synthesizer, & &1)
+        synth_fn.(text, profile, opts)
+      else
+        # Production mode: call actual Synthesizer
+        try do
+          Parrot.TTS.Synthesizer.get_audio(text, profile, opts)
+        catch
+          :exit, _ -> {:error, :synthesizer_not_available}
+        end
+      end
+
+    case synthesis_result do
+      {:ok, audio_data, format} ->
+        # Send audio to media session for playback
+        play_opts = Keyword.put(opts, :format, format)
+        send(media_pid, {:play_audio, audio_data, play_opts})
+
+        # Extract and store DTMF collection options in __pending_collect__
+        # These will be used by handle_play_complete to start collection
+        collect_keys = [:max, :timeout, :terminators]
+        collect_opts = Keyword.take(opts, collect_keys)
+        updated_call = %{call | assigns: Map.put(call.assigns, :__pending_collect__, collect_opts)}
+
+        {:ok, updated_call}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] TTS synthesis failed for say_prompt: #{inspect(reason)}")
+        {:error, {:synthesis_failed, reason}}
+    end
+  end
+
   # ============================================================================
   # Private Functions
   # ============================================================================
@@ -460,6 +540,13 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   defp execute_operation({:say, text, opts}, call, context) do
     case execute_say(call, context, text, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:say_prompt, text, opts}, call, context) do
+    case execute_say_prompt(call, context, text, opts) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
       error -> error
     end

@@ -1396,6 +1396,372 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "execute_say_prompt/4 (T023-T026 - TTS + DTMF collection)" do
+    # T023: Tests for ActionExecutor :say_prompt handling
+    # say_prompt combines TTS synthesis with DTMF collection
+    #
+    # The flow is:
+    # 1. Synthesize text to audio
+    # 2. Send audio to media session for playback
+    # 3. Store __pending_collect__ in call assigns
+    # (DTMF collection starts after playback via handle_play_complete callback)
+
+    test "returns error when call is not in answered state" do
+      call = Call.new(state: :incoming)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_say_prompt(call, context, "Enter PIN", max: 4)
+    end
+
+    test "returns error when media_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_say_prompt(call, context, "Enter PIN", max: 4)
+    end
+
+    test "calls Synthesizer with text and profile" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn text, profile, _opts ->
+        send(test_pid, {:synthesizer_called, text, profile})
+        {:ok, "MOCK_AUDIO", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_received, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} =
+        ActionExecutor.execute_say_prompt(call, context, "Enter your PIN", max: 4, profile: :prompts)
+
+      assert_receive {:synthesizer_called, "Enter your PIN", :prompts}
+    end
+
+    test "sends audio to media session on successful synthesis" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+      mock_audio = "TTS_AUDIO_DATA"
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, mock_audio, :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_received, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} =
+        ActionExecutor.execute_say_prompt(call, context, "Enter PIN", max: 4)
+
+      assert_receive {:media_received, {:play_audio, ^mock_audio, opts}}
+      assert opts[:format] == :wav
+    end
+
+    test "stores __pending_collect__ in call assigns for deferred collection" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> send(test_pid, :audio_sent)
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_say_prompt(call, context, "Enter PIN", max: 4, timeout: 10_000, terminators: ["#"])
+
+      # Verify __pending_collect__ contains the DTMF collection options
+      pending_collect = updated_call.assigns[:__pending_collect__]
+      assert pending_collect[:max] == 4
+      assert pending_collect[:timeout] == 10_000
+      assert pending_collect[:terminators] == ["#"]
+    end
+
+    test "returns error when Synthesizer fails" do
+      call = Call.new(state: :answered)
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :api_error}
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth
+      }
+
+      assert {:error, {:synthesis_failed, :api_error}} =
+               ActionExecutor.execute_say_prompt(call, context, "Enter PIN", max: 4)
+    end
+
+    test "uses :default profile when not specified" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, profile, _opts ->
+        send(test_pid, {:profile_used, profile})
+        {:ok, "audio", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> :ok
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _call} = ActionExecutor.execute_say_prompt(call, context, "Enter digits", max: 4)
+
+      assert_receive {:profile_used, :default}
+    end
+
+    test "extracts TTS-specific options (profile, voice, language) for synthesizer" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, opts ->
+        send(test_pid, {:synth_opts, opts})
+        {:ok, "audio", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> :ok
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _call} =
+        ActionExecutor.execute_say_prompt(
+          call,
+          context,
+          "Enter PIN",
+          max: 4,
+          timeout: 10_000,
+          profile: :premium,
+          voice: "en-US-Neural2-F",
+          language: "en-US"
+        )
+
+      assert_receive {:synth_opts, synth_opts}
+      assert synth_opts[:voice] == "en-US-Neural2-F"
+      assert synth_opts[:language] == "en-US"
+    end
+  end
+
+  describe "execute/3 with :say_prompt operation (T026 - integration)" do
+    # T026: Integration tests - say_prompt operation through main dispatch
+
+    test "executes say_prompt operation via pipeline" do
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "tts_audio", :wav}
+      end)
+
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [{:say_prompt, "Enter your PIN", [max: 4, timeout: 10_000]}]
+      }
+
+      operations = Call.get_operations(call)
+
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_received, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Audio should be sent to media session
+      assert_receive {:media_received, {:play_audio, _audio, _opts}}
+
+      # __pending_collect__ should be set for deferred DTMF collection
+      assert updated_call.assigns[:__pending_collect__] == [max: 4, timeout: 10_000]
+    end
+
+    test "returns error when say_prompt fails due to missing media_pid" do
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [{:say_prompt, "Enter PIN", [max: 4]}]
+      }
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "returns error when say_prompt fails due to invalid state" do
+      call = %Call{
+        Call.new(state: :incoming)
+        | __operations__: [{:say_prompt, "Enter PIN", [max: 4]}]
+      }
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      assert {:error, :invalid_state} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "say_prompt operation continues to next operations" do
+      # say_prompt is a media operation, so execution should continue
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio", :wav}
+      end)
+
+      # say_prompt followed by play
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [
+            {:say_prompt, "Enter PIN", [max: 4]},
+            {:play, "beep.wav", []}
+          ]
+      }
+
+      operations = Call.get_operations(call)
+
+      media_pid = spawn(fn ->
+        loop = fn loop_fn ->
+          receive do
+            msg ->
+              send(test_pid, {:media_msg, msg})
+              loop_fn.(loop_fn)
+          end
+        end
+
+        loop.(loop)
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Both operations should execute
+      assert_receive {:media_msg, {:play_audio, _audio, _opts}}
+      assert_receive {:media_msg, {:play_files, ["beep.wav"], []}}
+    end
+
+    test "preserves existing assigns when adding __pending_collect__" do
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio", :wav}
+      end)
+
+      # Call with existing assigns
+      call = %Call{
+        Call.new(state: :answered)
+        | assigns: %{menu: :main, retries: 2},
+          __operations__: [{:say_prompt, "Enter PIN", [max: 4]}]
+      }
+
+      operations = Call.get_operations(call)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> send(test_pid, :done)
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Existing assigns should be preserved
+      assert updated_call.assigns[:menu] == :main
+      assert updated_call.assigns[:retries] == 2
+      # And __pending_collect__ should be added
+      assert updated_call.assigns[:__pending_collect__] == [max: 4]
+    end
+  end
+
   # Helper functions
 
   # Starts a mock synthesizer GenServer that delegates to the provided function
