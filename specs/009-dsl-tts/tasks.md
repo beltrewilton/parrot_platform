@@ -25,10 +25,10 @@
 
 **Purpose**: Create TTS module structure and add dependencies
 
-- [ ] T001 Create TTS directory structure: `apps/parrot/lib/parrot/tts/`, `apps/parrot/lib/parrot/tts/cache/`, `apps/parrot/lib/parrot/tts/providers/`
-- [ ] T002 Create test directory structure: `apps/parrot/test/parrot/tts/`, `apps/parrot/test/parrot/tts/cache/`, `apps/parrot/test/parrot/tts/providers/`
-- [ ] T003 [P] Add Req HTTP client dependency to `apps/parrot/mix.exs`
-- [ ] T004 [P] Add Jason JSON library dependency if not present in `apps/parrot/mix.exs`
+- [x] T001 Create TTS directory structure: `apps/parrot/lib/parrot/tts/`, `apps/parrot/lib/parrot/tts/cache/`, `apps/parrot/lib/parrot/tts/providers/`
+- [x] T002 Create test directory structure: `apps/parrot/test/parrot/tts/`, `apps/parrot/test/parrot/tts/cache/`, `apps/parrot/test/parrot/tts/providers/`
+- [x] T003 [P] Add Req HTTP client dependency to `apps/parrot/mix.exs`
+- [x] T004 [P] Add Jason JSON library dependency if not present in `apps/parrot/mix.exs`
 
 ---
 
@@ -40,18 +40,18 @@
 
 ### Tests for Foundational
 
-- [ ] T005 [P] Write Provider behaviour contract tests in `apps/parrot/test/parrot/tts/provider_test.exs`
-- [ ] T006 [P] Write Cache behaviour contract tests in `apps/parrot/test/parrot/tts/cache_test.exs`
-- [ ] T007 [P] Write Synthesizer unit tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
-- [ ] T008 [P] Write ETS cache backend tests in `apps/parrot/test/parrot/tts/cache/ets_test.exs`
+- [x] T005 [P] Write Provider behaviour contract tests in `apps/parrot/test/parrot/tts/provider_test.exs`
+- [x] T006 [P] Write Cache behaviour contract tests in `apps/parrot/test/parrot/tts/cache_test.exs`
+- [x] T007 [P] Write Synthesizer unit tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
+- [x] T008 [P] Write ETS cache backend tests in `apps/parrot/test/parrot/tts/cache/ets_test.exs`
 
 ### Implementation for Foundational
 
-- [ ] T009 [P] Define Provider behaviour with callbacks in `apps/parrot/lib/parrot/tts/provider.ex`
-- [ ] T010 [P] Define Cache behaviour with callbacks in `apps/parrot/lib/parrot/tts/cache.ex`
-- [ ] T011 Implement ETS cache backend in `apps/parrot/lib/parrot/tts/cache/ets.ex` (depends on T010)
-- [ ] T012 Implement Synthesizer GenServer in `apps/parrot/lib/parrot/tts/synthesizer.ex` (depends on T009, T010, T011)
-- [ ] T013 Create mock provider for testing in `apps/parrot/test/support/mock_tts_provider.ex`
+- [x] T009 [P] Define Provider behaviour with callbacks in `apps/parrot/lib/parrot/tts/provider.ex`
+- [x] T010 [P] Define Cache behaviour with callbacks in `apps/parrot/lib/parrot/tts/cache.ex`
+- [x] T011 Implement ETS cache backend in `apps/parrot/lib/parrot/tts/cache/ets.ex` (depends on T010)
+- [x] T012 Implement Synthesizer GenServer in `apps/parrot/lib/parrot/tts/synthesizer.ex` (depends on T009, T010, T011)
+- [x] T013 Create mock provider for testing in `apps/parrot/test/support/mock_tts_provider.ex`
 
 **Checkpoint**: Foundation ready - Provider/Cache behaviours defined, Synthesizer works with mock provider
 
@@ -65,17 +65,17 @@
 
 ### Tests for User Story 1
 
-- [ ] T014 [P] [US1] Write say/2,3 function tests in `apps/parrot/test/parrot/call_test.exs`
-- [ ] T015 [P] [US1] Write ActionExecutor :say handling tests in `apps/parrot/test/parrot/bridge/action_executor_test.exs`
-- [ ] T016 [P] [US1] Write OpenAI provider tests in `apps/parrot/test/parrot/tts/providers/openai_test.exs`
+- [x] T014 [P] [US1] Write say/2,3 function tests in `apps/parrot/test/parrot/call_test.exs`
+- [x] T015 [P] [US1] Write ActionExecutor :say handling tests in `apps/parrot/test/parrot/bridge/action_executor_test.exs`
+- [x] T016 [P] [US1] Write OpenAI provider tests in `apps/parrot/test/parrot/tts/providers/openai_test.exs`
 
 ### Implementation for User Story 1
 
-- [ ] T017 [P] [US1] Add `say/2` and `say/3` functions to `apps/parrot/lib/parrot/call.ex`
-- [ ] T018 [US1] Add `:say` operation handling to `apps/parrot/lib/parrot/bridge/action_executor.ex` (depends on T017)
-- [ ] T019 [US1] Implement OpenAI TTS provider in `apps/parrot/lib/parrot/tts/providers/openai.ex` (depends on T009)
-- [ ] T020 [US1] Create basic profile config module in `apps/parrot/lib/parrot/tts/config.ex`
-- [ ] T021 [US1] Wire ActionExecutor to Synthesizer for TTS playback (depends on T012, T018)
+- [x] T017 [P] [US1] Add `say/2` and `say/3` functions to `apps/parrot/lib/parrot/call.ex`
+- [x] T018 [US1] Add `:say` operation handling to `apps/parrot/lib/parrot/bridge/action_executor.ex` (depends on T017)
+- [x] T019 [US1] Implement OpenAI TTS provider in `apps/parrot/lib/parrot/tts/providers/openai.ex` (depends on T009)
+- [x] T020 [US1] Create basic profile config module in `apps/parrot/lib/parrot/tts/config.ex`
+- [x] T021 [US1] Wire ActionExecutor to Synthesizer for TTS playback (depends on T012, T018)
 
 **Checkpoint**: `say("Hello")` works with OpenAI provider and plays audio to caller
 
@@ -89,14 +89,14 @@
 
 ### Tests for User Story 2
 
-- [ ] T022 [P] [US2] Write say_prompt/3 function tests in `apps/parrot/test/parrot/call_test.exs`
-- [ ] T023 [P] [US2] Write ActionExecutor :say_prompt handling tests in `apps/parrot/test/parrot/bridge/action_executor_test.exs`
+- [x] T022 [P] [US2] Write say_prompt/3 function tests in `apps/parrot/test/parrot/call_test.exs`
+- [x] T023 [P] [US2] Write ActionExecutor :say_prompt handling tests in `apps/parrot/test/parrot/bridge/action_executor_test.exs`
 
 ### Implementation for User Story 2
 
-- [ ] T024 [US2] Add `say_prompt/3` function to `apps/parrot/lib/parrot/call.ex`
-- [ ] T025 [US2] Add `:say_prompt` operation handling to `apps/parrot/lib/parrot/bridge/action_executor.ex` (depends on T024)
-- [ ] T026 [US2] Integrate say_prompt with existing DTMF collection in ActionExecutor (depends on T025)
+- [x] T024 [US2] Add `say_prompt/3` function to `apps/parrot/lib/parrot/call.ex`
+- [x] T025 [US2] Add `:say_prompt` operation handling to `apps/parrot/lib/parrot/bridge/action_executor.ex` (depends on T024)
+- [x] T026 [US2] Integrate say_prompt with existing DTMF collection in ActionExecutor (depends on T025)
 
 **Checkpoint**: `say_prompt("Enter PIN", max: 4)` plays TTS then collects DTMF digits
 
@@ -110,17 +110,17 @@
 
 ### Tests for User Story 3
 
-- [ ] T027 [P] [US3] Write Config module tests in `apps/parrot/test/parrot/tts/config_test.exs`
-- [ ] T028 [P] [US3] Write profile selection tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
+- [x] T027 [P] [US3] Write Config module tests in `apps/parrot/test/parrot/tts/config_test.exs`
+- [x] T028 [P] [US3] Write profile selection tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
 
 ### Implementation for User Story 3
 
-- [ ] T029 [US3] Extend Config module with full profile loading in `apps/parrot/lib/parrot/tts/config.ex`
-- [ ] T030 [US3] Add environment variable credential resolution to Config
-- [ ] T031 [US3] Update Synthesizer to use profile-based provider selection (depends on T029)
-- [ ] T032 [P] [US3] Implement ElevenLabs provider in `apps/parrot/lib/parrot/tts/providers/elevenlabs.ex`
-- [ ] T033 [P] [US3] Implement Google Cloud TTS provider in `apps/parrot/lib/parrot/tts/providers/google.ex`
-- [ ] T034 [P] [US3] Implement Amazon Polly provider in `apps/parrot/lib/parrot/tts/providers/polly.ex`
+- [x] T029 [US3] Extend Config module with full profile loading in `apps/parrot/lib/parrot/tts/config.ex`
+- [x] T030 [US3] Add environment variable credential resolution to Config
+- [x] T031 [US3] Update Synthesizer to use profile-based provider selection (depends on T029)
+- [x] T032 [P] [US3] Implement ElevenLabs provider in `apps/parrot/lib/parrot/tts/providers/elevenlabs.ex`
+- [x] T033 [P] [US3] Implement Google Cloud TTS provider in `apps/parrot/lib/parrot/tts/providers/google.ex`
+- [x] T034 [P] [US3] Implement Amazon Polly provider in `apps/parrot/lib/parrot/tts/providers/polly.ex`
 
 **Checkpoint**: Multiple profiles configured, provider switching works via `profile:` option
 
@@ -134,16 +134,16 @@
 
 ### Tests for User Story 4
 
-- [ ] T035 [P] [US4] Write cache key generation tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
-- [ ] T036 [P] [US4] Write Disk cache backend tests in `apps/parrot/test/parrot/tts/cache/disk_test.exs`
-- [ ] T037 [P] [US4] Write cache hit/miss integration tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
+- [x] T035 [P] [US4] Write cache key generation tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
+- [x] T036 [P] [US4] Write Disk cache backend tests in `apps/parrot/test/parrot/tts/cache/disk_test.exs`
+- [x] T037 [P] [US4] Write cache hit/miss integration tests in `apps/parrot/test/parrot/tts/synthesizer_test.exs`
 
 ### Implementation for User Story 4
 
-- [ ] T038 [US4] Implement deterministic cache key generation in Synthesizer (SHA256 of text + config)
-- [ ] T039 [US4] Implement Disk cache backend in `apps/parrot/lib/parrot/tts/cache/disk.ex`
-- [ ] T040 [US4] Add TTL expiration to Disk cache (depends on T039)
-- [ ] T041 [US4] Add concurrent request deduplication to Synthesizer (first fetches, others wait)
+- [x] T038 [US4] Implement deterministic cache key generation in Synthesizer (SHA256 of text + config)
+- [x] T039 [US4] Implement Disk cache backend in `apps/parrot/lib/parrot/tts/cache/disk.ex`
+- [x] T040 [US4] Add TTL expiration to Disk cache (depends on T039)
+- [x] T041 [US4] Add concurrent request deduplication to Synthesizer (first fetches, others wait)
 
 **Checkpoint**: Repeated phrases use cached audio, disk cache persists across restarts
 
@@ -157,14 +157,14 @@
 
 ### Tests for User Story 5
 
-- [ ] T042 [P] [US5] Write handle_tts_error/3 callback tests in `apps/parrot/test/parrot/invite_handler_test.exs`
-- [ ] T043 [P] [US5] Write error propagation tests in `apps/parrot/test/parrot/bridge/action_executor_test.exs`
+- [x] T042 [P] [US5] Write handle_tts_error/3 callback tests in `apps/parrot/test/parrot/invite_handler_test.exs`
+- [x] T043 [P] [US5] Write error propagation tests in `apps/parrot/test/parrot/bridge/action_executor_test.exs`
 
 ### Implementation for User Story 5
 
-- [ ] T044 [US5] Add `handle_tts_error/3` callback to InviteHandler behaviour in `apps/parrot/lib/parrot/invite_handler.ex`
-- [ ] T045 [US5] Add default implementation that logs and continues
-- [ ] T046 [US5] Wire ActionExecutor to invoke error callback on synthesis failure (depends on T044)
+- [x] T044 [US5] Add `handle_tts_error/3` callback to InviteHandler behaviour in `apps/parrot/lib/parrot/invite_handler.ex`
+- [x] T045 [US5] Add default implementation that logs and continues
+- [x] T046 [US5] Wire ActionExecutor to invoke error callback on synthesis failure (depends on T044)
 
 **Checkpoint**: TTS failures logged and call continues, custom handlers can override
 
@@ -178,13 +178,13 @@
 
 ### Tests for User Story 6
 
-- [ ] T047 [P] [US6] Write custom provider integration tests in `apps/parrot/test/parrot/tts/provider_test.exs`
+- [x] T047 [P] [US6] Write custom provider integration tests in `apps/parrot/test/parrot/tts/provider_test.exs`
 
 ### Implementation for User Story 6
 
-- [ ] T048 [US6] Add provider documentation and example in `apps/parrot/lib/parrot/tts/provider.ex` moduledoc
-- [ ] T049 [US6] Create example custom provider in `apps/parrot/lib/parrot/examples/custom_tts_provider.ex`
-- [ ] T050 [US6] Verify config accepts custom provider modules
+- [x] T048 [US6] Add provider documentation and example in `apps/parrot/lib/parrot/tts/provider.ex` moduledoc
+- [x] T049 [US6] Create example custom provider in `apps/parrot/lib/parrot/examples/custom_tts_provider.ex`
+- [x] T050 [US6] Verify config accepts custom provider modules
 
 **Checkpoint**: Custom provider implementation works, documented in moduledoc
 
@@ -194,11 +194,11 @@
 
 **Purpose**: Integration testing, documentation, examples
 
-- [ ] T051 [P] Create TTS integration test with SIPp in `apps/parrot_sip/test/sipp/tts_test.exs`
-- [ ] T052 [P] Add TTS example handler in `apps/parrot/lib/parrot/examples/tts_demo.ex`
-- [ ] T053 [P] Update CLAUDE.md with TTS subsystem documentation
-- [ ] T054 Run full test suite and verify all tests pass
-- [ ] T055 Validate quickstart.md examples work as documented
+- [x] T051 [P] Create TTS integration test with SIPp in `apps/parrot_sip/test/sipp/tts_test.exs`
+- [x] T052 [P] Add TTS example handler in `apps/parrot/lib/parrot/examples/tts_demo.ex`
+- [x] T053 [P] Update CLAUDE.md with TTS subsystem documentation
+- [x] T054 Run full test suite and verify all tests pass
+- [x] T055 Validate quickstart.md examples work as documented
 
 ---
 
