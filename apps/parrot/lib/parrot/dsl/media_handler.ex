@@ -79,7 +79,10 @@ defmodule Parrot.DSL.MediaHandler do
   @impl true
   def handle_play_complete(file, state) do
     Logger.debug("[DSL.MediaHandler] Play complete: #{file}")
-    {:noreply, %{state | playing: false}}
+    # Return :idle to keep the pipeline alive for DTMF collection and other operations.
+    # Without :idle, the SwitchableFileSource emits end_of_stream which terminates the
+    # entire pipeline, making it impossible to receive DTMF after playing a prompt.
+    {:idle, %{state | playing: false}}
   end
 
   @impl true

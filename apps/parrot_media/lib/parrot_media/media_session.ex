@@ -1276,7 +1276,7 @@ defmodule ParrotMedia.MediaSession do
       local_rtp_port: data.local_rtp_port,
       remote_rtp_address: data.remote_rtp_address,
       remote_rtp_port: data.remote_rtp_port,
-      audio_file: data.audio_file || :default_audio,
+      audio_file: data.audio_file || :deferred,
       media_handler: data.media_handler,
       handler_state: data.handler_state,
       # Pass new audio configuration
