@@ -363,6 +363,18 @@ defmodule Parrot.TTS.ConfigTest do
     test "returns module directly if already a module" do
       assert {:ok, MyCustomProvider} = Config.get_provider_module(MyCustomProvider)
     end
+
+    test "accepts Parrot.Examples.CustomTTSProvider as custom provider" do
+      # The example custom provider should work with Config
+      assert {:ok, Parrot.Examples.CustomTTSProvider} =
+               Config.get_provider_module(Parrot.Examples.CustomTTSProvider)
+    end
+
+    test "accepts any capitalized module atom as custom provider" do
+      # Any module-like atom (starting with Elixir.) should be accepted
+      assert {:ok, SomeApp.TTS.Provider} = Config.get_provider_module(SomeApp.TTS.Provider)
+      assert {:ok, MyApp.CustomProvider} = Config.get_provider_module(MyApp.CustomProvider)
+    end
   end
 
   describe "resolve_env_vars/1" do
