@@ -39,24 +39,28 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       assert {:ok, ^call} = ActionExecutor.execute([], call, context)
     end
 
-    test "stops on signaling operations (answer/reject/hangup)" do
-      # When a signaling operation is executed, any subsequent operations should not run
+    test "stops on signaling operations (reject/hangup)" do
+      # When a signaling operation like reject is executed, subsequent operations should not run
+      # Note: answer() now returns :continue to allow chaining with play/collect_dtmf
       call =
         Call.new()
-        |> Call.answer()
+        |> Call.reject(486)
         |> Call.play("welcome.wav")
 
       operations = Call.get_operations(call)
 
       context = %{
-        uas: :mock_uas,
+        uas: self(),
         sip_msg: build_invite_message(),
         media_pid: nil
       }
 
       {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
-      # After answer, call should be in answered state
-      assert updated_call.state == :answered
+      # After reject, call should be in terminated state (play should not have run)
+      assert updated_call.state == :terminated
+      # Verify the 486 response was sent
+      assert_receive {:response_sent, response}
+      assert response.status_code == 486
     end
   end
 

@@ -38,6 +38,7 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:reject, integer(), keyword()}
           | {:hangup, keyword()}
           | {:play, String.t() | [String.t()], keyword()}
+          | {:say, String.t(), keyword()}
           | {:record, String.t(), keyword()}
           | {:stop_record, keyword()}
           | {:collect_dtmf, keyword()}
@@ -52,7 +53,8 @@ defmodule Parrot.Bridge.ActionExecutor do
           required(:sip_msg) => ParrotSip.Message.t(),
           required(:media_pid) => pid() | nil,
           required(:sdp_answer) => String.t() | nil,
-          optional(:response_fn) => (Message.t(), term() -> :ok)
+          optional(:response_fn) => (Message.t(), term() -> :ok),
+          optional(:synthesizer) => pid() | nil
         }
 
   @type execute_result ::
@@ -335,6 +337,65 @@ defmodule Parrot.Bridge.ActionExecutor do
     {:ok, call}
   end
 
+  @doc """
+  Execute the `:say` operation.
+
+  1. Verify call is in `:answered` state
+  2. Verify media_pid is available
+  3. Call Synthesizer to convert text to audio
+  4. Send `{:play_audio, audio_data, opts}` to MediaSession
+
+  The Synthesizer is obtained from context (for testability) or uses the
+  default `Parrot.TTS.Synthesizer` module.
+  """
+  @spec execute_say(Call.t(), context(), String.t(), keyword()) :: execute_result()
+  def execute_say(%Call{state: state}, _context, _text, _opts) when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_say(_call, %{media_pid: nil}, _text, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_say(call, %{media_pid: media_pid} = context, text, opts) do
+    Logger.debug("[ActionExecutor] Executing say operation: #{inspect(text)}")
+
+    # Get the profile from opts, defaulting to :default
+    profile = Keyword.get(opts, :profile, :default)
+
+    # Get synthesizer from context (for testing) or use the default
+    synthesizer = Map.get(context, :synthesizer)
+
+    # Call synthesizer to get audio
+    synthesis_result =
+      if synthesizer do
+        # Test mode: synthesizer is a mock Agent that holds a function
+        synth_fn = Agent.get(synthesizer, & &1)
+        synth_fn.(text, profile, opts)
+      else
+        # Production mode: call actual Synthesizer
+        # Note: This requires Parrot.TTS.Synthesizer to be started
+        # For now, we'll log and return a placeholder error if not available
+        try do
+          Parrot.TTS.Synthesizer.get_audio(text, profile, opts)
+        catch
+          :exit, _ -> {:error, :synthesizer_not_available}
+        end
+      end
+
+    case synthesis_result do
+      {:ok, audio_data, format} ->
+        # Send audio to media session for playback
+        play_opts = Keyword.put(opts, :format, format)
+        send(media_pid, {:play_audio, audio_data, play_opts})
+        {:ok, call}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] TTS synthesis failed: #{inspect(reason)}")
+        {:error, {:synthesis_failed, reason}}
+    end
+  end
+
   # ============================================================================
   # Private Functions
   # ============================================================================
@@ -392,6 +453,13 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   defp execute_operation({:collect_dtmf, opts}, call, context) do
     case execute_collect_dtmf(call, context, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:say, text, opts}, call, context) do
+    case execute_say(call, context, text, opts) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
       error -> error
     end
