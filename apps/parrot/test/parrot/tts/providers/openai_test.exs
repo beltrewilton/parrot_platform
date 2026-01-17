@@ -688,14 +688,17 @@ defmodule Parrot.TTS.Providers.OpenAITest do
     end
 
     test "exports synthesize/2 function" do
+      Code.ensure_loaded!(OpenAI)
       assert function_exported?(OpenAI, :synthesize, 2)
     end
 
     test "exports list_voices/1 function" do
+      Code.ensure_loaded!(OpenAI)
       assert function_exported?(OpenAI, :list_voices, 1)
     end
 
     test "exports validate_config/1 function" do
+      Code.ensure_loaded!(OpenAI)
       assert function_exported?(OpenAI, :validate_config, 1)
     end
   end
