@@ -150,12 +150,30 @@ defmodule Parrot.TTS.SynthesizerTest do
     {:ok, _} = MockCache.start_link()
     {:ok, _} = MockProvider.start_link()
 
+    # Start Synthesizer
+    {:ok, _} = Synthesizer.start_link(name: Synthesizer)
+
     on_exit(fn ->
-      MockCache.stop()
-      MockProvider.stop()
-      # Stop Synthesizer if it was started
+      # Stop processes in reverse order of startup
+      # Use try/catch to handle cases where processes already died
       if Process.whereis(Synthesizer) do
-        GenServer.stop(Synthesizer)
+        try do
+          GenServer.stop(Synthesizer, :normal, 1000)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
+      try do
+        MockCache.stop()
+      catch
+        :exit, _ -> :ok
+      end
+
+      try do
+        MockProvider.stop()
+      catch
+        :exit, _ -> :ok
       end
     end)
 
