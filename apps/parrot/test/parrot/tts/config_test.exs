@@ -105,6 +105,54 @@ defmodule Parrot.TTS.ConfigTest do
       assert profile[:voice] == "alloy"
       assert profile[:model] == "tts-1"
     end
+
+    test "returns fallback defaults when default_profile does not exist in profiles" do
+      Application.put_env(:parrot, :tts,
+        default_profile: :nonexistent_default,
+        profiles: [
+          standard: [provider: :openai, voice: "alloy", model: "tts-1"]
+        ]
+      )
+
+      on_exit(fn -> Application.delete_env(:parrot, :tts) end)
+
+      # Should fall back to hardcoded defaults since :nonexistent_default is not in profiles
+      assert {:ok, profile} = Config.get_profile(:default)
+      assert profile[:provider] == :openai
+      assert profile[:voice] == "alloy"
+      assert profile[:model] == "tts-1"
+    end
+
+    test "returns profile with partial configuration" do
+      Application.put_env(:parrot, :tts,
+        profiles: [
+          minimal: [provider: :elevenlabs]
+        ]
+      )
+
+      on_exit(fn -> Application.delete_env(:parrot, :tts) end)
+
+      assert {:ok, profile} = Config.get_profile(:minimal)
+      assert profile[:provider] == :elevenlabs
+      # Voice and model are not set - this is allowed
+      assert profile[:voice] == nil
+      assert profile[:model] == nil
+    end
+
+    test "uses :standard as default profile name when default_profile not specified" do
+      Application.put_env(:parrot, :tts,
+        profiles: [
+          standard: [provider: :google, voice: "en-US-Standard-A", model: "standard"]
+        ]
+      )
+
+      on_exit(fn -> Application.delete_env(:parrot, :tts) end)
+
+      # Without default_profile, should look for :standard
+      assert {:ok, profile} = Config.get_profile(:default)
+      assert profile[:provider] == :google
+      assert profile[:voice] == "en-US-Standard-A"
+    end
   end
 
   describe "get_credentials/1" do
@@ -202,6 +250,25 @@ defmodule Parrot.TTS.ConfigTest do
 
       assert {:error, {:unknown_provider, :openai}} = Config.get_credentials(:openai)
     end
+
+    test "returns error when no config exists" do
+      Application.delete_env(:parrot, :tts)
+
+      assert {:error, {:unknown_provider, :openai}} = Config.get_credentials(:openai)
+    end
+
+    test "returns credentials with empty keyword list" do
+      Application.put_env(:parrot, :tts,
+        credentials: [
+          openai: []
+        ]
+      )
+
+      on_exit(fn -> Application.delete_env(:parrot, :tts) end)
+
+      assert {:ok, credentials} = Config.get_credentials(:openai)
+      assert credentials == []
+    end
   end
 
   describe "get_cache_config/0" do
@@ -235,6 +302,40 @@ defmodule Parrot.TTS.ConfigTest do
       assert {:ok, cache_config} = Config.get_cache_config()
       # Should still have default backend
       assert cache_config[:backend] == Parrot.TTS.Cache.ETS
+    end
+
+    test "returns custom cache backend when configured" do
+      Application.put_env(:parrot, :tts,
+        cache: [
+          backend: Parrot.TTS.Cache.Disk,
+          ttl_seconds: 3600,
+          cache_dir: "/tmp/tts_cache"
+        ]
+      )
+
+      on_exit(fn -> Application.delete_env(:parrot, :tts) end)
+
+      assert {:ok, cache_config} = Config.get_cache_config()
+      assert cache_config[:backend] == Parrot.TTS.Cache.Disk
+      assert cache_config[:ttl_seconds] == 3600
+      assert cache_config[:cache_dir] == "/tmp/tts_cache"
+    end
+
+    test "preserves all cache options" do
+      Application.put_env(:parrot, :tts,
+        cache: [
+          backend: Parrot.TTS.Cache.ETS,
+          max_entries: 5000,
+          cleanup_interval: 60_000
+        ]
+      )
+
+      on_exit(fn -> Application.delete_env(:parrot, :tts) end)
+
+      assert {:ok, cache_config} = Config.get_cache_config()
+      assert cache_config[:backend] == Parrot.TTS.Cache.ETS
+      assert cache_config[:max_entries] == 5000
+      assert cache_config[:cleanup_interval] == 60_000
     end
   end
 
@@ -285,6 +386,58 @@ defmodule Parrot.TTS.ConfigTest do
       assert resolved[:env_var] == "nested-value"
       assert resolved[:nested][:inner_env] == "nested-value"
       assert resolved[:nested][:inner_static] == "static"
+    end
+
+    test "handles empty list" do
+      assert Config.resolve_env_vars([]) == []
+    end
+
+    test "preserves non-keyword list values" do
+      System.put_env("TEST_LIST_VAR", "list-value")
+
+      input = [
+        key: {:system, "TEST_LIST_VAR"},
+        other: "static"
+      ]
+
+      on_exit(fn -> System.delete_env("TEST_LIST_VAR") end)
+
+      resolved = Config.resolve_env_vars(input)
+      assert resolved[:key] == "list-value"
+      assert resolved[:other] == "static"
+    end
+
+    test "handles deeply nested structures" do
+      System.put_env("TEST_DEEP_VAR", "deep-value")
+
+      input = [
+        level1: [
+          level2: [
+            level3: [
+              value: {:system, "TEST_DEEP_VAR"}
+            ]
+          ]
+        ]
+      ]
+
+      on_exit(fn -> System.delete_env("TEST_DEEP_VAR") end)
+
+      resolved = Config.resolve_env_vars(input)
+      assert resolved[:level1][:level2][:level3][:value] == "deep-value"
+    end
+
+    test "leaves non-system tuples unchanged" do
+      input = [
+        regular_tuple: {:some, :other, :tuple},
+        system_var: {:system, "NOT_SET"}
+      ]
+
+      resolved = Config.resolve_env_vars(input)
+
+      # Non-{:system, binary} tuples are preserved
+      assert resolved[:regular_tuple] == {:some, :other, :tuple}
+      # System vars resolve to nil when not set
+      assert resolved[:system_var] == nil
     end
   end
 end
