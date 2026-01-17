@@ -80,9 +80,16 @@ defmodule Parrot.TTS.Cache.ETS do
   def get(key) when is_binary(key) do
     table_name = get_table_name()
 
-    case :ets.lookup(table_name, key) do
-      [{^key, audio_data, metadata}] -> {:ok, audio_data, metadata}
-      [] -> :miss
+    # Check if table exists before lookup
+    case :ets.whereis(table_name) do
+      :undefined ->
+        :miss
+
+      _ref ->
+        case :ets.lookup(table_name, key) do
+          [{^key, audio_data, metadata}] -> {:ok, audio_data, metadata}
+          [] -> :miss
+        end
     end
   end
 
@@ -99,8 +106,16 @@ defmodule Parrot.TTS.Cache.ETS do
   """
   def put(key, audio_data, metadata) when is_binary(key) and is_binary(audio_data) and is_map(metadata) do
     table_name = get_table_name()
-    :ets.insert(table_name, {key, audio_data, metadata})
-    :ok
+
+    # Check if table exists before insert
+    case :ets.whereis(table_name) do
+      :undefined ->
+        {:error, :cache_not_started}
+
+      _ref ->
+        :ets.insert(table_name, {key, audio_data, metadata})
+        :ok
+    end
   end
 
   @impl Parrot.TTS.Cache
@@ -116,8 +131,12 @@ defmodule Parrot.TTS.Cache.ETS do
   """
   def delete(key) when is_binary(key) do
     table_name = get_table_name()
-    :ets.delete(table_name, key)
-    :ok
+
+    # Check if table exists before delete
+    case :ets.whereis(table_name) do
+      :undefined -> :ok
+      _ref -> :ets.delete(table_name, key); :ok
+    end
   end
 
   @impl Parrot.TTS.Cache
@@ -131,8 +150,12 @@ defmodule Parrot.TTS.Cache.ETS do
   """
   def clear do
     table_name = get_table_name()
-    :ets.delete_all_objects(table_name)
-    :ok
+
+    # Check if table exists before attempting to clear
+    case :ets.whereis(table_name) do
+      :undefined -> :ok
+      _ref -> :ets.delete_all_objects(table_name); :ok
+    end
   end
 
   ## GenServer callbacks
