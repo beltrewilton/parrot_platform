@@ -443,8 +443,11 @@ defmodule ParrotMedia.SwitchableFileSource do
   defp sample_format_from_bits(bits), do: {:error, {:unsupported_bit_depth, bits}}
 
   defp handle_file_complete(state) do
+    # Capture the completed filename before any state changes
+    completed_file = state.current_file
+
     Logger.debug(
-      "[SwitchableFileSource:#{state.session_id}] File complete: #{state.current_file}"
+      "[SwitchableFileSource:#{state.session_id}] File complete: #{completed_file}"
     )
 
     # Always notify handler first to update handler state
@@ -453,36 +456,41 @@ defmodule ParrotMedia.SwitchableFileSource do
 
     state = %{state | handler_state: updated_handler_state}
 
-    # Check playlist for what to play next (playlist takes priority)
-    case {state.playlist_mode, state.playlist} do
-      # Sequence mode with more files - continue regardless of handler response
-      {:sequence, [next_file | remaining]} ->
-        Logger.debug(
-          "[SwitchableFileSource:#{state.session_id}] Playing next file in sequence: #{next_file}"
-        )
+    # Get the actions and state from the next step
+    {actions, new_state} =
+      case {state.playlist_mode, state.playlist} do
+        # Sequence mode with more files - continue regardless of handler response
+        {:sequence, [next_file | remaining]} ->
+          Logger.debug(
+            "[SwitchableFileSource:#{state.session_id}] Playing next file in sequence: #{next_file}"
+          )
 
-        switch_to_next_file(next_file, %{state | playlist: remaining})
+          switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # Loop mode - restart from beginning
-      {:loop, []} when state.loop_files != [] ->
-        [next_file | remaining] = state.loop_files
+        # Loop mode - restart from beginning
+        {:loop, []} when state.loop_files != [] ->
+          [next_file | remaining] = state.loop_files
 
-        Logger.debug("[SwitchableFileSource:#{state.session_id}] Looping back to: #{next_file}")
+          Logger.debug("[SwitchableFileSource:#{state.session_id}] Looping back to: #{next_file}")
 
-        switch_to_next_file(next_file, %{state | playlist: remaining})
+          switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # Loop mode with more files in current loop
-      {:loop, [next_file | remaining]} ->
-        Logger.debug(
-          "[SwitchableFileSource:#{state.session_id}] Playing next file in loop: #{next_file}"
-        )
+        # Loop mode with more files in current loop
+        {:loop, [next_file | remaining]} ->
+          Logger.debug(
+            "[SwitchableFileSource:#{state.session_id}] Playing next file in loop: #{next_file}"
+          )
 
-        switch_to_next_file(next_file, %{state | playlist: remaining})
+          switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # No active playlist - use handler's response to decide next action
-      _ ->
-        handle_handler_response(handler_response, state)
-    end
+        # No active playlist - use handler's response to decide next action
+        _ ->
+          handle_handler_response(handler_response, state)
+      end
+
+    # Always notify parent pipeline that a file completed
+    # This enables the event chain: SwitchableFileSource -> Pipeline -> MediaSession -> Call.Server
+    {[{:notify_parent, {:file_complete, completed_file}} | actions], new_state}
   end
 
   defp notify_handler_and_get_response(state) do
