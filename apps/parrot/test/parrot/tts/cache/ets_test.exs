@@ -18,9 +18,13 @@ defmodule Parrot.TTS.Cache.ETSTest do
     ETS.clear()
 
     on_exit(fn ->
-      # Only stop if we started a new process (not the app-supervised one)
-      # Just clear the cache instead to avoid affecting other tests
-      ETS.clear()
+      # Only try to clear if the process is still alive
+      # Wrap in try/catch to handle the case where GenServer has stopped
+      try do
+        ETS.clear()
+      catch
+        :exit, _ -> :ok
+      end
     end)
 
     {:ok, pid: pid}
