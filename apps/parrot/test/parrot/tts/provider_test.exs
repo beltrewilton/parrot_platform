@@ -413,6 +413,223 @@ defmodule Parrot.TTS.ProviderTest do
     end
   end
 
+  describe "custom provider integration" do
+    @moduledoc """
+    Integration tests verifying that custom TTS providers can be:
+    1. Implemented by following the Provider behaviour
+    2. Configured via application config as custom modules
+    3. Used through the Synthesizer with full functionality
+    """
+
+    # A complete custom provider implementation for integration testing
+    defmodule TestCustomProvider do
+      @moduledoc """
+      A custom TTS provider implementation that demonstrates integration.
+      This simulates a hypothetical local TTS engine (like espeak or say command).
+      """
+      @behaviour Parrot.TTS.Provider
+
+      @impl true
+      def synthesize(text, config) when is_binary(text) do
+        with :ok <- validate_config(config) do
+          # Simulate synthesizing audio
+          # In a real implementation, this would call the TTS engine
+          voice = Keyword.get(config, :voice, "default")
+          format = Keyword.get(config, :format, :wav)
+
+          # Generate deterministic "audio" based on text and voice
+          audio_data = :crypto.hash(:sha256, "#{voice}:#{text}")
+          {:ok, audio_data, format}
+        end
+      end
+
+      def synthesize(_text, _config), do: {:error, :invalid_text_type}
+
+      @impl true
+      def list_voices(config) do
+        case validate_api_key(config) do
+          :ok ->
+            {:ok, [
+              %{id: "default", name: "Default Voice", language: "en-US"},
+              %{id: "high", name: "High Pitch", language: "en-US"},
+              %{id: "low", name: "Low Pitch", language: "en-US"}
+            ]}
+          error -> error
+        end
+      end
+
+      @impl true
+      def validate_config(config) do
+        cond do
+          not Keyword.keyword?(config) -> {:error, :config_must_be_keyword_list}
+          not Keyword.has_key?(config, :api_key) -> {:error, :missing_api_key}
+          Keyword.get(config, :api_key) == nil -> {:error, :nil_api_key}
+          Keyword.get(config, :api_key) == "" -> {:error, :empty_api_key}
+          not is_binary(Keyword.get(config, :api_key)) -> {:error, :api_key_must_be_string}
+          true -> :ok
+        end
+      end
+
+      defp validate_api_key(config) do
+        case Keyword.fetch(config, :api_key) do
+          {:ok, key} when is_binary(key) and key != "" -> :ok
+          {:ok, nil} -> {:error, :nil_api_key}
+          {:ok, ""} -> {:error, :empty_api_key}
+          {:ok, _} -> {:error, :api_key_must_be_string}
+          :error -> {:error, :missing_api_key}
+        end
+      end
+    end
+
+    test "custom provider can be used directly via its module" do
+      config = [api_key: "test-key", voice: "default", format: :wav]
+
+      # synthesize/2 works
+      assert {:ok, audio, :wav} = TestCustomProvider.synthesize("Hello", config)
+      assert is_binary(audio)
+      assert byte_size(audio) == 32  # SHA256 hash is 32 bytes
+
+      # list_voices/1 works
+      assert {:ok, voices} = TestCustomProvider.list_voices(config)
+      assert length(voices) == 3
+      assert Enum.all?(voices, &(Map.has_key?(&1, :id) and Map.has_key?(&1, :name)))
+
+      # validate_config/1 works
+      assert :ok = TestCustomProvider.validate_config(config)
+    end
+
+    test "custom provider validates behaviour compliance" do
+      # Verify the module implements the behaviour
+      behaviours = TestCustomProvider.__info__(:attributes)[:behaviour] || []
+      assert Parrot.TTS.Provider in behaviours
+
+      # Verify all callbacks are implemented
+      callbacks = Parrot.TTS.Provider.behaviour_info(:callbacks)
+      functions = TestCustomProvider.__info__(:functions)
+
+      for {callback_name, callback_arity} <- callbacks do
+        assert {callback_name, callback_arity} in functions,
+          "Expected #{inspect(TestCustomProvider)} to export #{callback_name}/#{callback_arity}"
+      end
+    end
+
+    test "Config.get_provider_module/1 accepts custom module directly" do
+      alias Parrot.TTS.Config
+
+      # When a module is passed directly (uppercase atom), it should be returned as-is
+      assert {:ok, TestCustomProvider} = Config.get_provider_module(TestCustomProvider)
+
+      # This enables users to configure custom providers in their config:
+      # config :parrot, :tts,
+      #   profiles: [
+      #     custom: [provider: MyApp.TTS.CustomProvider, voice: "voice1"]
+      #   ]
+    end
+
+    test "custom provider handles error cases correctly" do
+      # Missing API key
+      assert {:error, :missing_api_key} = TestCustomProvider.validate_config([])
+      assert {:error, :missing_api_key} = TestCustomProvider.list_voices([])
+
+      # Nil API key
+      assert {:error, :nil_api_key} = TestCustomProvider.validate_config([api_key: nil])
+
+      # Empty API key
+      assert {:error, :empty_api_key} = TestCustomProvider.validate_config([api_key: ""])
+
+      # Invalid text type
+      assert {:error, :invalid_text_type} = TestCustomProvider.synthesize(123, [api_key: "key"])
+    end
+
+    test "custom provider generates different audio for different voices" do
+      config_default = [api_key: "key", voice: "default"]
+      config_high = [api_key: "key", voice: "high"]
+      text = "Same text"
+
+      {:ok, audio1, _} = TestCustomProvider.synthesize(text, config_default)
+      {:ok, audio2, _} = TestCustomProvider.synthesize(text, config_high)
+
+      # Different voices should produce different audio
+      assert audio1 != audio2
+    end
+
+    test "custom provider returns correct format" do
+      config_wav = [api_key: "key", format: :wav]
+      config_mp3 = [api_key: "key", format: :mp3]
+
+      {:ok, _, format1} = TestCustomProvider.synthesize("Test", config_wav)
+      {:ok, _, format2} = TestCustomProvider.synthesize("Test", config_mp3)
+
+      assert format1 == :wav
+      assert format2 == :mp3
+    end
+
+    test "Parrot.Examples.CustomTTSProvider is a working example" do
+      # The example provider should be usable out of the box
+      alias Parrot.Examples.CustomTTSProvider
+
+      config = [api_key: "test-key", voice: "alice", format: :wav]
+
+      # All callbacks work
+      assert {:ok, audio, :wav} = CustomTTSProvider.synthesize("Hello world", config)
+      assert is_binary(audio)
+      assert byte_size(audio) > 0
+
+      assert {:ok, voices} = CustomTTSProvider.list_voices(config)
+      assert length(voices) == 4
+      assert Enum.all?(voices, &(Map.has_key?(&1, :id) and Map.has_key?(&1, :name)))
+
+      assert :ok = CustomTTSProvider.validate_config(config)
+
+      # Implements behaviour
+      behaviours = CustomTTSProvider.__info__(:attributes)[:behaviour] || []
+      assert Parrot.TTS.Provider in behaviours
+    end
+
+    test "Parrot.Examples.CustomTTSProvider validates voices and formats" do
+      alias Parrot.Examples.CustomTTSProvider
+
+      # Valid voices
+      for voice <- CustomTTSProvider.voice_ids() do
+        assert :ok = CustomTTSProvider.validate_config([api_key: "key", voice: voice])
+      end
+
+      # Invalid voice
+      assert {:error, {:invalid_voice, "nonexistent"}} =
+               CustomTTSProvider.validate_config([api_key: "key", voice: "nonexistent"])
+
+      # Valid formats
+      for format <- CustomTTSProvider.supported_formats() do
+        assert :ok = CustomTTSProvider.validate_config([api_key: "key", format: format])
+      end
+
+      # Invalid format
+      assert {:error, {:unsupported_format, :flac}} =
+               CustomTTSProvider.validate_config([api_key: "key", format: :flac])
+    end
+
+    test "Parrot.Examples.CustomTTSProvider generates format-specific audio" do
+      alias Parrot.Examples.CustomTTSProvider
+
+      config_wav = [api_key: "key", format: :wav]
+      config_mp3 = [api_key: "key", format: :mp3]
+      config_ogg = [api_key: "key", format: :ogg]
+      config_pcm = [api_key: "key", format: :pcm]
+
+      {:ok, audio_wav, _} = CustomTTSProvider.synthesize("Test", config_wav)
+      {:ok, audio_mp3, _} = CustomTTSProvider.synthesize("Test", config_mp3)
+      {:ok, audio_ogg, _} = CustomTTSProvider.synthesize("Test", config_ogg)
+      {:ok, audio_pcm, _} = CustomTTSProvider.synthesize("Test", config_pcm)
+
+      # Each format has different headers
+      assert String.starts_with?(audio_wav, "RIFF")
+      assert <<0xFF, 0xFB, _::binary>> = audio_mp3
+      assert String.starts_with?(audio_ogg, "OggS")
+      # PCM has no header - starts directly with hash
+      refute String.starts_with?(audio_pcm, "RIFF")
+    end
+  end
+
   describe "full provider implementation test" do
     defmodule FullMockProvider do
       @moduledoc """
