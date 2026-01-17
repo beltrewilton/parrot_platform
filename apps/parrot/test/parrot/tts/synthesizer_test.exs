@@ -12,8 +12,14 @@ defmodule Parrot.TTS.SynthesizerTest do
     end
 
     def stop do
-      if Process.whereis(__MODULE__) do
-        Agent.stop(__MODULE__)
+      case Process.whereis(__MODULE__) do
+        nil -> :ok
+        pid ->
+          try do
+            Agent.stop(pid)
+          catch
+            :exit, _ -> :ok
+          end
       end
     end
 
@@ -81,8 +87,14 @@ defmodule Parrot.TTS.SynthesizerTest do
     end
 
     def stop do
-      if Process.whereis(__MODULE__) do
-        Agent.stop(__MODULE__)
+      case Process.whereis(__MODULE__) do
+        nil -> :ok
+        pid ->
+          try do
+            Agent.stop(pid)
+          catch
+            :exit, _ -> :ok
+          end
       end
     end
 
