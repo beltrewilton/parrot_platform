@@ -12,6 +12,24 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  # Mock gen_statem for testing MediaSession.start_media/1 calls
+  # MediaSession uses :gen_statem.call/3, so we need a proper gen_statem mock
+  defmodule MockMediaSession do
+    @behaviour :gen_statem
+
+    def callback_mode, do: :state_functions
+
+    def init(test_pid), do: {:ok, :idle, test_pid}
+
+    def idle({:call, from}, :start_media, test_pid) do
+      send(test_pid, {:start_media_called})
+      {:keep_state, test_pid, [{:reply, from, :ok}]}
+    end
+
+    def idle(:cast, _msg, test_pid), do: {:keep_state, test_pid}
+    def idle(:info, _msg, test_pid), do: {:keep_state, test_pid}
+  end
+
   describe "execute/3" do
     test "executes operations in order" do
       call = Call.new() |> Call.answer()
@@ -943,9 +961,11 @@ defmodule Parrot.Bridge.ActionExecutorTest do
   describe "media lifecycle after answer (T021)" do
     test "calls start_media on media_pid after 200 OK when media_pid present" do
       call = Call.new()
+      test_pid = self()
 
-      # Use self() as mock media_pid to receive messages
-      media_pid = self()
+      # Start a mock gen_statem process that handles the start_media call
+      # MediaSession.start_media/1 uses :gen_statem.call/3, so we need a proper mock
+      {:ok, media_pid} = :gen_statem.start_link(__MODULE__.MockMediaSession, test_pid, [])
 
       context = %{
         uas: self(),
@@ -956,8 +976,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
 
-      # Should receive start_media message
-      assert_receive {:start_media}, 1000
+      # Should receive notification that start_media was called
+      assert_receive {:start_media_called}, 1000
     end
 
     test "does not call start_media when media_pid is nil" do
