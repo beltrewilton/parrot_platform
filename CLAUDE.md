@@ -466,6 +466,8 @@ When working with these modules, understand gen_statem concepts:
 - N/A (in-memory process state via Registry) (007-dsl-dtmf-collect)
 - Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotMedia (MediaSession, pipelines), ParrotTransport (UDP) (008-dsl-sdp-negotiation)
 - In-memory process state, ETS via Registry for call/session lookups (008-dsl-sdp-negotiation)
+- Elixir ~> 1.16 with OTP 26+ + Req (HTTP client), ExSDP, Membrane Framework (existing) (009-dsl-tts)
+- ETS (in-memory cache), Disk (persistent cache with TTL) (009-dsl-tts)
 
 ## Recent Changes
 - 001-dsl-sip-bridge: Added Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines)
