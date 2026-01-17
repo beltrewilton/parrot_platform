@@ -1605,6 +1605,349 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "TTS error callback invocation (T043, T046 - FR-017)" do
+    # T043: Error propagation tests
+    # T046: ActionExecutor invokes handler error callback on synthesis failure
+    #
+    # When TTS synthesis fails, the ActionExecutor should:
+    # 1. NOT crash the call
+    # 2. Invoke the handler's handle_tts_error/3 callback
+    # 3. Continue with the returned call state
+
+    test "invokes handler's handle_tts_error/3 when synthesis fails for :say" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      # Mock synthesizer that returns an error
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :api_timeout}
+      end)
+
+      # Mock handler module that tracks error callback (signature: text, error, call)
+      error_handler = fn text, error, call ->
+        send(test_pid, {:tts_error_callback, text, error})
+        %{call | assigns: Map.put(call.assigns, :tts_error, error)}
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        handler: nil,  # Will be set below
+        tts_error_handler: error_handler
+      }
+
+      # Execute with the error handler in context
+      result = ActionExecutor.execute_say_with_error_handler(call, context, "Hello world", [])
+
+      # Should invoke error callback instead of returning error
+      assert_receive {:tts_error_callback, "Hello world", :api_timeout}
+
+      # Should return updated call from error handler
+      assert {:ok, updated_call} = result
+      assert updated_call.assigns[:tts_error] == :api_timeout
+    end
+
+    test "invokes handler's handle_tts_error/3 when synthesis fails for :say_prompt" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, {:provider_error, "Rate limit exceeded"}}
+      end)
+
+      error_handler = fn text, error, call ->
+        send(test_pid, {:tts_error_callback, text, error})
+        call
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      result = ActionExecutor.execute_say_prompt_with_error_handler(
+        call, context, "Enter PIN", max: 4
+      )
+
+      assert_receive {:tts_error_callback, "Enter PIN", {:provider_error, "Rate limit exceeded"}}
+      assert {:ok, _updated_call} = result
+    end
+
+    test "continues call execution after TTS error (does not crash)" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :synthesis_failed}
+      end)
+
+      # Error handler that just returns the call unchanged
+      error_handler = fn _text, _error, call ->
+        send(test_pid, :error_handled)
+        call
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      # Should NOT crash
+      {:ok, updated_call} = ActionExecutor.execute_say_with_error_handler(
+        call, context, "Test", []
+      )
+
+      assert_receive :error_handled
+      # Call state should remain valid
+      assert updated_call.state == :answered
+    end
+
+    test "error handler can queue fallback operations" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :api_unavailable}
+      end)
+
+      # Error handler that queues a fallback play operation
+      error_handler = fn _text, _error, call ->
+        Call.play(call, "error-fallback.wav")
+      end
+
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_msg, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_say_with_error_handler(
+        call, context, "Hello", []
+      )
+
+      # The error handler queued a play operation
+      operations = Call.get_operations(updated_call)
+      assert [{:play, "error-fallback.wav", []}] = operations
+    end
+
+    test "uses default error handler when none provided (logs and continues)" do
+      call = Call.new(state: :answered)
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :synthesis_failed}
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth
+        # No tts_error_handler - should use default
+      }
+
+      # With default handler, should return {:ok, call} and log warning
+      # (logging verified manually or with capture_log)
+      result = ActionExecutor.execute_say_with_error_handler(call, context, "Test", [])
+
+      assert {:ok, updated_call} = result
+      assert updated_call.state == :answered
+    end
+
+    test "passes correct error details to handler callback" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, {:provider_error, %{status: 503, message: "Service unavailable"}}}
+      end)
+
+      error_handler = fn text, error, call ->
+        send(test_pid, {:error_details, text, error, call})
+        call
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      {:ok, _call} = ActionExecutor.execute_say_with_error_handler(
+        call, context, "Complex error test", profile: :premium
+      )
+
+      assert_receive {:error_details, received_text, received_error, received_call}
+      assert received_call.state == :answered
+      assert received_text == "Complex error test"
+      assert received_error == {:provider_error, %{status: 503, message: "Service unavailable"}}
+    end
+
+    test "error propagation for :say operation using execute_say_with_error_handler (T043)" do
+      # T043: Test that errors propagate correctly through execute_say_with_error_handler
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :synthesis_failed}
+      end)
+
+      error_handler = fn text, error, call ->
+        send(test_pid, {:error_handled, text, error})
+        call
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      # Use execute_say_with_error_handler directly
+      result = ActionExecutor.execute_say_with_error_handler(call, context, "Test text", [])
+
+      assert_receive {:error_handled, "Test text", :synthesis_failed}
+      assert {:ok, _updated_call} = result
+    end
+
+    test "error propagation for :say_prompt operation using execute_say_prompt_with_error_handler (T043)" do
+      # T043: Test that errors propagate correctly for say_prompt
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :rate_limited}
+      end)
+
+      error_handler = fn text, error, call ->
+        send(test_pid, {:error_handled, text, error})
+        call
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      result = ActionExecutor.execute_say_prompt_with_error_handler(call, context, "Enter PIN", max: 4)
+
+      assert_receive {:error_handled, "Enter PIN", :rate_limited}
+      assert {:ok, _updated_call} = result
+    end
+
+    test "no callback invocation on successful synthesis" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio_data", :wav}
+      end)
+
+      error_handler = fn _text, _error, _call ->
+        send(test_pid, :error_handler_called)
+        raise "Should not be called on success"
+      end
+
+      media_pid = spawn(fn ->
+        receive do
+          {:play_audio, _audio, _opts} -> send(test_pid, :audio_played)
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      {:ok, _call} = ActionExecutor.execute_say_with_error_handler(call, context, "Hello", [])
+
+      # Should receive audio_played, NOT error_handler_called
+      assert_receive :audio_played
+      refute_receive :error_handler_called, 100
+    end
+
+    test "if no callback, default behavior is used (T043)" do
+      # T043: When no tts_error_handler is provided, use default behavior
+      call = Call.new(state: :answered)
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :network_error}
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth
+        # No tts_error_handler - should use default
+      }
+
+      # Default handler logs warning and returns {:ok, call}
+      result = ActionExecutor.execute_say_with_error_handler(call, context, "Test", [])
+
+      assert {:ok, updated_call} = result
+      # Call should be unchanged
+      assert updated_call.state == :answered
+      assert updated_call.assigns == %{}
+    end
+
+    test "execution continues after error callback (T043)" do
+      # T043: After error callback is invoked, call execution continues normally
+      call = Call.new(state: :answered)
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :synthesis_failed}
+      end)
+
+      # Error handler that adds marker to assigns
+      error_handler = fn _text, _error, call ->
+        %{call | assigns: Map.put(call.assigns, :error_handled, true)}
+      end
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth,
+        tts_error_handler: error_handler
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_say_with_error_handler(
+        call, context, "Test", []
+      )
+
+      # Error handler was invoked and modified call
+      assert updated_call.assigns[:error_handled] == true
+      # Call state should still be valid for further operations
+      assert updated_call.state == :answered
+    end
+  end
+
   describe "execute/3 with :say_prompt operation (T026 - integration)" do
     # T026: Integration tests - say_prompt operation through main dispatch
 
