@@ -190,15 +190,33 @@ defmodule TestMOSInviteHandler do
     Logger.info("[MOS-Test] INVITE received from #{call.from}")
     Logger.info("[MOS-Test] Setting up MOS monitoring...")
 
-    # Answer the call first
-    call = answer(call)
+    # The session_id uses "call_" prefix to match MediaSession's session_id format
+    session_id = "call_#{call.call_id}"
 
-    # Register for MOS events using the handler behaviour
-    # The session_id is typically the same as the call_id or dialog_id
-    session_id = call.call_id
-    Logger.info("[MOS-Test] Registering MOS handler for session: #{session_id}")
+    # Spawn a task to register MOS handler after media starts
+    # The answer() operation is executed async after handle_invite returns,
+    # so we need to wait for the MediaSession to be created
+    spawn(fn ->
+      # Wait for MediaSession and MOS Calculator to start
+      Process.sleep(500)
+      Logger.info("[MOS-Test] Registering MOS handler for session: #{session_id}")
 
-    # Register the MOS quality handler
+      # Try to register with retries
+      register_with_retries(session_id, 5)
+    end)
+
+    # Answer the call and play audio in a loop
+    call
+    |> answer()
+    |> play("priv/audio/parrot-welcome.wav", loop: true)
+  end
+
+  # Helper to retry MOS registration until the calculator is available
+  defp register_with_retries(_session_id, 0) do
+    Logger.warning("[MOS-Test] Failed to register MOS handler after all retries")
+  end
+
+  defp register_with_retries(session_id, attempts) do
     case ParrotMedia.MOS.register_handler(
            session_id,
            {TestMOSQualityHandler, %{session_id: session_id}}
@@ -207,38 +225,10 @@ defmodule TestMOSInviteHandler do
         Logger.info("[MOS-Test] MOS handler registered successfully")
 
       {:error, :not_found} ->
-        Logger.warning("[MOS-Test] MOS calculator not found - MOS may be disabled or media not started")
+        Logger.debug("[MOS-Test] MOS calculator not ready, retrying...")
+        Process.sleep(200)
+        register_with_retries(session_id, attempts - 1)
     end
-
-    # Play audio to generate media traffic
-    # This allows the MOS calculator to analyze the call quality
-    Logger.info("[MOS-Test] Playing audio to generate media for quality analysis...")
-    call |> play("priv/audio/parrot-welcome.wav")
-  end
-
-  @impl true
-  def handle_play_complete(file, call) do
-    Logger.info("[MOS-Test] Playback complete: #{file}")
-
-    # Query and display current MOS score
-    session_id = call.call_id
-
-    case ParrotMedia.MOS.current_score(session_id) do
-      {:ok, nil} ->
-        Logger.info("[MOS-Test] No MOS score calculated yet (not enough samples)")
-
-      {:ok, score} ->
-        Logger.info(
-          "[MOS-Test] Current MOS: #{score.value} (#{score.quality_level})"
-        )
-
-      {:error, :not_found} ->
-        Logger.info("[MOS-Test] MOS calculator not active for this session")
-    end
-
-    # Continue playing to extend the call and allow more MOS calculations
-    # Play the file again in a loop
-    call |> play("priv/audio/parrot-welcome.wav")
   end
 
   @impl true
@@ -246,7 +236,8 @@ defmodule TestMOSInviteHandler do
     Logger.info("[MOS-Test] Call ended - fetching final quality summary...")
 
     # Try to get the call summary before the calculator is cleaned up
-    session_id = call.call_id
+    # Use "call_" prefix to match MediaSession's session_id format
+    session_id = "call_#{call.call_id}"
 
     case ParrotMedia.MOS.call_summary(session_id) do
       {:ok, summary} ->

@@ -303,6 +303,28 @@ defmodule ParrotMedia.MediaSession do
     :gen_statem.stop(get_pid(session))
   end
 
+  @doc """
+  Sets the notify_pid for media event notifications.
+
+  This allows setting or updating the process that receives media events
+  (play_complete, record_complete, dtmf_collected, etc.) after the session
+  has been created.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `pid` - The PID to receive media event notifications
+
+  ## Returns
+
+    * `:ok` on success
+    * `{:error, reason}` on failure
+  """
+  @spec set_notify_pid(String.t() | pid(), pid()) :: :ok | {:error, term()}
+  def set_notify_pid(session, pid) when is_pid(pid) do
+    :gen_statem.call(get_pid(session), {:set_notify_pid, pid})
+  end
+
   # Callbacks
 
   @impl true
@@ -445,6 +467,11 @@ defmodule ParrotMedia.MediaSession do
   # get_state call
   def idle({:call, from}, :get_state, data), do: reply_with_state(from, :idle, data)
 
+  # set_notify_pid call
+  def idle({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
   # No catch-all for :call, :cast, or other event types - let them crash
 
   defp process_offer_internal(from, sdp_offer, data) do
@@ -504,6 +531,11 @@ defmodule ParrotMedia.MediaSession do
 
   # get_state call
   def negotiating({:call, from}, :get_state, data), do: reply_with_state(from, :negotiating, data)
+
+  # set_notify_pid call
+  def negotiating({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
 
   # No catch-all for :call, :cast, or other event types - let them crash
 
@@ -583,6 +615,11 @@ defmodule ParrotMedia.MediaSession do
   # get_state call
   def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
 
+  # set_notify_pid call
+  def ready({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
   #################
   # State: active #
   #################
@@ -625,6 +662,11 @@ defmodule ParrotMedia.MediaSession do
 
   # get_state call
   def active({:call, from}, :get_state, data), do: reply_with_state(from, :active, data)
+
+  # set_notify_pid call
+  def active({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
 
   #################
   # State: paused #
@@ -677,6 +719,11 @@ defmodule ParrotMedia.MediaSession do
 
   # get_state call
   def paused({:call, from}, :get_state, data), do: reply_with_state(from, :paused, data)
+
+  # set_notify_pid call
+  def paused({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
 
   #####################
   # State: terminated #

@@ -179,30 +179,47 @@ defmodule Parrot.Bridge.Handler do
 
   # Process INVITE with media (normal flow or late-offer)
   defp process_invite_with_media(uas, req_sip_msg, args, handler_module, media_pid, sdp_answer) do
-    # 4. Create Call struct from SIP message
-    call = create_call_from_sip(req_sip_msg, handler_module)
+    # Build invite data for Call.Server
+    invite = %{
+      id: Call.generate_id(),
+      from: extract_uri_string(req_sip_msg.from),
+      to: extract_uri_string(req_sip_msg.to),
+      call_id: req_sip_msg.call_id,
+      method: to_string(req_sip_msg.method)
+    }
 
-    # 5. Invoke handler's handle_invite/1
-    result_call = handler_module.handle_invite(call)
-
-    # 6. Execute returned operations via ActionExecutor
-    operations = Call.get_operations(result_call)
-
+    # Build context for Call.Server (includes SIP context for ActionExecutor)
     context = %{
       uas: uas,
       sip_msg: req_sip_msg,
       media_pid: media_pid,
+      dialog_id: req_sip_msg.call_id,
       sdp_answer: sdp_answer,
       response_fn: Map.get(args, :response_fn)
     }
 
-    case ActionExecutor.execute(operations, result_call, context) do
-      {:ok, _updated_call} ->
+    # Start Call.Server which will invoke handle_invite and execute operations
+    case Parrot.Call.Server.start_link(
+           handler: handler_module,
+           invite: invite,
+           context: context
+         ) do
+      {:ok, call_server_pid} ->
+        Logger.debug("[Bridge.Handler] Started Call.Server #{inspect(call_server_pid)}")
+
+        # Wire up MediaSession's notify_pid to Call.Server for event delivery
+        # This ensures media events (play_complete, dtmf_collected, etc.) reach
+        # the Call.Server which will invoke the appropriate handler callbacks
+        if media_pid do
+          session_id = "call_#{req_sip_msg.call_id}"
+          ParrotMedia.MediaSession.set_notify_pid(session_id, call_server_pid)
+          Logger.debug("[Bridge.Handler] Wired notify_pid for #{session_id} to Call.Server")
+        end
+
         :ok
 
       {:error, reason} ->
-        Logger.error("[Bridge.Handler] ActionExecutor failed: #{inspect(reason)}")
-        # Send 500 error on failure
+        Logger.error("[Bridge.Handler] Failed to start Call.Server: #{inspect(reason)}")
         error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
         send_response(uas, error_response, args)
         :ok
@@ -250,19 +267,25 @@ defmodule Parrot.Bridge.Handler do
   @doc """
   Handles incoming BYE requests.
 
-  Finds the associated call and invokes the handler's `handle_hangup/1` callback.
+  Stops the media session and sends 200 OK.
   """
   @impl true
   def handle_bye(uas, req_sip_msg, _args) do
     Logger.debug("[Bridge.Handler] Received BYE")
 
-    # Future implementation:
-    # 1. Find call by dialog ID
-    # 2. Invoke handler's handle_hangup/1
-    # 3. Clean up media session
-    # 4. Send 200 OK
+    # Stop the MediaSession for this call
+    session_id = "call_#{req_sip_msg.call_id}"
 
-    # For now, send 200 OK
+    case ParrotMedia.MediaSessionSupervisor.find_session(session_id) do
+      {:ok, media_pid} ->
+        Logger.debug("[Bridge.Handler] Stopping MediaSession #{session_id}")
+        ParrotMedia.MediaSessionSupervisor.stop_session(media_pid)
+
+      {:error, :not_found} ->
+        Logger.debug("[Bridge.Handler] No MediaSession found for #{session_id}")
+    end
+
+    # Send 200 OK
     response = Message.reply(req_sip_msg, 200, "OK")
     ParrotSip.Transaction.Server.response(response, uas)
 
