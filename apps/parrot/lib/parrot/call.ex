@@ -44,6 +44,9 @@ defmodule Parrot.Call do
   ### Playback
   * `play/2`, `play/3` - Play audio file(s)
 
+  ### Text-to-Speech
+  * `say/2`, `say/3` - Synthesize and play text
+
   ### Recording
   * `record/2`, `record/3` - Start recording
   * `stop_record/1` - Stop recording
@@ -259,6 +262,49 @@ defmodule Parrot.Call do
   @spec play(t(), String.t() | list(String.t()), keyword()) :: t()
   def play(%__MODULE__{} = call, file_or_files, opts) when is_list(opts) do
     add_operation(call, {:play, file_or_files, opts})
+  end
+
+  # ---------------------------------------------------------------------------
+  # Text-to-Speech Operations
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Synthesizes and plays text using text-to-speech with default profile.
+
+  The text will be converted to speech using the default TTS profile
+  configured for the application.
+
+  ## Examples
+
+      call |> say("Hello, welcome to our service.")
+      call |> say("Please enter your account number.")
+
+  """
+  @spec say(t(), String.t()) :: t()
+  def say(%__MODULE__{} = call, text) when is_binary(text) do
+    add_operation(call, {:say, text, []})
+  end
+
+  @doc """
+  Synthesizes and plays text using text-to-speech with options.
+
+  ## Options
+
+  * `:profile` - Named TTS profile to use (e.g., `:announcements`, `:prompts`)
+  * `:voice` - Voice identifier to use (e.g., "en-US-Neural2-F")
+  * `:engine` - TTS engine to use (e.g., `:google`, `:aws`, `:azure`)
+  * `:language` - Language/locale code (e.g., "en-US", "fr-FR")
+
+  ## Examples
+
+      call |> say("Hello there", profile: :announcements)
+      call |> say("Welcome", voice: "en-US-Neural2-F")
+      call |> say("Bonjour", language: "fr-FR", engine: :google)
+
+  """
+  @spec say(t(), String.t(), keyword()) :: t()
+  def say(%__MODULE__{} = call, text, opts) when is_binary(text) and is_list(opts) do
+    add_operation(call, {:say, text, opts})
   end
 
   # ---------------------------------------------------------------------------
