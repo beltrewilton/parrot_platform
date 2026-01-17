@@ -414,12 +414,10 @@ defmodule Parrot.TTS.ProviderTest do
   end
 
   describe "custom provider integration" do
-    @moduledoc """
-    Integration tests verifying that custom TTS providers can be:
-    1. Implemented by following the Provider behaviour
-    2. Configured via application config as custom modules
-    3. Used through the Synthesizer with full functionality
-    """
+    # Integration tests verifying that custom TTS providers can be:
+    # 1. Implemented by following the Provider behaviour
+    # 2. Configured via application config as custom modules
+    # 3. Used through the Synthesizer with full functionality
 
     # A complete custom provider implementation for integration testing
     defmodule TestCustomProvider do
