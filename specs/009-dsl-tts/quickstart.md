@@ -149,10 +149,11 @@ defmodule MyApp.TTSTest do
   use ExUnit.Case
 
   test "say/2 adds operation to call" do
-    call = %Parrot.Call{}
+    call = Parrot.Call.new()
     result = call |> Parrot.Call.say("Hello")
 
-    assert {:say, "Hello", []} in result.__operations__
+    operations = Parrot.Call.get_operations(result)
+    assert {:say, "Hello", []} in operations
   end
 end
 ```
