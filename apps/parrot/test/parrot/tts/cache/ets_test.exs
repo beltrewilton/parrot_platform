@@ -34,7 +34,7 @@ defmodule Parrot.TTS.Cache.ETSTest do
 
     test "returns :miss for non-existent SHA256 hash" do
       # Valid SHA256 hash format (64 hex chars)
-      key = "a" |> :crypto.hash(:sha256) |> Base.encode16(case: :lower)
+      key = :crypto.hash(:sha256, "a") |> Base.encode16(case: :lower)
 
       assert ETS.get(key) == :miss
     end
