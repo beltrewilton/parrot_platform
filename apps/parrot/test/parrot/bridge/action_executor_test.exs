@@ -1011,7 +1011,374 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "execute_say/4 (T015 - TTS playback)" do
+    # Note: These tests follow TDD - the execute_say/4 function does NOT exist yet.
+    # They are expected to FAIL until the implementation is added.
+    #
+    # The :say operation will:
+    # 1. Verify call is in :answered state
+    # 2. Verify media_pid is available
+    # 3. Call Synthesizer.get_audio/3 to get audio binary
+    # 4. Send the audio to the MediaSession for playback
+
+    test "returns error when call is not in answered state" do
+      call = Call.new(state: :incoming)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_say(call, context, "Hello world", [])
+    end
+
+    test "returns error when media_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_say(call, context, "Hello world", [])
+    end
+
+    test "calls Synthesizer.get_audio with correct arguments" do
+      # This test verifies the Synthesizer is called with proper text and profile
+      # We use the mock synthesizer server pattern to capture the call
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      # Start a mock synthesizer that captures the call and returns mock audio
+      {:ok, mock_synth} = start_mock_synthesizer(fn text, profile, _opts ->
+        send(test_pid, {:synthesizer_called, text, profile})
+        {:ok, "MOCK_AUDIO_DATA", :wav}
+      end)
+
+      # Create mock media_pid that captures play_audio message
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_received, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} =
+        ActionExecutor.execute_say(call, context, "Hello world", profile: :premium)
+
+      # Verify Synthesizer was called with correct text
+      assert_receive {:synthesizer_called, "Hello world", profile}
+      assert profile == :premium
+    end
+
+    test "sends audio data to media session on successful synthesis" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+      mock_audio = "FAKE_AUDIO_BINARY_DATA"
+
+      # Start mock synthesizer returning audio
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, mock_audio, :wav}
+      end)
+
+      # Create mock media_pid to capture the play_audio message
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_received, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_say(call, context, "Hello", [])
+
+      # Verify audio was sent to media session
+      assert_receive {:media_received, {:play_audio, ^mock_audio, opts}}
+      assert is_list(opts)
+    end
+
+    test "returns {:ok, call} on successful synthesis and playback" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio_data", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> send(test_pid, :audio_sent)
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      result = ActionExecutor.execute_say(call, context, "Test text", [])
+
+      assert {:ok, updated_call} = result
+      assert updated_call.state == :answered
+      assert_receive :audio_sent
+    end
+
+    test "returns error when Synthesizer returns error" do
+      call = Call.new(state: :answered)
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, :synthesis_failed}
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth
+      }
+
+      assert {:error, {:synthesis_failed, :synthesis_failed}} =
+               ActionExecutor.execute_say(call, context, "Hello", [])
+    end
+
+    test "returns error when Synthesizer returns provider_error" do
+      call = Call.new(state: :answered)
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:error, {:provider_error, "API rate limit exceeded"}}
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        synthesizer: mock_synth
+      }
+
+      assert {:error, {:synthesis_failed, {:provider_error, "API rate limit exceeded"}}} =
+               ActionExecutor.execute_say(call, context, "Hello", [])
+    end
+
+    test "passes profile option from opts to Synthesizer" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, profile, _opts ->
+        send(test_pid, {:profile_used, profile})
+        {:ok, "audio", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> :ok
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _call} = ActionExecutor.execute_say(call, context, "Text", profile: :premium)
+
+      assert_receive {:profile_used, :premium}
+    end
+
+    test "uses :default profile when no profile option specified" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, profile, _opts ->
+        send(test_pid, {:profile_used, profile})
+        {:ok, "audio", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          _msg -> :ok
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _call} = ActionExecutor.execute_say(call, context, "Text", [])
+
+      assert_receive {:profile_used, :default}
+    end
+
+    test "includes format metadata in play_audio message" do
+      call = Call.new(state: :answered)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio_data", :mp3}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_msg, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _call} = ActionExecutor.execute_say(call, context, "Hello", [])
+
+      assert_receive {:media_msg, {:play_audio, _audio, opts}}
+      assert opts[:format] == :mp3
+    end
+  end
+
+  describe "execute/3 with :say operation" do
+    # Tests for :say operation through the main execute/3 dispatch
+
+    test "executes say operation via pipeline" do
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [{:say, "Hello world", [profile: :default]}]
+      }
+
+      operations = Call.get_operations(call)
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio_data", :wav}
+      end)
+
+      media_pid = spawn(fn ->
+        receive do
+          msg -> send(test_pid, {:media_received, msg})
+        end
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      assert_receive {:media_received, {:play_audio, _audio, _opts}}
+    end
+
+    test "returns error when say operation fails due to missing media_pid" do
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [{:say, "Hello", []}]
+      }
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "returns error when say operation fails due to invalid state" do
+      call = %Call{
+        Call.new(state: :incoming)
+        | __operations__: [{:say, "Hello", []}]
+      }
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      assert {:error, :invalid_state} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "say operation continues to next operations (non-signaling)" do
+      # :say is a media operation, not signaling, so it should continue
+      test_pid = self()
+
+      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
+        {:ok, "audio", :wav}
+      end)
+
+      # Create a call with say followed by collect_dtmf
+      call = %Call{
+        Call.new(state: :answered)
+        | __operations__: [
+            {:say, "Enter your PIN", []},
+            {:collect_dtmf, [max: 4, timeout: 10_000]}
+          ]
+      }
+
+      operations = Call.get_operations(call)
+
+      media_pid = spawn(fn ->
+        loop = fn loop_fn ->
+          receive do
+            msg ->
+              send(test_pid, {:media_msg, msg})
+              loop_fn.(loop_fn)
+          end
+        end
+
+        loop.(loop)
+      end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        synthesizer: mock_synth
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Both operations should have executed
+      assert_receive {:media_msg, {:play_audio, _audio, _opts}}
+      assert_receive {:media_msg, {:collect_dtmf, _dtmf_opts}}
+    end
+  end
+
   # Helper functions
+
+  # Starts a mock synthesizer GenServer that delegates to the provided function
+  defp start_mock_synthesizer(synth_fn) do
+    {:ok, pid} = Agent.start_link(fn -> synth_fn end)
+    {:ok, pid}
+  end
 
   defp build_invite_message do
     %ParrotSip.Message{
