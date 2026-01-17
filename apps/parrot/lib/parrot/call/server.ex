@@ -355,7 +355,9 @@ defmodule Parrot.Call.Server do
       executor_context = %{
         uas: call.__uas__ || Map.get(context, :uas),
         sip_msg: call.__sip_msg__ || Map.get(context, :sip_msg),
-        media_pid: call.__media_pid__ || Map.get(context, :media_pid)
+        media_pid: call.__media_pid__ || Map.get(context, :media_pid),
+        sdp_answer: Map.get(context, :sdp_answer),
+        response_fn: Map.get(context, :response_fn)
       }
 
       case ActionExecutor.execute(operations, call, executor_context) do
