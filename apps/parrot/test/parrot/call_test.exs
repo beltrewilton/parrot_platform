@@ -516,6 +516,115 @@ defmodule Parrot.CallTest do
     end
   end
 
+  describe "say/2" do
+    test "adds say operation with text and default options" do
+      call = %Call{} |> Call.say("Hello, welcome to our service.")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello, welcome to our service.", []}
+    end
+
+    test "adds say operation with different text" do
+      call = %Call{} |> Call.say("Please enter your account number.")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Please enter your account number.", []}
+    end
+  end
+
+  describe "say/3" do
+    test "adds say operation with profile option" do
+      call = %Call{} |> Call.say("Hello there", profile: :announcements)
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello there", [profile: :announcements]}
+    end
+
+    test "adds say operation with voice override option" do
+      call = %Call{} |> Call.say("Welcome", voice: "en-US-Neural2-F")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Welcome", [voice: "en-US-Neural2-F"]}
+    end
+
+    test "adds say operation with multiple options" do
+      call = %Call{} |> Call.say("Hello", profile: :announcements, voice: "en-US-Neural2-F")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello", [profile: :announcements, voice: "en-US-Neural2-F"]}
+    end
+
+    test "adds say operation with engine option" do
+      call = %Call{} |> Call.say("Hello", engine: :google)
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello", [engine: :google]}
+    end
+
+    test "adds say operation with language option" do
+      call = %Call{} |> Call.say("Bonjour", language: "fr-FR")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Bonjour", [language: "fr-FR"]}
+    end
+  end
+
+  describe "say/2,3 chaining" do
+    test "multiple say operations can be chained" do
+      call =
+        %Call{}
+        |> Call.say("Welcome to our service.")
+        |> Call.say("Please listen carefully.", profile: :announcements)
+        |> Call.say("Goodbye.")
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:say, "Welcome to our service.", []},
+               {:say, "Please listen carefully.", [profile: :announcements]},
+               {:say, "Goodbye.", []}
+             ] = operations
+    end
+
+    test "say chains with play and other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.say("Welcome to the system.")
+        |> Call.play("menu.wav")
+        |> Call.say("Please make a selection.", profile: :prompts)
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say, "Welcome to the system.", []},
+               {:play, "menu.wav", []},
+               {:say, "Please make a selection.", [profile: :prompts]}
+             ] = operations
+    end
+
+    test "say works in IVR flow" do
+      call =
+        Call.new(from: "sip:alice@example.com", to: "sip:100@pbx.local", method: "INVITE")
+        |> Call.answer()
+        |> Call.say("Hello, thank you for calling.")
+        |> Call.assign(:menu, :main)
+        |> Call.say("Please enter your PIN followed by the pound sign.", profile: :prompts)
+
+      assert call.from == "sip:alice@example.com"
+      assert call.assigns == %{menu: :main}
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say, "Hello, thank you for calling.", []},
+               {:say, "Please enter your PIN followed by the pound sign.", [profile: :prompts]}
+             ] = operations
+    end
+  end
+
   describe "get_operations/1" do
     test "returns operations in execution order" do
       call =
