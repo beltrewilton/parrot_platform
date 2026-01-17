@@ -7,22 +7,23 @@ defmodule Parrot.TTS.Cache.ETSTest do
   @table_name :parrot_tts_cache
 
   setup do
-    # Start the ETS cache backend
-    # This will fail initially since ETS module doesn't exist
-    {:ok, pid} = ETS.start_link(name: @table_name)
+    # The ETS cache may already be started by the application supervisor
+    # In that case, just clear it for a clean test state
+    pid = case ETS.start_link(name: @table_name) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+
+    # Clear the cache for a clean test state
+    ETS.clear()
 
     on_exit(fn ->
-      if Process.alive?(pid) do
-        GenServer.stop(pid, :normal, 100)
-      end
-
-      # Clean up ETS table if it exists
-      if :ets.whereis(@table_name) != :undefined do
-        :ets.delete(@table_name)
-      end
+      # Only stop if we started a new process (not the app-supervised one)
+      # Just clear the cache instead to avoid affecting other tests
+      ETS.clear()
     end)
 
-    :ok
+    {:ok, pid: pid}
   end
 
   describe "get/1" do

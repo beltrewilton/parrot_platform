@@ -625,6 +625,110 @@ defmodule Parrot.CallTest do
     end
   end
 
+  describe "say_prompt/3 (T022 - TTS + DTMF collection)" do
+    # T022: Test that say_prompt/3 combines say() with prompt() pattern
+    # say_prompt plays TTS audio, then starts DTMF collection after playback
+
+    test "adds say_prompt operation with text and collect options" do
+      call = %Call{} |> Call.say_prompt("Please enter your PIN.", max: 4, timeout: 10_000)
+
+      assert [operation] = call.__operations__
+      assert {:say_prompt, "Please enter your PIN.", opts} = operation
+      assert opts[:max] == 4
+      assert opts[:timeout] == 10_000
+    end
+
+    test "stores collect options in __pending_collect__ assign" do
+      call = %Call{} |> Call.say_prompt("Enter your account number.", max: 6, timeout: 15_000)
+
+      # Includes default terminators: [] from @default_collect_opts merge
+      pending = call.assigns[:__pending_collect__]
+      assert pending[:max] == 6
+      assert pending[:timeout] == 15_000
+      assert pending[:terminators] == []
+    end
+
+    test "supports profile option for TTS" do
+      call = %Call{} |> Call.say_prompt("Enter PIN", max: 4, profile: :premium)
+
+      [{:say_prompt, _text, opts}] = Call.get_operations(call)
+      assert opts[:profile] == :premium
+      assert opts[:max] == 4
+    end
+
+    test "supports terminator option for DTMF collection" do
+      call = %Call{} |> Call.say_prompt("Enter code", max: 6, terminators: ["#"])
+
+      [{:say_prompt, _text, opts}] = Call.get_operations(call)
+      assert opts[:terminators] == ["#"]
+      assert call.assigns[:__pending_collect__][:terminators] == ["#"]
+    end
+
+    test "preserves existing assigns while adding __pending_collect__" do
+      call =
+        %Call{}
+        |> Call.assign(:menu, :pin_entry)
+        |> Call.assign(:retries, 0)
+        |> Call.say_prompt("Enter PIN", max: 4)
+
+      assert call.assigns[:menu] == :pin_entry
+      assert call.assigns[:retries] == 0
+      pending = call.assigns[:__pending_collect__]
+      assert pending[:max] == 4
+      # Default timeout and terminators are merged
+      assert pending[:timeout] == 30_000
+      assert pending[:terminators] == []
+    end
+
+    test "chains with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.say_prompt("Welcome. Please enter your PIN.", max: 4, timeout: 10_000)
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say_prompt, "Welcome. Please enter your PIN.", _opts}
+             ] = operations
+    end
+
+    test "uses default collect options when not specified" do
+      call = %Call{} |> Call.say_prompt("Enter digits")
+
+      [{:say_prompt, _text, opts}] = Call.get_operations(call)
+      # Default options from collect_dtmf
+      assert opts[:max] == 20
+      assert opts[:timeout] == 30_000
+      assert opts[:terminators] == []
+    end
+
+    test "works in IVR flow with mixed operations" do
+      call =
+        Call.new(from: "sip:alice@example.com", to: "sip:100@pbx.local", method: "INVITE")
+        |> Call.answer()
+        |> Call.say("Welcome to the banking system.", profile: :announcements)
+        |> Call.say_prompt("Please enter your 4-digit PIN.", max: 4, timeout: 15_000, profile: :prompts)
+
+      assert call.from == "sip:alice@example.com"
+      # __pending_collect__ only contains DTMF collection options (max, timeout, terminators)
+      # profile is a TTS option and goes in the operation opts
+      pending = call.assigns[:__pending_collect__]
+      assert pending[:max] == 4
+      assert pending[:timeout] == 15_000
+      assert pending[:terminators] == []
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say, "Welcome to the banking system.", [profile: :announcements]},
+               {:say_prompt, "Please enter your 4-digit PIN.", _opts}
+             ] = operations
+    end
+  end
+
   describe "get_operations/1" do
     test "returns operations in execution order" do
       call =

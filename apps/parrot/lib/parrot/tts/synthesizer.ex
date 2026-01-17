@@ -98,7 +98,8 @@ defmodule Parrot.TTS.Synthesizer do
   ## Parameters
 
   - `text` - Text to synthesize (binary string)
-  - `profile` - Synthesis profile map (see module doc)
+  - `profile` - Either a profile name atom (e.g., `:default`, `:premium`) which will be
+    resolved via `Parrot.TTS.Config.get_profile/1`, or a full profile map (see module doc)
   - `opts` - Additional options (keyword list, currently unused)
 
   ## Returns
@@ -109,6 +110,10 @@ defmodule Parrot.TTS.Synthesizer do
 
   ## Examples
 
+      # Using a profile name (resolves via Config)
+      {:ok, audio, :mp3} = Synthesizer.get_audio("Hello", :default)
+
+      # Using a full profile map
       profile = %{
         provider: Parrot.TTS.Provider.OpenAI,
         cache: Parrot.TTS.Cache.ETS,
@@ -120,7 +125,57 @@ defmodule Parrot.TTS.Synthesizer do
       {:ok, audio, :mp3} = Synthesizer.get_audio("Hello", profile)
   """
   def get_audio(text, profile, opts \\ []) do
-    GenServer.call(__MODULE__, {:get_audio, text, profile, opts}, :infinity)
+    # Resolve profile name to full profile map if needed
+    case resolve_profile(profile) do
+      {:ok, resolved_profile} ->
+        GenServer.call(__MODULE__, {:get_audio, text, resolved_profile, opts}, :infinity)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # Resolve a profile name (atom) to a full profile map
+  # If already a map, return as-is after ensuring required keys
+  defp resolve_profile(profile) when is_map(profile) do
+    # Profile is already a map, validate and return
+    {:ok, profile}
+  end
+
+  defp resolve_profile(profile_name) when is_atom(profile_name) do
+    # Resolve profile name via Config
+    alias Parrot.TTS.Config
+
+    with {:ok, profile_config} <- Config.get_profile(profile_name),
+         provider_atom <- Keyword.fetch!(profile_config, :provider),
+         {:ok, provider_module} <- Config.get_provider_module(provider_atom),
+         {:ok, credentials} <- Config.get_credentials(provider_atom),
+         {:ok, cache_config} <- Config.get_cache_config() do
+      # Build the full profile map from config
+      profile_map = %{
+        provider: provider_module,
+        cache: Keyword.fetch!(cache_config, :backend),
+        voice: Keyword.get(profile_config, :voice, "alloy"),
+        model: Keyword.get(profile_config, :model, "tts-1"),
+        format: Keyword.get(profile_config, :format, :mp3)
+      }
+
+      # Merge in credentials (e.g., api_key)
+      profile_with_creds =
+        Enum.reduce(credentials, profile_map, fn {key, value}, acc ->
+          Map.put(acc, key, value)
+        end)
+
+      {:ok, profile_with_creds}
+    else
+      {:error, {:unknown_profile, _}} = error -> error
+      {:error, {:unknown_provider, _}} = error -> error
+      _ -> {:error, :invalid_profile_config}
+    end
+  end
+
+  defp resolve_profile(_other) do
+    {:error, :invalid_profile}
   end
 
   # Server callbacks

@@ -46,6 +46,7 @@ defmodule Parrot.Call do
 
   ### Text-to-Speech
   * `say/2`, `say/3` - Synthesize and play text
+  * `say_prompt/3` - Synthesize and play text, then collect DTMF digits
 
   ### Recording
   * `record/2`, `record/3` - Start recording
@@ -362,6 +363,56 @@ defmodule Parrot.Call do
     call
     |> assign(:__pending_collect__, opts)
     |> play(file)
+  end
+
+  @doc """
+  Synthesizes text using TTS and plays it, then starts DTMF collection after playback.
+
+  This function combines `say/3` with DTMF collection. The text is synthesized
+  using the configured TTS profile, played to the caller, and then DTMF
+  collection begins automatically after playback completes.
+
+  The handler must check for `__pending_collect__` in `handle_play_complete/2`
+  (same pattern as `prompt/3`).
+
+  ## Options
+
+  TTS options (passed to synthesizer):
+    * `:profile` - Named TTS profile to use (default: `:default`)
+    * `:voice` - Voice identifier to use
+    * `:engine` - TTS engine to use
+    * `:language` - Language/locale code
+
+  DTMF collection options:
+    * `:max` - Maximum digits to collect (default: 20)
+    * `:timeout` - Timeout in milliseconds (default: 30,000)
+    * `:terminators` - Digits that end collection early (default: [])
+
+  ## Examples
+
+      # Simple PIN entry with TTS
+      call |> say_prompt("Please enter your 4-digit PIN.", max: 4, timeout: 10_000)
+
+      # With TTS profile and DTMF terminator
+      call |> say_prompt("Enter your account number followed by pound.",
+        max: 10,
+        terminators: ["#"],
+        profile: :prompts
+      )
+
+  """
+  @spec say_prompt(t(), String.t(), keyword()) :: t()
+  def say_prompt(%__MODULE__{} = call, text, opts \\ []) when is_binary(text) do
+    # Merge with default DTMF collection options
+    opts = Keyword.merge(@default_collect_opts, opts)
+
+    # Extract DTMF collection options for __pending_collect__
+    collect_keys = [:max, :timeout, :terminators]
+    collect_opts = Keyword.take(opts, collect_keys)
+
+    call
+    |> assign(:__pending_collect__, collect_opts)
+    |> add_operation({:say_prompt, text, opts})
   end
 
   # ---------------------------------------------------------------------------

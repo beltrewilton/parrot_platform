@@ -162,20 +162,16 @@ defmodule Parrot.TTS.SynthesizerTest do
     {:ok, _} = MockCache.start_link()
     {:ok, _} = MockProvider.start_link()
 
-    # Start Synthesizer
-    {:ok, _} = Synthesizer.start_link(name: Synthesizer)
+    # The Synthesizer may already be started by the application supervisor
+    # In that case, just use the existing one
+    _pid = case Synthesizer.start_link(name: Synthesizer) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
 
     on_exit(fn ->
-      # Stop processes in reverse order of startup
-      # Use try/catch to handle cases where processes already died
-      if Process.whereis(Synthesizer) do
-        try do
-          GenServer.stop(Synthesizer, :normal, 1000)
-        catch
-          :exit, _ -> :ok
-        end
-      end
-
+      # Don't stop the Synthesizer - it may be app-supervised
+      # Just stop our mock processes
       try do
         MockCache.stop()
       catch
