@@ -1,5 +1,5 @@
 defmodule Parrot.TTS.CacheTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   describe "Cache behaviour contract" do
     test "behaviour module exists" do
@@ -63,8 +63,16 @@ defmodule Parrot.TTS.CacheTest do
 
     setup do
       # Create ETS table for test cache
+      # Delete if it already exists from a previous test
+      if :ets.whereis(:test_cache) != :undefined do
+        :ets.delete(:test_cache)
+      end
       :ets.new(:test_cache, [:set, :public, :named_table])
-      on_exit(fn -> :ets.delete(:test_cache) end)
+      on_exit(fn ->
+        if :ets.whereis(:test_cache) != :undefined do
+          :ets.delete(:test_cache)
+        end
+      end)
       :ok
     end
 
