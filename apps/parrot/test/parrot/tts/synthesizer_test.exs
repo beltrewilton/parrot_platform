@@ -510,6 +510,371 @@ defmodule Parrot.TTS.SynthesizerTest do
     end
   end
 
+  describe "profile selection" do
+    # Additional mock provider for testing profile switching
+    defmodule AlternateProvider do
+      @behaviour Parrot.TTS.Provider
+
+      @impl true
+      def synthesize(text, config) do
+        format = Keyword.get(config, :format, :wav)
+        # Generate different audio data to distinguish from MockProvider
+        audio_data = :crypto.hash(:sha256, "alternate-" <> text)
+        {:ok, audio_data, format}
+      end
+
+      @impl true
+      def list_voices(_credentials) do
+        {:ok, [%{id: "alt-voice", name: "Alternate Voice", language: "en-US"}]}
+      end
+
+      @impl true
+      def validate_config(_config), do: :ok
+    end
+
+    setup do
+      # Reset mock cache between tests
+      MockCache.reset()
+      MockProvider.reset()
+      :ok
+    end
+
+    test "uses default profile when :default atom is passed" do
+      # Configure application with a default profile
+      original_config = Application.get_env(:parrot, :tts, [])
+
+      # Use the full module atoms for credentials lookup
+      mock_provider = MockProvider
+      mock_cache = MockCache
+
+      Application.put_env(:parrot, :tts,
+        default_profile: :standard,
+        profiles: [
+          standard: [
+            provider: mock_provider,
+            voice: "default-voice",
+            model: "default-model",
+            format: :wav
+          ]
+        ],
+        credentials: [
+          {mock_provider, [api_key: "test-key"]}
+        ],
+        cache: [
+          backend: mock_cache
+        ]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+      end)
+
+      # Use :default profile
+      result = Synthesizer.get_audio("Hello default", :default)
+
+      assert {:ok, audio_data, :wav} = result
+      assert is_binary(audio_data)
+      assert MockProvider.get_call_count() == 1
+    end
+
+    test "uses specified profile when profile name atom is provided" do
+      original_config = Application.get_env(:parrot, :tts, [])
+
+      mock_provider = MockProvider
+      mock_cache = MockCache
+
+      Application.put_env(:parrot, :tts,
+        default_profile: :standard,
+        profiles: [
+          standard: [
+            provider: mock_provider,
+            voice: "standard-voice",
+            model: "standard-model",
+            format: :wav
+          ],
+          premium: [
+            provider: mock_provider,
+            voice: "premium-voice",
+            model: "premium-model",
+            format: :mp3
+          ]
+        ],
+        credentials: [
+          {mock_provider, [api_key: "test-key"]}
+        ],
+        cache: [
+          backend: mock_cache
+        ]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+      end)
+
+      # Use :premium profile explicitly
+      result = Synthesizer.get_audio("Hello premium", :premium)
+
+      assert {:ok, audio_data, :mp3} = result
+      assert is_binary(audio_data)
+      assert MockProvider.get_call_count() == 1
+    end
+
+    test "different profiles use different providers" do
+      original_config = Application.get_env(:parrot, :tts, [])
+
+      mock_provider = MockProvider
+      alt_provider = AlternateProvider
+      mock_cache = MockCache
+
+      Application.put_env(:parrot, :tts,
+        default_profile: :standard,
+        profiles: [
+          standard: [
+            provider: mock_provider,
+            voice: "standard-voice",
+            model: "standard-model",
+            format: :wav
+          ],
+          alternate: [
+            provider: alt_provider,
+            voice: "alt-voice",
+            model: "alt-model",
+            format: :opus
+          ]
+        ],
+        credentials: [
+          {mock_provider, [api_key: "mock-key"]},
+          {alt_provider, [api_key: "alt-key"]}
+        ],
+        cache: [
+          backend: mock_cache
+        ]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+      end)
+
+      text = "Same text different providers"
+
+      # Standard profile uses MockProvider
+      {:ok, audio1, :wav} = Synthesizer.get_audio(text, :standard)
+
+      # Alternate profile uses AlternateProvider
+      {:ok, audio2, :opus} = Synthesizer.get_audio(text, :alternate)
+
+      # Audio should be different because different providers generate different data
+      assert audio1 != audio2
+
+      # MockProvider should only be called once (for :standard)
+      assert MockProvider.get_call_count() == 1
+    end
+
+    test "returns error for unknown profile" do
+      original_config = Application.get_env(:parrot, :tts, [])
+
+      mock_provider = MockProvider
+      mock_cache = MockCache
+
+      Application.put_env(:parrot, :tts,
+        profiles: [
+          standard: [provider: mock_provider, voice: "v", model: "m"]
+        ],
+        credentials: [{mock_provider, [api_key: "key"]}],
+        cache: [backend: mock_cache]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+      end)
+
+      result = Synthesizer.get_audio("Hello", :nonexistent_profile)
+
+      assert {:error, {:unknown_profile, :nonexistent_profile}} = result
+    end
+
+    test "profile with environment variable credentials resolves correctly" do
+      original_config = Application.get_env(:parrot, :tts, [])
+      original_env = System.get_env("TEST_TTS_API_KEY")
+
+      mock_provider = MockProvider
+      mock_cache = MockCache
+
+      # Set environment variable
+      System.put_env("TEST_TTS_API_KEY", "resolved-api-key-from-env")
+
+      Application.put_env(:parrot, :tts,
+        default_profile: :env_profile,
+        profiles: [
+          env_profile: [
+            provider: mock_provider,
+            voice: "env-voice",
+            model: "env-model",
+            format: :wav
+          ]
+        ],
+        credentials: [
+          {mock_provider, [api_key: {:system, "TEST_TTS_API_KEY"}]}
+        ],
+        cache: [
+          backend: mock_cache
+        ]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+
+        if original_env do
+          System.put_env("TEST_TTS_API_KEY", original_env)
+        else
+          System.delete_env("TEST_TTS_API_KEY")
+        end
+      end)
+
+      # The synthesizer should resolve the env var and work correctly
+      result = Synthesizer.get_audio("Hello with env credentials", :env_profile)
+
+      assert {:ok, audio_data, :wav} = result
+      assert is_binary(audio_data)
+    end
+
+    test "full profile map bypasses profile resolution" do
+      # When a full profile map is passed, it should be used directly
+      # without going through Config.get_profile/1
+      direct_profile = %{
+        provider: MockProvider,
+        cache: MockCache,
+        voice: "direct-voice",
+        model: "direct-model",
+        format: :ogg
+      }
+
+      # This should work without any application config
+      result = Synthesizer.get_audio("Direct profile test", direct_profile)
+
+      assert {:ok, audio_data, :ogg} = result
+      assert is_binary(audio_data)
+    end
+
+    test "per-call profile map overrides can change voice and format" do
+      # First establish a baseline with one profile
+      profile1 = %{
+        provider: MockProvider,
+        cache: MockCache,
+        voice: "voice-a",
+        model: "model-a",
+        format: :wav
+      }
+
+      profile2 = %{
+        provider: MockProvider,
+        cache: MockCache,
+        voice: "voice-b",
+        model: "model-b",
+        format: :mp3
+      }
+
+      text = "Same text for both"
+
+      # Get audio with profile1
+      {:ok, audio1, :wav} = Synthesizer.get_audio(text, profile1)
+
+      # Get audio with profile2 (different voice/model/format)
+      {:ok, audio2, :mp3} = Synthesizer.get_audio(text, profile2)
+
+      # The cache keys should be different due to different voice/model/format
+      # so both should call the provider
+      assert MockProvider.get_call_count() == 2
+
+      # Audio data is same (MockProvider generates based on text only)
+      # but format is different
+      assert audio1 == audio2
+    end
+
+    test "cache key differs when profile settings change" do
+      text = "Cache key test"
+
+      profile_wav = %{
+        provider: MockProvider,
+        cache: MockCache,
+        voice: "voice-1",
+        model: "model-1",
+        format: :wav
+      }
+
+      profile_mp3 = %{
+        provider: MockProvider,
+        cache: MockCache,
+        voice: "voice-1",
+        model: "model-1",
+        format: :mp3
+      }
+
+      # Compute cache keys
+      key_wav = Synthesizer.compute_cache_key(text, profile_wav, [])
+      key_mp3 = Synthesizer.compute_cache_key(text, profile_mp3, [])
+
+      # Keys should be different
+      assert key_wav != key_mp3
+    end
+
+    test "returns error when profile references unknown provider" do
+      original_config = Application.get_env(:parrot, :tts, [])
+
+      Application.put_env(:parrot, :tts,
+        profiles: [
+          bad_profile: [
+            provider: :nonexistent_provider,
+            voice: "v",
+            model: "m"
+          ]
+        ],
+        credentials: [],
+        cache: [backend: MockCache]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+      end)
+
+      result = Synthesizer.get_audio("Hello", :bad_profile)
+
+      assert {:error, {:unknown_provider, :nonexistent_provider}} = result
+    end
+
+    test "returns error when profile provider has no credentials configured" do
+      original_config = Application.get_env(:parrot, :tts, [])
+
+      Application.put_env(:parrot, :tts,
+        profiles: [
+          no_creds_profile: [
+            provider: :openai,
+            voice: "v",
+            model: "m"
+          ]
+        ],
+        # No credentials for :openai
+        credentials: [],
+        cache: [backend: MockCache]
+      )
+
+      on_exit(fn ->
+        Application.put_env(:parrot, :tts, original_config)
+      end)
+
+      result = Synthesizer.get_audio("Hello", :no_creds_profile)
+
+      assert {:error, {:unknown_provider, :openai}} = result
+    end
+
+    test "invalid profile type returns error" do
+      # Passing something that is neither a map nor an atom
+      result = Synthesizer.get_audio("Hello", "invalid-string-profile")
+
+      assert {:error, :invalid_profile} = result
+    end
+  end
+
   # Helper function to compute cache key
   # This mirrors what Synthesizer.compute_cache_key/3 should do
   defp compute_cache_key(text, profile, _opts) do
