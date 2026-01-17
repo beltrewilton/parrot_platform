@@ -841,6 +841,39 @@ defmodule ParrotMedia.MediaSession do
     forward_and_update(updated_data, {:start_record, path, opts})
   end
 
+  # Handle play_audio message (TTS synthesis result)
+  # Writes audio binary to a temp file and plays it using existing file playback
+  defp handle_media_message({:play_audio, audio_binary, opts}, data) when is_binary(audio_binary) do
+    Logger.info("MediaSession #{data.id}: Playing synthesized audio (#{byte_size(audio_binary)} bytes)")
+
+    # Determine file extension from format
+    format = Keyword.get(opts, :format, :wav)
+    extension = audio_format_to_extension(format)
+
+    # Create temp file for the audio
+    temp_dir = System.tmp_dir!()
+    filename = "parrot_tts_#{data.id}_#{System.unique_integer([:positive])}.#{extension}"
+    temp_path = Path.join(temp_dir, filename)
+
+    case File.write(temp_path, audio_binary) do
+      :ok ->
+        Logger.debug("MediaSession #{data.id}: Wrote TTS audio to temp file: #{temp_path}")
+
+        # Convert the audio to WAV if needed (for non-WAV formats)
+        # For now, we assume the TTS provider returns compatible audio
+        # In the future, we could transcode MP3/Opus to WAV here
+
+        # Play the temp file using existing infrastructure
+        # The play_complete handler will clean up the file
+        play_opts = Keyword.put(opts, :temp_file, true)
+        handle_media_message({:play_files, [temp_path], play_opts}, data)
+
+      {:error, reason} ->
+        Logger.error("MediaSession #{data.id}: Failed to write TTS audio to temp file: #{inspect(reason)}")
+        {:keep_state_and_data, []}
+    end
+  end
+
   # Default handler for other messages
   defp handle_media_message(msg, data) do
     case msg do
@@ -1687,6 +1720,15 @@ defmodule ParrotMedia.MediaSession do
 
   # Fallback for any other format
   defp normalize_ip(_), do: {127, 0, 0, 1}
+
+  # Map audio format atoms to file extensions for TTS audio temp files
+  defp audio_format_to_extension(:wav), do: "wav"
+  defp audio_format_to_extension(:mp3), do: "mp3"
+  defp audio_format_to_extension(:opus), do: "opus"
+  defp audio_format_to_extension(:ogg), do: "ogg"
+  defp audio_format_to_extension(:flac), do: "flac"
+  defp audio_format_to_extension(:aac), do: "aac"
+  defp audio_format_to_extension(_), do: "wav"
 
   defp ensure_pipeline_termination(pipeline_pid, _pipeline_module) when is_pid(pipeline_pid) do
     ref = Process.monitor(pipeline_pid)
