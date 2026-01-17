@@ -81,6 +81,7 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building teleco
 - `Bridge.Handler` connects ParrotSip to DSL handlers
 - `Call.Server` manages call lifecycle and executes operations via `ActionExecutor`
 - Pipeline operations: `answer()`, `reject(status)`, `hangup()`, `play(file)`
+- TTS operations: `say(call, text)`, `say_prompt(call, text, opts)` for text-to-speech
 - Media events received via `{:media_event, session_id, event}` messages to Call.Server
 
 ---
@@ -382,6 +383,131 @@ When working with these modules, understand gen_statem concepts:
 - `ParrotMedia.Handler` - Media handler behavior
 - `ParrotMedia.PortAudioPipeline` - Audio device integration
 - `ParrotMedia.AudioChunker` - Buffer normalization
+
+### TTS Subsystem (parrot DSL)
+- `Parrot.TTS.Provider` - Behaviour for TTS providers (`synthesize/2`, `list_voices/1`, `validate_config/1`)
+- `Parrot.TTS.Config` - Profile and credential management
+- `Parrot.TTS.Synthesizer` - GenServer coordinating synthesis requests
+- `Parrot.TTS.Cache.ETS` / `Cache.Disk` - Audio caching (ETS for speed, Disk for persistence)
+- Provider implementations: `Parrot.TTS.Providers.{OpenAI, ElevenLabs, Google, Polly}`
+
+---
+
+## TTS (Text-to-Speech) Pattern
+
+The TTS subsystem provides text-to-speech synthesis integrated with the Parrot DSL.
+
+### DSL Functions
+
+```elixir
+# Simple announcement - synthesize and play text
+say(call, "Welcome to our service")
+
+# With options - specify voice profile
+say(call, "Hello", profile: :premium)
+
+# Interactive prompt - TTS followed by DTMF collection
+say_prompt(call, "Press 1 for sales, 2 for support", max_digits: 1, timeout: 5000)
+```
+
+### InviteHandler Callback
+
+Implement `handle_tts_error/3` to handle synthesis failures:
+
+```elixir
+defmodule MyHandler do
+  use Parrot.InviteHandler
+
+  def handle_tts_error(text, error, call) do
+    # Fallback to pre-recorded audio or log error
+    {:fallback, "audio/error.wav"}
+  end
+end
+```
+
+### Configuration
+
+```elixir
+config :parrot, :tts,
+  default_profile: :standard,
+  profiles: [
+    standard: [provider: :openai, voice: "alloy", model: "tts-1"],
+    premium: [provider: :elevenlabs, voice: "rachel"]
+  ],
+  credentials: [
+    openai: [api_key: {:system, "OPENAI_API_KEY"}],
+    elevenlabs: [api_key: {:system, "ELEVENLABS_API_KEY"}]
+  ],
+  cache: [backend: Parrot.TTS.Cache.ETS, max_entries: 10_000]
+```
+
+### TTS Rules
+
+- Use `say/2` for simple announcements (no user input expected)
+- Use `say_prompt/3` when collecting DTMF after the prompt
+- Always implement `handle_tts_error/3` callback for production systems
+- Configure appropriate cache backend: ETS for development, Disk for production
+- Use profiles to switch between providers without code changes
+
+### Adding Custom TTS Providers
+
+Implement the `Parrot.TTS.Provider` behaviour with 3 required callbacks:
+
+```elixir
+defmodule MyApp.TTS.CustomProvider do
+  @behaviour Parrot.TTS.Provider
+
+  @impl true
+  def synthesize(text, opts) do
+    # Call external API, return {:ok, audio_binary} or {:error, reason}
+    {:ok, audio_binary}
+  end
+
+  @impl true
+  def list_voices(opts) do
+    # Return {:ok, [voice_info]} or {:error, reason}
+    {:ok, [%{id: "voice1", name: "Voice One", language: "en-US"}]}
+  end
+
+  @impl true
+  def validate_config(config) do
+    # Return :ok or {:error, reason}
+    :ok
+  end
+end
+```
+
+Then register in config:
+```elixir
+config :parrot, :tts,
+  profiles: [
+    custom: [provider: MyApp.TTS.CustomProvider, voice: "voice1"]
+  ]
+```
+
+### Testing TTS Code
+
+Use `plug:` option in provider config to inject Req.Test stubs. **No real API calls in tests.**
+
+```elixir
+# In test setup
+Req.Test.stub(MyTTSPlug, fn conn ->
+  Req.Test.json(conn, %{"audio" => Base.encode64(fake_audio)})
+end)
+
+# In test config
+config :parrot, :tts,
+  credentials: [
+    openai: [api_key: "test-key", plug: {Req.Test, MyTTSPlug}]
+  ]
+```
+
+Key testing patterns:
+- Stub HTTP responses with `Req.Test.stub/2` for provider tests
+- Use `Parrot.TTS.Cache.ETS` in tests for isolation
+- Test cache hit/miss scenarios separately
+- Verify error handling with simulated API failures
+- Use `async: true` for unit tests (cache tests may need `async: false`)
 
 ---
 
