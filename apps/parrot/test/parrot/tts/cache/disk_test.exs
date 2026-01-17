@@ -4,7 +4,10 @@ defmodule Parrot.TTS.Cache.DiskTest do
   alias Parrot.TTS.Cache.Disk
 
   # Use a unique temp directory for each test run
-  @test_cache_dir Path.join(System.tmp_dir!(), "parrot_tts_cache_test_#{:rand.uniform(1_000_000)}")
+  @test_cache_dir Path.join(
+                    System.tmp_dir!(),
+                    "parrot_tts_cache_test_#{:rand.uniform(1_000_000)}"
+                  )
 
   setup do
     # Create a unique cache directory for this test
@@ -13,10 +16,11 @@ defmodule Parrot.TTS.Cache.DiskTest do
     File.mkdir_p!(cache_dir)
 
     # Start the Disk cache with the test directory
-    pid = case Disk.start_link(cache_dir: cache_dir, ttl: 3600) do
-      {:ok, pid} -> pid
-      {:error, {:already_started, pid}} -> pid
-    end
+    pid =
+      case Disk.start_link(cache_dir: cache_dir, ttl: 3600) do
+        {:ok, pid} -> pid
+        {:error, {:already_started, pid}} -> pid
+      end
 
     on_exit(fn ->
       # Clean up the cache directory
@@ -49,6 +53,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
     test "stores audio data with metadata", %{cache_dir: cache_dir} do
       key = "test_key_#{:rand.uniform(1000)}"
       audio_data = <<1, 2, 3, 4, 5>>
+
       metadata = %{
         format: :mp3,
         provider: :openai,
@@ -69,6 +74,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
       key = "large_audio_key"
       # Simulate a 1MB audio file
       audio_data = :crypto.strong_rand_bytes(1024 * 1024)
+
       metadata = %{
         format: :wav,
         provider: :elevenlabs,
@@ -86,10 +92,22 @@ defmodule Parrot.TTS.Cache.DiskTest do
     test "overwrites existing entry with same key" do
       key = "overwrite_key"
       audio_data1 = <<1, 2, 3>>
-      metadata1 = %{format: :mp3, provider: :openai, created_at: DateTime.utc_now(), size_bytes: 3}
+
+      metadata1 = %{
+        format: :mp3,
+        provider: :openai,
+        created_at: DateTime.utc_now(),
+        size_bytes: 3
+      }
 
       audio_data2 = <<4, 5, 6, 7, 8>>
-      metadata2 = %{format: :wav, provider: :google, created_at: DateTime.utc_now(), size_bytes: 5}
+
+      metadata2 = %{
+        format: :wav,
+        provider: :google,
+        created_at: DateTime.utc_now(),
+        size_bytes: 5
+      }
 
       assert Disk.put(key, audio_data1, metadata1) == :ok
       assert Disk.put(key, audio_data2, metadata2) == :ok
@@ -106,7 +124,13 @@ defmodule Parrot.TTS.Cache.DiskTest do
       for format <- formats do
         key = "format_test_#{format}"
         audio_data = <<0, 1, 2>>
-        metadata = %{format: format, provider: :openai, created_at: DateTime.utc_now(), size_bytes: 3}
+
+        metadata = %{
+          format: format,
+          provider: :openai,
+          created_at: DateTime.utc_now(),
+          size_bytes: 3
+        }
 
         assert Disk.put(key, audio_data, metadata) == :ok
         assert {:ok, ^audio_data, stored_meta} = Disk.get(key)
@@ -120,6 +144,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
       for provider <- providers do
         key = "provider_test_#{provider}"
         audio_data = <<0, 1, 2>>
+
         metadata = %{
           format: :mp3,
           provider: provider,
@@ -138,6 +163,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
     test "returns {:ok, audio_data, metadata} for known key" do
       key = "known_key_#{:rand.uniform(1000)}"
       audio_data = <<10, 20, 30, 40>>
+
       metadata = %{
         format: :mp3,
         provider: :openai,
@@ -156,6 +182,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
       key = "binary_preservation_key"
       # Random binary data
       audio_data = :crypto.strong_rand_bytes(1024)
+
       metadata = %{
         format: :wav,
         provider: :elevenlabs,
@@ -173,6 +200,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
       key = "metadata_preservation_key"
       audio_data = <<1, 2, 3>>
       now = DateTime.utc_now()
+
       metadata = %{
         format: :ogg,
         provider: :polly,
@@ -253,7 +281,14 @@ defmodule Parrot.TTS.Cache.DiskTest do
       for i <- 1..10 do
         key = "clear_test_key_#{i}"
         audio_data = <<i>>
-        metadata = %{format: :mp3, provider: :openai, created_at: DateTime.utc_now(), size_bytes: 1}
+
+        metadata = %{
+          format: :mp3,
+          provider: :openai,
+          created_at: DateTime.utc_now(),
+          size_bytes: 1
+        }
+
         assert Disk.put(key, audio_data, metadata) == :ok
       end
 
@@ -274,7 +309,12 @@ defmodule Parrot.TTS.Cache.DiskTest do
 
       # Verify cache directory is empty (no .audio or .meta files)
       files = File.ls!(cache_dir)
-      cache_files = Enum.filter(files, fn f -> String.ends_with?(f, ".audio") or String.ends_with?(f, ".meta") end)
+
+      cache_files =
+        Enum.filter(files, fn f ->
+          String.ends_with?(f, ".audio") or String.ends_with?(f, ".meta")
+        end)
+
       assert cache_files == []
     end
 
@@ -375,7 +415,13 @@ defmodule Parrot.TTS.Cache.DiskTest do
     test "audio file contains exact binary data", %{cache_dir: cache_dir} do
       key = "file_content_test"
       audio_data = :crypto.strong_rand_bytes(256)
-      metadata = %{format: :mp3, provider: :openai, created_at: DateTime.utc_now(), size_bytes: 256}
+
+      metadata = %{
+        format: :mp3,
+        provider: :openai,
+        created_at: DateTime.utc_now(),
+        size_bytes: 256
+      }
 
       assert Disk.put(key, audio_data, metadata) == :ok
 
@@ -465,6 +511,7 @@ defmodule Parrot.TTS.Cache.DiskTest do
           Task.async(fn ->
             key = "concurrent_key_#{i}"
             audio_data = <<i>>
+
             metadata = %{
               format: :mp3,
               provider: :openai,
@@ -522,7 +569,14 @@ defmodule Parrot.TTS.Cache.DiskTest do
       for i <- 1..20 do
         key = "concurrent_delete_#{i}"
         audio_data = <<i>>
-        metadata = %{format: :mp3, provider: :openai, created_at: DateTime.utc_now(), size_bytes: 1}
+
+        metadata = %{
+          format: :mp3,
+          provider: :openai,
+          created_at: DateTime.utc_now(),
+          size_bytes: 1
+        }
+
         assert Disk.put(key, audio_data, metadata) == :ok
       end
 
