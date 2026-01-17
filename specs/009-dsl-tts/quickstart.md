@@ -72,7 +72,7 @@ def handle_invite(call) do
   |> say_prompt("Please enter your 4-digit PIN.", max: 4, timeout: 10_000)
 end
 
-def handle_dtmf_collected(digits, call) do
+def handle_dtmf(digits, call) do
   if verify_pin(digits) do
     call |> say("PIN verified. How can I help you?")
   else
