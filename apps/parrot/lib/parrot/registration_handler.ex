@@ -25,7 +25,10 @@ defmodule Parrot.RegistrationHandler do
         end
 
         def get_bindings(aor) do
+          # Return rich binding data with contact, expires, registered_at
+          # Optional q-value for Contact priority (RFC 3261 Section 10.2.1.2)
           MyDB.get_contacts(aor)
+          # Returns: [%{contact: "sip:...", expires: 3600, registered_at: timestamp, q: 1.0}, ...]
         end
 
         def handle_registration_expired(aor, contact) do
@@ -177,7 +180,9 @@ defmodule Parrot.RegistrationHandler do
   Retrieve current contact bindings for an AOR.
 
   Called when building the 200 OK response to return all current
-  registrations for the Address of Record.
+  registrations for the Address of Record. Per RFC 3261 Section 10.3,
+  the 200 OK response MUST contain Contact headers with expires parameters
+  indicating the remaining registration time for each binding.
 
   ## Arguments
 
@@ -185,17 +190,44 @@ defmodule Parrot.RegistrationHandler do
 
   ## Return Value
 
-  A list of contact URIs currently registered for this AOR.
+  A list of binding maps, each containing:
+
+  **Required fields:**
+  - `:contact` - The Contact URI string (e.g., "sip:alice@192.168.1.100:5060")
+  - `:expires` - The original expiration time in seconds
+  - `:registered_at` - Unix timestamp (seconds) when the binding was stored
+
+  **Optional fields:**
+  - `:q` - Priority q-value (0.0-1.0) for Contact ordering per RFC 3261 Section 10.2.1.2
+
   Return an empty list if no bindings exist.
 
   ## Example
 
       def get_bindings(aor) do
         MyDB.get_contacts(aor)
-        # Returns: ["sip:alice@192.168.1.100:5060", "sip:alice@192.168.1.101:5060"]
+        # Returns: [
+        #   %{contact: "sip:alice@192.168.1.100:5060", expires: 3600, registered_at: 1699999999, q: 1.0},
+        #   %{contact: "sip:alice@192.168.1.101:5060", expires: 1800, registered_at: 1699999999, q: 0.5}
+        # ]
       end
+
+  ## RFC Reference
+
+  RFC 3261 Section 10.3 requires the registrar to return the actual
+  expiration interval chosen for each binding in the 200 OK response.
+  RFC 3261 Section 10.2.1.2 specifies that q-values range from 0.0 to 1.0,
+  with higher values indicating higher preference.
   """
-  @callback get_bindings(aor :: String.t()) :: [String.t()]
+  @callback get_bindings(aor :: String.t()) ::
+              [
+                %{
+                  required(:contact) => String.t(),
+                  required(:expires) => non_neg_integer(),
+                  required(:registered_at) => non_neg_integer(),
+                  optional(:q) => float()
+                }
+              ]
 
   @doc """
   Handle registration expiration.

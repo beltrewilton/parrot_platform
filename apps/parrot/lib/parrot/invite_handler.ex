@@ -38,6 +38,29 @@ defmodule Parrot.InviteHandler do
         end
       end
 
+  ## The `prompt/3` Pattern
+
+  The `prompt/3` function provides a convenient way to play an audio file
+  and then collect DTMF digits. It works by storing the collection options
+  in `assigns[:__pending_collect__]` and queuing a play operation.
+
+  When the audio finishes, your `handle_play_complete/2` callback is invoked.
+  You must check for pending collect options and start DTMF collection:
+
+      def handle_play_complete(_file, %{assigns: %{__pending_collect__: opts}} = call)
+          when not is_nil(opts) do
+        call
+        |> assign(:__pending_collect__, nil)
+        |> collect_dtmf(opts)
+      end
+
+      def handle_play_complete(_file, call) do
+        {:noreply, call}
+      end
+
+  This two-phase approach allows the play operation to complete before
+  starting DTMF collection, ensuring proper timing of the IVR flow.
+
   ## Callbacks
 
   All callbacks receive a `Parrot.Call` struct and should return either:
@@ -217,6 +240,86 @@ defmodule Parrot.InviteHandler do
   @callback handle_hangup(call :: Call.t()) :: {:noreply, Call.t()} | Call.t()
 
   @doc """
+  Called when SDP negotiation fails (FR-009, FR-012).
+
+  This callback is invoked when `MediaSession.process_offer/2` fails, typically due to:
+  - `:codec_mismatch` - No common codec between offer and server capabilities
+  - `:invalid_sdp` - Malformed SDP in the INVITE body
+  - `:media_session_error` - MediaSession creation or process_offer failed
+
+  The default implementation rejects the call with 488 Not Acceptable Here.
+  Override this to implement custom error handling (e.g., logging, alternative responses).
+
+  ## Arguments
+
+  - `reason` - The error reason (atom)
+  - `call` - The current call state
+
+  ## Example
+
+      # Custom handler that logs and rejects with a different code
+      def handle_sdp_error(reason, call) do
+        Logger.error("SDP negotiation failed: \#{inspect(reason)}")
+        call |> reject(406)
+      end
+
+      # Handler that accepts calls without SDP (late-offer flow)
+      def handle_sdp_error(:no_sdp, call) do
+        call |> answer()  # Will use late-offer flow
+      end
+
+      def handle_sdp_error(_reason, call) do
+        call |> reject(488)
+      end
+  """
+  @callback handle_sdp_error(reason :: atom(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
+  Called when TTS synthesis fails (FR-017, FR-018, FR-019).
+
+  This callback is invoked when the `say/2` or `say_prompt/3` operations fail to
+  synthesize text to audio. The default implementation logs a warning and returns
+  `{:noreply, call}`, allowing the call to continue.
+
+  Override this to implement custom error handling such as:
+  - Playing a fallback audio file
+  - Tracking error metrics
+  - Retrying with a different TTS provider
+  - Terminating the call after multiple failures
+
+  ## Arguments
+
+  - `text` - The text that failed to synthesize
+  - `error` - The error reason (may be an atom or tuple with details)
+  - `call` - The current call state
+
+  ## Return
+
+  Return `{:noreply, call}` or a `Call` struct with new operations.
+
+  ## Example
+
+      # Play fallback audio when TTS fails
+      def handle_tts_error(_text, _error, call) do
+        call |> play("tts-error-fallback.wav")
+      end
+
+      # Track errors and hang up after 3 failures
+      def handle_tts_error(_text, _error, %{assigns: %{tts_errors: n}} = call) when n >= 2 do
+        call |> play("goodbye.wav") |> hangup()
+      end
+
+      def handle_tts_error(text, error, call) do
+        Logger.warning("TTS failed for: \#{text}, error: \#{inspect(error)}")
+        count = Map.get(call.assigns, :tts_errors, 0)
+        {:noreply, %{call | assigns: Map.put(call.assigns, :tts_errors, count + 1)}}
+      end
+  """
+  @callback handle_tts_error(text :: String.t(), error :: term(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
   Provides default implementations and imports Call functions.
 
   When you `use Parrot.InviteHandler`, you get:
@@ -240,10 +343,16 @@ defmodule Parrot.InviteHandler do
           assign: 3,
           play: 2,
           play: 3,
+          say: 2,
+          say: 3,
+          say_prompt: 2,
+          say_prompt: 3,
           record: 2,
           record: 3,
           stop_record: 1,
+          collect_dtmf: 1,
           collect_dtmf: 2,
+          prompt: 2,
           prompt: 3,
           bridge: 2,
           bridge: 3,
@@ -304,6 +413,21 @@ defmodule Parrot.InviteHandler do
         {:noreply, call}
       end
 
+      @impl Parrot.InviteHandler
+      def handle_sdp_error(_reason, call) do
+        # Default: reject with 488 Not Acceptable Here (FR-012)
+        call |> reject(488)
+      end
+
+      @impl Parrot.InviteHandler
+      def handle_tts_error(text, error, call) do
+        # Default: log warning and return {:noreply, call} (FR-018)
+        # This allows the call to continue without crashing
+        require Logger
+        Logger.warning("TTS synthesis failed for text #{inspect(text)}: #{inspect(error)}")
+        {:noreply, call}
+      end
+
       defoverridable handle_play_complete: 2,
                      handle_dtmf: 2,
                      handle_prompt_complete: 3,
@@ -313,7 +437,9 @@ defmodule Parrot.InviteHandler do
                      handle_conference_join: 2,
                      handle_conference_leave: 3,
                      handle_fork_media_connected: 2,
-                     handle_hangup: 1
+                     handle_hangup: 1,
+                     handle_sdp_error: 2,
+                     handle_tts_error: 3
     end
   end
 end

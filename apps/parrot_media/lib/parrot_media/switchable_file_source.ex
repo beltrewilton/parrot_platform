@@ -53,8 +53,9 @@ defmodule ParrotMedia.SwitchableFileSource do
 
   def_options(
     initial_file: [
-      spec: String.t(),
-      description: "Path to the initial WAV file to play"
+      spec: String.t() | :deferred | nil,
+      description:
+        "Path to the initial WAV file to play, or :deferred/:nil to start without a file"
     ],
     media_handler: [
       spec: module(),
@@ -89,7 +90,11 @@ defmodule ParrotMedia.SwitchableFileSource do
       loop_files: [],
       media_handler: options.media_handler,
       handler_state: options.handler_state,
-      session_id: options.session_id
+      session_id: options.session_id,
+      # Track if we're in playing state (can emit stream_format)
+      playing?: false,
+      # Pending files to play when we enter playing state
+      pending_play: nil
     }
 
     Logger.debug(
@@ -101,40 +106,105 @@ defmodule ParrotMedia.SwitchableFileSource do
 
   @impl true
   def handle_setup(_ctx, state) do
-    Logger.debug("[SwitchableFileSource:#{state.session_id}] Opening initial file")
+    # Handle deferred mode - no initial file, wait for play commands
+    if state.current_file in [:deferred, nil] do
+      Logger.debug(
+        "[SwitchableFileSource:#{state.session_id}] Started in deferred mode, waiting for play commands"
+      )
 
-    case open_file(state.current_file, state) do
-      {:ok, new_state} ->
-        {[], new_state}
+      # Set a default audio format for when we eventually get files
+      # This will be overwritten when we actually open a file
+      default_format = %RawAudio{
+        channels: 1,
+        sample_rate: 8000,
+        sample_format: :s16le
+      }
 
-      {:error, reason} ->
-        Logger.error(
-          "[SwitchableFileSource:#{state.session_id}] Failed to open initial file: #{inspect(reason)}"
-        )
+      {[], %{state | audio_format: default_format, header_parsed?: true}}
+    else
+      Logger.debug("[SwitchableFileSource:#{state.session_id}] Opening initial file")
 
-        raise "Failed to open initial file #{state.current_file}: #{inspect(reason)}"
+      case open_file(state.current_file, state) do
+        {:ok, new_state} ->
+          {[], new_state}
+
+        {:error, reason} ->
+          Logger.error(
+            "[SwitchableFileSource:#{state.session_id}] Failed to open initial file: #{inspect(reason)}"
+          )
+
+          raise "Failed to open initial file #{state.current_file}: #{inspect(reason)}"
+      end
     end
   end
 
   @impl true
   def handle_playing(_ctx, state) do
-    # Send stream format based on parsed WAV header
-    if state.audio_format do
-      Logger.debug(
-        "[SwitchableFileSource:#{state.session_id}] Sending stream format: #{inspect(state.audio_format)}"
-      )
+    state = %{state | playing?: true}
 
-      {[stream_format: {:output, state.audio_format}], state}
-    else
-      Logger.error("[SwitchableFileSource:#{state.session_id}] No audio format available")
-      {[], state}
+    # Check if we have pending files to play (from deferred mode)
+    case state.pending_play do
+      {:sequence, files} when is_list(files) and files != [] ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Starting pending sequence in handle_playing"
+        )
+
+        [first_file | remaining] = files
+        new_state = %{state | pending_play: nil, playlist: remaining, playlist_mode: :sequence}
+        start_playing_file(first_file, new_state)
+
+      {:loop, files} when is_list(files) and files != [] ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Starting pending loop in handle_playing"
+        )
+
+        [first_file | remaining] = files
+
+        new_state = %{
+          state
+          | pending_play: nil,
+            playlist: remaining,
+            playlist_mode: :loop,
+            loop_files: files
+        }
+
+        start_playing_file(first_file, new_state)
+
+      _ ->
+        # Normal case: send stream format based on parsed WAV header
+        if state.audio_format do
+          Logger.debug(
+            "[SwitchableFileSource:#{state.session_id}] Sending stream format: #{inspect(state.audio_format)}"
+          )
+
+          {[stream_format: {:output, state.audio_format}], state}
+        else
+          Logger.debug(
+            "[SwitchableFileSource:#{state.session_id}] In deferred mode, waiting for play commands"
+          )
+
+          {[], state}
+        end
     end
   end
 
   @impl true
   def handle_demand(:output, _size, :buffers, _ctx, state) do
-    # Read ONE chunk per demand to allow proper pacing through the pipeline.
-    # Don't multiply by size - let downstream control the pace by sending more demands.
+    # In deferred mode with no file open, just wait (don't produce any buffers)
+    if state.fd == nil do
+      Logger.debug(
+        "[SwitchableFileSource:#{state.session_id}] No file open, waiting for play command"
+      )
+
+      {[], state}
+    else
+      handle_file_read(state)
+    end
+  end
+
+  # Read ONE chunk per demand to allow proper pacing through the pipeline.
+  # Don't multiply by size - let downstream control the pace by sending more demands.
+  defp handle_file_read(state) do
     bytes_to_read = min(state.chunk_size, state.remaining_bytes || state.chunk_size)
 
     case IO.binread(state.fd, bytes_to_read) do
@@ -204,19 +274,65 @@ defmodule ParrotMedia.SwitchableFileSource do
   end
 
   @impl true
-  def handle_parent_notification({:play_sequence, files}, _ctx, state) do
+  def handle_parent_notification({:play_sequence, files}, _ctx, state) when is_list(files) do
     Logger.info("[SwitchableFileSource:#{state.session_id}] Playing sequence: #{inspect(files)}")
 
-    new_state = %{state | playlist: files, playlist_mode: :sequence, loop_files: []}
-    {[], new_state}
+    cond do
+      # Not yet in playing state - queue for later
+      not state.playing? ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Queueing sequence for when playing starts"
+        )
+
+        {[], %{state | pending_play: {:sequence, files}}}
+
+      # In playing state with no file open - start immediately
+      state.fd == nil and files != [] ->
+        [first_file | remaining] = files
+
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Starting sequence immediately with: #{first_file}"
+        )
+
+        new_state = %{state | playlist: remaining, playlist_mode: :sequence, loop_files: []}
+        start_playing_file(first_file, new_state)
+
+      # In playing state with file open - queue for when current finishes
+      true ->
+        new_state = %{state | playlist: files, playlist_mode: :sequence, loop_files: []}
+        {[], new_state}
+    end
   end
 
   @impl true
-  def handle_parent_notification({:play_loop, files}, _ctx, state) do
+  def handle_parent_notification({:play_loop, files}, _ctx, state) when is_list(files) do
     Logger.info("[SwitchableFileSource:#{state.session_id}] Playing loop: #{inspect(files)}")
 
-    new_state = %{state | playlist: files, playlist_mode: :loop, loop_files: files}
-    {[], new_state}
+    cond do
+      # Not yet in playing state - queue for later
+      not state.playing? ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Queueing loop for when playing starts"
+        )
+
+        {[], %{state | pending_play: {:loop, files}}}
+
+      # In playing state with no file open - start immediately
+      state.fd == nil and files != [] ->
+        [first_file | remaining] = files
+
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Starting loop immediately with: #{first_file}"
+        )
+
+        new_state = %{state | playlist: remaining, playlist_mode: :loop, loop_files: files}
+        start_playing_file(first_file, new_state)
+
+      # In playing state with file open - queue for when current finishes
+      true ->
+        new_state = %{state | playlist: files, playlist_mode: :loop, loop_files: files}
+        {[], new_state}
+    end
   end
 
   # Private Functions
@@ -327,8 +443,11 @@ defmodule ParrotMedia.SwitchableFileSource do
   defp sample_format_from_bits(bits), do: {:error, {:unsupported_bit_depth, bits}}
 
   defp handle_file_complete(state) do
+    # Capture the completed filename before any state changes
+    completed_file = state.current_file
+
     Logger.debug(
-      "[SwitchableFileSource:#{state.session_id}] File complete: #{state.current_file}"
+      "[SwitchableFileSource:#{state.session_id}] File complete: #{completed_file}"
     )
 
     # Always notify handler first to update handler state
@@ -337,36 +456,41 @@ defmodule ParrotMedia.SwitchableFileSource do
 
     state = %{state | handler_state: updated_handler_state}
 
-    # Check playlist for what to play next (playlist takes priority)
-    case {state.playlist_mode, state.playlist} do
-      # Sequence mode with more files - continue regardless of handler response
-      {:sequence, [next_file | remaining]} ->
-        Logger.debug(
-          "[SwitchableFileSource:#{state.session_id}] Playing next file in sequence: #{next_file}"
-        )
+    # Get the actions and state from the next step
+    {actions, new_state} =
+      case {state.playlist_mode, state.playlist} do
+        # Sequence mode with more files - continue regardless of handler response
+        {:sequence, [next_file | remaining]} ->
+          Logger.debug(
+            "[SwitchableFileSource:#{state.session_id}] Playing next file in sequence: #{next_file}"
+          )
 
-        switch_to_next_file(next_file, %{state | playlist: remaining})
+          switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # Loop mode - restart from beginning
-      {:loop, []} when state.loop_files != [] ->
-        [next_file | remaining] = state.loop_files
+        # Loop mode - restart from beginning
+        {:loop, []} when state.loop_files != [] ->
+          [next_file | remaining] = state.loop_files
 
-        Logger.debug("[SwitchableFileSource:#{state.session_id}] Looping back to: #{next_file}")
+          Logger.debug("[SwitchableFileSource:#{state.session_id}] Looping back to: #{next_file}")
 
-        switch_to_next_file(next_file, %{state | playlist: remaining})
+          switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # Loop mode with more files in current loop
-      {:loop, [next_file | remaining]} ->
-        Logger.debug(
-          "[SwitchableFileSource:#{state.session_id}] Playing next file in loop: #{next_file}"
-        )
+        # Loop mode with more files in current loop
+        {:loop, [next_file | remaining]} ->
+          Logger.debug(
+            "[SwitchableFileSource:#{state.session_id}] Playing next file in loop: #{next_file}"
+          )
 
-        switch_to_next_file(next_file, %{state | playlist: remaining})
+          switch_to_next_file(next_file, %{state | playlist: remaining})
 
-      # No active playlist - use handler's response to decide next action
-      _ ->
-        handle_handler_response(handler_response, state)
-    end
+        # No active playlist - use handler's response to decide next action
+        _ ->
+          handle_handler_response(handler_response, state)
+      end
+
+    # Always notify parent pipeline that a file completed
+    # This enables the event chain: SwitchableFileSource -> Pipeline -> MediaSession -> Call.Server
+    {[{:notify_parent, {:file_complete, completed_file}} | actions], new_state}
   end
 
   defp notify_handler_and_get_response(state) do
@@ -384,6 +508,9 @@ defmodule ParrotMedia.SwitchableFileSource do
 
       {:noreply, new_handler_state} ->
         {{:noreply, nil}, new_handler_state}
+
+      {:idle, new_handler_state} ->
+        {{:idle, nil}, new_handler_state}
 
       # Unwrapped responses - keep existing handler state
       response ->
@@ -434,6 +561,13 @@ defmodule ParrotMedia.SwitchableFileSource do
 
         switch_to_next_file(first_file, new_state)
 
+      {{:idle, _}, _handler_state} ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested idle mode - staying alive for future commands"
+        )
+
+        enter_idle_mode(state)
+
       {{:stop, _}, _handler_state} ->
         Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler requested stop")
         {[end_of_stream: :output], state}
@@ -467,6 +601,20 @@ defmodule ParrotMedia.SwitchableFileSource do
         [first_file | remaining] = files
         new_state = %{state | playlist: remaining, playlist_mode: :loop, loop_files: files}
         switch_to_next_file(first_file, new_state)
+
+      {:idle, _handler_state} ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested idle mode (unwrapped) - staying alive"
+        )
+
+        enter_idle_mode(state)
+
+      :idle ->
+        Logger.debug(
+          "[SwitchableFileSource:#{state.session_id}] Handler requested idle mode (bare) - staying alive"
+        )
+
+        enter_idle_mode(state)
 
       {:noreply, _handler_state} ->
         Logger.debug("[SwitchableFileSource:#{state.session_id}] Handler returned noreply")
@@ -503,6 +651,58 @@ defmodule ParrotMedia.SwitchableFileSource do
       {:error, reason} ->
         Logger.error(
           "[SwitchableFileSource:#{state.session_id}] Failed to open next file: #{inspect(reason)}"
+        )
+
+        {[end_of_stream: :output], state}
+    end
+  end
+
+  # Enter idle mode - close the current file but DON'T emit end_of_stream.
+  # This keeps the pipeline alive so it can receive future play commands and DTMF.
+  # This is essential for IVR scenarios where we need to wait for user input
+  # after playing a prompt.
+  defp enter_idle_mode(state) do
+    # Close current file if open
+    if state.fd, do: File.close(state.fd)
+
+    # Reset file-related state but keep playing? = true so we can receive new commands.
+    # Setting fd to nil signals that we're ready to accept new play commands immediately.
+    new_state = %{
+      state
+      | fd: nil,
+        current_file: nil,
+        remaining_bytes: nil,
+        header_parsed?: false,
+        playlist: [],
+        playlist_mode: :none,
+        loop_files: []
+    }
+
+    Logger.info(
+      "[SwitchableFileSource:#{state.session_id}] Entered idle mode - waiting for commands"
+    )
+
+    # Return no actions - crucially, NO end_of_stream!
+    # The pipeline stays alive and can receive {:play_sequence, ...} etc.
+    {[], new_state}
+  end
+
+  # Start playing a file from deferred mode (no current file open)
+  # Similar to switch_to_next_file but used when starting playback for the first time
+  defp start_playing_file(file_path, state) do
+    Logger.debug(
+      "[SwitchableFileSource:#{state.session_id}] Starting playback with file: #{file_path}"
+    )
+
+    case open_file(file_path, %{state | current_file: file_path}) do
+      {:ok, new_state} ->
+        # Always send stream format when starting playback, then trigger a redemand
+        # to start the flow of data through the pipeline
+        {[stream_format: {:output, new_state.audio_format}, redemand: :output], new_state}
+
+      {:error, reason} ->
+        Logger.error(
+          "[SwitchableFileSource:#{state.session_id}] Failed to start playing file: #{inspect(reason)}"
         )
 
         {[end_of_stream: :output], state}

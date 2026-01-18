@@ -63,10 +63,19 @@ defmodule ParrotMedia.PipelineHelpers do
   end
 
   @doc """
-  Check if file should be played.
+  Check if an audio source should be created in the pipeline.
+
+  Returns true for:
+  - Actual file paths (strings)
+  - :deferred mode (audio source created but playback starts later via messages)
+
+  Returns false for:
+  - :default_audio (legacy, no audio source)
+  - nil (no audio source)
   """
   def has_audio_file?(%{audio_file: :default_audio}), do: false
   def has_audio_file?(%{audio_file: nil}), do: false
+  def has_audio_file?(%{audio_file: :deferred}), do: true
   def has_audio_file?(%{audio_file: _}), do: true
   def has_audio_file?(_), do: false
 

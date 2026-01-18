@@ -8,7 +8,6 @@ defmodule SippTest.DSLTest do
   ## Test Categories
 
   - Basic call tests: Verify fundamental call establishment and teardown
-  - INFO/DTMF tests: Verify DTMF digit handling via SIP INFO method (RFC 6086)
   - Bridge tests: Verify B2BUA bridge functionality
   - Fork tests: Verify call forking to multiple destinations
   - Hold/Unhold tests: Verify re-INVITE based hold/resume
@@ -82,88 +81,67 @@ defmodule SippTest.DSLTest do
     end
   end
 
-  describe "INFO/DTMF scenarios" do
-    test "UAC sends DTMF digits via INFO method (RFC 6086)" do
-      # Create SIP handler that tracks INFO messages
-      handler = TestHandler.new()
+  describe "RFC 4733 DTMF scenarios" do
+    @describetag :rtp_dtmf
 
-      # Start complete SIP stack
+    @tag timeout: 30_000
+    test "UAC sends DTMF digits via RFC 4733 telephone-event RTP" do
+      # This test uses the DTMFTestHandler which:
+      # 1. Creates MediaSession with TelephoneEventParser wired into pipeline
+      # 2. Starts DTMF collection after ACK
+      # 3. Reports collected digits to test process
+      #
+      # PLATFORM LIMITATIONS:
+      # SIPp's play_dtmf requires raw socket access which:
+      # - Needs root/sudo on Linux
+      # - Is blocked by System Integrity Protection (SIP) on macOS even with sudo
+      # - See: https://github.com/SIPp/sipp/issues/368
+      #
+      # For reliable DTMF testing without these limitations, use the Elixir-based
+      # integration test at: apps/parrot_media/test/parrot_media/dtmf_rtp_integration_test.exs
+      #
+      # To run this test manually (Linux with root):
+      #   sudo mix test test/sipp/dsl_test.exs --include rtp_dtmf --include sipp
+      handler = SippTest.DTMFTestHandler.new(test_pid: self())
       {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
 
-      # Run SIPp UAC INFO/DTMF scenario
-      # Scenario: INVITE -> ACK -> INFO(1) -> INFO(5) -> INFO(#) -> BYE
-      assert :ok ==
-               SippRunner.run_scenario(
-                 scenario_file: "test/sipp/scenarios/dsl/uac_info_dtmf.xml",
-                 remote_host: "127.0.0.1",
-                 remote_port: stack.port,
-                 calls: 1,
-                 timeout: 15_000
-               )
+      # Run SIPp UAC RFC 4733 DTMF scenario
+      # Scenario: INVITE -> ACK -> play_dtmf("1234#") -> BYE
+      result =
+        SippRunner.run_scenario(
+          scenario_file: "test/sipp/scenarios/dsl/uac_rtp_dtmf.xml",
+          remote_host: "127.0.0.1",
+          remote_port: stack.port,
+          calls: 1,
+          timeout: 20_000
+        )
 
-      # Verify stats
-      Process.sleep(100)
-      stats = TestHandler.get_stats(handler)
+      case result do
+        :ok ->
+          # Wait for DTMF collection notification from handler
+          receive do
+            {:dtmf_collected, digits} ->
+              assert digits == "1234#"
 
-      # Should have received: 1 INVITE, 1 ACK, 3 INFOs, 1 BYE
-      assert stats.invites == 1
-      assert stats.acks == 1
-      assert stats.infos == 3
-      assert stats.byes == 1
+            {:dtmf_timeout, partial} ->
+              flunk("DTMF collection timed out with partial digits: #{partial}")
+          after
+            10_000 ->
+              flunk("Did not receive DTMF collection notification")
+          end
 
-      # Cleanup
-      SipStackHelper.stop(stack)
-    end
+        {:error, {:sipp_failed, _, output}} when is_binary(output) ->
+          if String.contains?(output, "raw") and String.contains?(output, "socket") do
+            # SIPp play_dtmf requires raw socket access (root/sudo)
+            IO.puts("\n⚠️  Skipping: SIPp play_dtmf requires root for raw sockets")
+            IO.puts("   Run with: sudo mix test test/sipp/dsl_test.exs --include rtp_dtmf --include sipp\n")
+          else
+            flunk("SIPp failed: #{output}")
+          end
 
-    test "multiple calls with DTMF" do
-      handler = TestHandler.new()
-      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
-
-      assert :ok ==
-               SippRunner.run_scenario(
-                 scenario_file: "test/sipp/scenarios/dsl/uac_info_dtmf.xml",
-                 remote_host: "127.0.0.1",
-                 remote_port: stack.port,
-                 calls: 3,
-                 timeout: 30_000
-               )
-
-      Process.sleep(100)
-      stats = TestHandler.get_stats(handler)
-
-      # 3 calls, each with 1 INVITE, 3 INFOs, 1 BYE
-      assert stats.invites == 3
-      assert stats.infos == 9
-      assert stats.byes == 3
-
-      SipStackHelper.stop(stack)
-    end
-  end
-
-  describe "play with DTMF response scenarios" do
-    test "IVR-style call with DTMF navigation" do
-      # Create handler that tracks INFO messages for DTMF
-      handler = TestHandler.new()
-      {:ok, stack} = SipStackHelper.start_udp(handler, port: 0)
-
-      # Run scenario that simulates IVR navigation
-      assert :ok ==
-               SippRunner.run_scenario(
-                 scenario_file: "test/sipp/scenarios/dsl/uac_play_dtmf.xml",
-                 remote_host: "127.0.0.1",
-                 remote_port: stack.port,
-                 calls: 1,
-                 timeout: 15_000
-               )
-
-      Process.sleep(100)
-      stats = TestHandler.get_stats(handler)
-
-      # Should have: 1 INVITE, 1 ACK, 3 INFOs (digits 1, 2, *), 1 BYE
-      assert stats.invites == 1
-      assert stats.acks == 1
-      assert stats.infos == 3
-      assert stats.byes == 1
+        {:error, reason} ->
+          flunk("SIPp failed: #{inspect(reason)}")
+      end
 
       SipStackHelper.stop(stack)
     end

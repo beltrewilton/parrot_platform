@@ -50,6 +50,7 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building teleco
 4. **State Machines:** Use `gen_statem` for transactions, dialogs, and connections
 5. **RFC References:** All SIP code must reference relevant RFC 3261 sections in comments
 6. **Commit Messages:** Always write single-line commit messages - no multi-line descriptions
+7. **Production-Grade Engineering:** Never take the easy way or cut corners. Always choose the best-engineered, most professional solution even if it requires more work. This is production VoIP software - prefer clean APIs, proper abstractions, and maintainable architecture over quick fixes. If a solution requires changing an existing API to be cleaner, do it.
 
 ### App-Specific Rules
 
@@ -80,6 +81,7 @@ Parrot Platform provides Elixir libraries and OTP behaviours for building teleco
 - `Bridge.Handler` connects ParrotSip to DSL handlers
 - `Call.Server` manages call lifecycle and executes operations via `ActionExecutor`
 - Pipeline operations: `answer()`, `reject(status)`, `hangup()`, `play(file)`
+- TTS operations: `say(call, text)`, `say_prompt(call, text, opts)` for text-to-speech
 - Media events received via `{:media_event, session_id, event}` messages to Call.Server
 
 ---
@@ -382,6 +384,131 @@ When working with these modules, understand gen_statem concepts:
 - `ParrotMedia.PortAudioPipeline` - Audio device integration
 - `ParrotMedia.AudioChunker` - Buffer normalization
 
+### TTS Subsystem (parrot DSL)
+- `Parrot.TTS.Provider` - Behaviour for TTS providers (`synthesize/2`, `list_voices/1`, `validate_config/1`)
+- `Parrot.TTS.Config` - Profile and credential management
+- `Parrot.TTS.Synthesizer` - GenServer coordinating synthesis requests
+- `Parrot.TTS.Cache.ETS` / `Cache.Disk` - Audio caching (ETS for speed, Disk for persistence)
+- Provider implementations: `Parrot.TTS.Providers.{OpenAI, ElevenLabs, Google, Polly}`
+
+---
+
+## TTS (Text-to-Speech) Pattern
+
+The TTS subsystem provides text-to-speech synthesis integrated with the Parrot DSL.
+
+### DSL Functions
+
+```elixir
+# Simple announcement - synthesize and play text
+say(call, "Welcome to our service")
+
+# With options - specify voice profile
+say(call, "Hello", profile: :premium)
+
+# Interactive prompt - TTS followed by DTMF collection
+say_prompt(call, "Press 1 for sales, 2 for support", max_digits: 1, timeout: 5000)
+```
+
+### InviteHandler Callback
+
+Implement `handle_tts_error/3` to handle synthesis failures:
+
+```elixir
+defmodule MyHandler do
+  use Parrot.InviteHandler
+
+  def handle_tts_error(text, error, call) do
+    # Fallback to pre-recorded audio or log error
+    {:fallback, "audio/error.wav"}
+  end
+end
+```
+
+### Configuration
+
+```elixir
+config :parrot, :tts,
+  default_profile: :standard,
+  profiles: [
+    standard: [provider: :openai, voice: "alloy", model: "tts-1"],
+    premium: [provider: :elevenlabs, voice: "rachel"]
+  ],
+  credentials: [
+    openai: [api_key: {:system, "OPENAI_API_KEY"}],
+    elevenlabs: [api_key: {:system, "ELEVENLABS_API_KEY"}]
+  ],
+  cache: [backend: Parrot.TTS.Cache.ETS, max_entries: 10_000]
+```
+
+### TTS Rules
+
+- Use `say/2` for simple announcements (no user input expected)
+- Use `say_prompt/3` when collecting DTMF after the prompt
+- Always implement `handle_tts_error/3` callback for production systems
+- Configure appropriate cache backend: ETS for development, Disk for production
+- Use profiles to switch between providers without code changes
+
+### Adding Custom TTS Providers
+
+Implement the `Parrot.TTS.Provider` behaviour with 3 required callbacks:
+
+```elixir
+defmodule MyApp.TTS.CustomProvider do
+  @behaviour Parrot.TTS.Provider
+
+  @impl true
+  def synthesize(text, opts) do
+    # Call external API, return {:ok, audio_binary} or {:error, reason}
+    {:ok, audio_binary}
+  end
+
+  @impl true
+  def list_voices(opts) do
+    # Return {:ok, [voice_info]} or {:error, reason}
+    {:ok, [%{id: "voice1", name: "Voice One", language: "en-US"}]}
+  end
+
+  @impl true
+  def validate_config(config) do
+    # Return :ok or {:error, reason}
+    :ok
+  end
+end
+```
+
+Then register in config:
+```elixir
+config :parrot, :tts,
+  profiles: [
+    custom: [provider: MyApp.TTS.CustomProvider, voice: "voice1"]
+  ]
+```
+
+### Testing TTS Code
+
+Use `plug:` option in provider config to inject Req.Test stubs. **No real API calls in tests.**
+
+```elixir
+# In test setup
+Req.Test.stub(MyTTSPlug, fn conn ->
+  Req.Test.json(conn, %{"audio" => Base.encode64(fake_audio)})
+end)
+
+# In test config
+config :parrot, :tts,
+  credentials: [
+    openai: [api_key: "test-key", plug: {Req.Test, MyTTSPlug}]
+  ]
+```
+
+Key testing patterns:
+- Stub HTTP responses with `Req.Test.stub/2` for provider tests
+- Use `Parrot.TTS.Cache.ETS` in tests for isolation
+- Test cache hit/miss scenarios separately
+- Verify error handling with simulated API failures
+- Use `async: true` for unit tests (cache tests may need `async: false`)
+
 ---
 
 ## Where to Find Information
@@ -396,6 +523,7 @@ When working with these modules, understand gen_statem concepts:
 ### Implementation Guides
 - **Production Roadmap:** `docs/PRODUCTION_ROADMAP.md`
 - **Project Status:** `docs/PROJECT_STATUS.md`
+- **Ad-hoc SIP Testing (pjsua):** `docs/pjsua-testing.md`
 
 ### Usage Rules (AI Agent Context)
 - **SIP Rules:** `usage-rules/sip.md`
@@ -457,6 +585,16 @@ When working with these modules, understand gen_statem concepts:
 ## Active Technologies
 - Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines) (001-dsl-sip-bridge)
 - In-memory process state, ETS for call/dialog lookups via Registry (001-dsl-sip-bridge)
+- Elixir ~> 1.16, OTP 26+ + Membrane Framework, Fresh (WebSocket), ExSDP, Telemetry (004-bidirectional-ws)
+- N/A (in-memory process state, Registry for lookups) (004-bidirectional-ws)
+- CDR System: Call Detail Records with handler-based dispatch, JSON/CSV serialization (006-cdr-system)
+- Elixir ~> 1.16 with OTP 26+ + ParrotSip, ParrotMedia (MediaSession), ParrotTranspor (007-dsl-dtmf-collect)
+- N/A (in-memory process state via Registry) (007-dsl-dtmf-collect)
+- Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotMedia (MediaSession, pipelines), ParrotTransport (UDP) (008-dsl-sdp-negotiation)
+- In-memory process state, ETS via Registry for call/session lookups (008-dsl-sdp-negotiation)
+- Elixir ~> 1.16 with OTP 26+ + Req (HTTP client), ExSDP, Membrane Framework (existing) (009-dsl-tts)
+- ETS (in-memory cache), Disk (persistent cache with TTL) (009-dsl-tts)
 
 ## Recent Changes
 - 001-dsl-sip-bridge: Added Elixir ~> 1.16 with OTP 26+ + ParrotSip (SIP stack), ParrotTransport (UDP/TCP), ParrotMedia (MediaSession, pipelines)
+- 006-cdr-system: Added CDR (Call Detail Record) system with automatic generation on dialog termination, handler behaviour, and JSON/CSV export

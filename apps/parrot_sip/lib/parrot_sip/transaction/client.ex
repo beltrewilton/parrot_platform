@@ -158,6 +158,12 @@ defmodule ParrotSip.Transaction.Client do
   defp add_branch_to_via(%Message{via: []}, _branch),
     do: raise("Cannot add branch to empty Via list")
 
+  # Handle single Via struct (not wrapped in a list)
+  defp add_branch_to_via(%Message{via: %Via{} = via} = msg, branch) do
+    updated_via = Via.with_parameter(via, "branch", branch)
+    %{msg | via: updated_via}
+  end
+
   defp add_branch_to_via(%Message{via: [first_via | rest]} = msg, branch) do
     updated_via = Via.with_parameter(first_via, "branch", branch)
     %{msg | via: [updated_via | rest]}

@@ -36,6 +36,7 @@ defmodule ParrotMedia.MediaSession do
 
   alias ExSDP
   alias ParrotMedia.{Inet, Sdp}
+  alias ParrotMedia.MOS
 
   # Child spec for supervisor
   def child_spec(opts) do
@@ -104,8 +105,14 @@ defmodule ParrotMedia.MediaSession do
       :notify_pid,
       # DTMF collection state: %{max: int, terminators: list, timeout: int, digits: string, timer_ref: ref}
       :dtmf_collection,
+      # Dynamic payload types from remote SDP (encoding name -> PT)
+      # Per RFC 3551, PTs 96-127 are dynamically assigned
+      # Example: %{"telephone-event" => 96, "no-op" => 97}
+      :dynamic_payload_types,
       # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
-      direction: :sendrecv
+      direction: :sendrecv,
+      # MOS Calculator PID (if MOS monitoring is enabled)
+      mos_calculator_pid: nil
     ]
 
     @type t :: %__MODULE__{
@@ -137,7 +144,9 @@ defmodule ParrotMedia.MediaSession do
             advertised_ip: String.t() | tuple() | nil,
             notify_pid: pid() | nil,
             dtmf_collection: map() | nil,
-            direction: :sendrecv | :sendonly | :recvonly | :inactive
+            dynamic_payload_types: %{String.t() => non_neg_integer()} | nil,
+            direction: :sendrecv | :sendonly | :recvonly | :inactive,
+            mos_calculator_pid: pid() | nil
           }
   end
 
@@ -294,6 +303,28 @@ defmodule ParrotMedia.MediaSession do
     :gen_statem.stop(get_pid(session))
   end
 
+  @doc """
+  Sets the notify_pid for media event notifications.
+
+  This allows setting or updating the process that receives media events
+  (play_complete, record_complete, dtmf_collected, etc.) after the session
+  has been created.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `pid` - The PID to receive media event notifications
+
+  ## Returns
+
+    * `:ok` on success
+    * `{:error, reason}` on failure
+  """
+  @spec set_notify_pid(String.t() | pid(), pid()) :: :ok | {:error, term()}
+  def set_notify_pid(session, pid) when is_pid(pid) do
+    :gen_statem.call(get_pid(session), {:set_notify_pid, pid})
+  end
+
   # Callbacks
 
   @impl true
@@ -436,6 +467,11 @@ defmodule ParrotMedia.MediaSession do
   # get_state call
   def idle({:call, from}, :get_state, data), do: reply_with_state(from, :idle, data)
 
+  # set_notify_pid call
+  def idle({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
   # No catch-all for :call, :cast, or other event types - let them crash
 
   defp process_offer_internal(from, sdp_offer, data) do
@@ -496,6 +532,11 @@ defmodule ParrotMedia.MediaSession do
   # get_state call
   def negotiating({:call, from}, :get_state, data), do: reply_with_state(from, :negotiating, data)
 
+  # set_notify_pid call
+  def negotiating({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
   # No catch-all for :call, :cast, or other event types - let them crash
 
   # State: ready
@@ -526,6 +567,9 @@ defmodule ParrotMedia.MediaSession do
     end
 
     updated_data = %{updated_data | rtp_socket: nil}
+
+    # Start MOS Calculator if MOS monitoring is enabled
+    updated_data = maybe_start_mos_calculator(updated_data)
 
     # Start media pipeline
     case start_media_pipeline(updated_data) do
@@ -571,6 +615,11 @@ defmodule ParrotMedia.MediaSession do
   # get_state call
   def ready({:call, from}, :get_state, data), do: reply_with_state(from, :ready, data)
 
+  # set_notify_pid call
+  def ready({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
   #################
   # State: active #
   #################
@@ -613,6 +662,11 @@ defmodule ParrotMedia.MediaSession do
 
   # get_state call
   def active({:call, from}, :get_state, data), do: reply_with_state(from, :active, data)
+
+  # set_notify_pid call
+  def active({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
 
   #################
   # State: paused #
@@ -666,6 +720,11 @@ defmodule ParrotMedia.MediaSession do
   # get_state call
   def paused({:call, from}, :get_state, data), do: reply_with_state(from, :paused, data)
 
+  # set_notify_pid call
+  def paused({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
   #####################
   # State: terminated #
   #####################
@@ -688,6 +747,12 @@ defmodule ParrotMedia.MediaSession do
     Logger.info("MediaSession #{data.id}: Record complete for #{filename} (#{duration_ms}ms)")
     notify_event(data, {:record_complete, filename, duration_ms})
     {:keep_state_and_data, []}
+  end
+
+  # Handle DTMF digit from pipeline (RFC 4733 telephone-event)
+  defp handle_media_message({:pipeline_event, :dtmf, digit}, data) do
+    # Delegate to standard DTMF handler
+    handle_media_message({:dtmf, digit}, data)
   end
 
   # Handle DTMF collection messages
@@ -774,6 +839,39 @@ defmodule ParrotMedia.MediaSession do
     Logger.info("MediaSession #{data.id}: Starting recording to #{path}")
     updated_data = %{data | output_file: path, audio_sink: :file}
     forward_and_update(updated_data, {:start_record, path, opts})
+  end
+
+  # Handle play_audio message (TTS synthesis result)
+  # Writes audio binary to a temp file and plays it using existing file playback
+  defp handle_media_message({:play_audio, audio_binary, opts}, data) when is_binary(audio_binary) do
+    Logger.info("MediaSession #{data.id}: Playing synthesized audio (#{byte_size(audio_binary)} bytes)")
+
+    # Determine file extension from format
+    format = Keyword.get(opts, :format, :wav)
+    extension = audio_format_to_extension(format)
+
+    # Create temp file for the audio
+    temp_dir = System.tmp_dir!()
+    filename = "parrot_tts_#{data.id}_#{System.unique_integer([:positive])}.#{extension}"
+    temp_path = Path.join(temp_dir, filename)
+
+    case File.write(temp_path, audio_binary) do
+      :ok ->
+        Logger.debug("MediaSession #{data.id}: Wrote TTS audio to temp file: #{temp_path}")
+
+        # Convert the audio to WAV if needed (for non-WAV formats)
+        # For now, we assume the TTS provider returns compatible audio
+        # In the future, we could transcode MP3/Opus to WAV here
+
+        # Play the temp file using existing infrastructure
+        # The play_complete handler will clean up the file
+        play_opts = Keyword.put(opts, :temp_file, true)
+        handle_media_message({:play_files, [temp_path], play_opts}, data)
+
+      {:error, reason} ->
+        Logger.error("MediaSession #{data.id}: Failed to write TTS audio to temp file: #{inspect(reason)}")
+        {:keep_state_and_data, []}
+    end
   end
 
   # Default handler for other messages
@@ -926,19 +1024,34 @@ defmodule ParrotMedia.MediaSession do
       data_with_handler_state = %{data | handler_state: handler_state}
       {local_rtp_port, rtp_socket} = get_or_allocate_rtp_port(data_with_handler_state)
 
+      # Extract ALL dynamic payload types from SDP (RFC 3551: PTs 96-127)
+      # This gives us a map like %{"telephone-event" => 96, "no-op" => 97}
+      dynamic_payload_types = extract_dynamic_payload_types(audio_media)
+
+      if map_size(dynamic_payload_types) > 0 do
+        Logger.info(
+          "MediaSession #{data.id}: Remote dynamic payload types: #{inspect(dynamic_payload_types)}"
+        )
+      end
+
       # Get the IP address to use in SDP
       sdp_ip = get_sdp_ip(data_with_handler_state)
 
-      # Use Sdp module to generate answer
-      case Sdp.build_offer(
+      # Use Sdp module to generate answer (includes telephone-event if offered)
+      case Sdp.build_answer_for_codec(selected_codec,
              local_ip: sdp_ip,
              local_port: local_rtp_port,
-             supported_codecs: [selected_codec],
-             direction: data_with_handler_state.direction
+             direction: data_with_handler_state.direction,
+             offer_audio_media: audio_media
            ) do
         {:ok, sdp_answer} ->
           pipeline_module =
             get_pipeline_module_for_config(selected_codec, data_with_handler_state)
+
+          # Update dynamic_payload_types to use the negotiated telephone-event PT from our answer
+          # (not the offer's PT which might have a different clock rate)
+          negotiated_dyn_pts =
+            update_dynamic_pts_from_answer(sdp_answer, dynamic_payload_types)
 
           session_data =
             build_session_data(
@@ -949,7 +1062,8 @@ defmodule ParrotMedia.MediaSession do
               local_rtp_port,
               rtp_socket,
               sdp_answer,
-              pipeline_module
+              pipeline_module,
+              negotiated_dyn_pts
             )
 
           {:ok, final_data} =
@@ -1047,7 +1161,8 @@ defmodule ParrotMedia.MediaSession do
          local_rtp_port,
          rtp_socket,
          sdp_answer,
-         pipeline_module
+         pipeline_module,
+         dynamic_payload_types
        ) do
     %{
       data
@@ -1058,7 +1173,8 @@ defmodule ParrotMedia.MediaSession do
         remote_rtp_port: remote_info.port,
         remote_rtp_address: remote_info.address,
         selected_codec: selected_codec,
-        pipeline_module: pipeline_module
+        pipeline_module: pipeline_module,
+        dynamic_payload_types: dynamic_payload_types
     }
   end
 
@@ -1111,6 +1227,49 @@ defmodule ParrotMedia.MediaSession do
     audio_media.fmt
     |> Enum.map(fn pt -> codec_map[pt] end)
     |> Enum.reject(&is_nil/1)
+  end
+
+  # Extract ALL dynamic payload types from SDP rtpmap attributes
+  # Returns a map of encoding name (lowercase) -> {payload_type, clock_rate}
+  # Per RFC 3551, PTs 96-127 are dynamically assigned via SDP
+  # Example: %{"telephone-event" => {96, 8000}, "opus" => {111, 48000}}
+  defp extract_dynamic_payload_types(audio_media) do
+    audio_media.attributes
+    |> Enum.filter(&match?(%ExSDP.Attribute.RTPMapping{}, &1))
+    |> Enum.map(fn %ExSDP.Attribute.RTPMapping{
+                     encoding: encoding,
+                     payload_type: pt,
+                     clock_rate: clock_rate
+                   } ->
+      {String.downcase(encoding), {pt, clock_rate}}
+    end)
+    |> Map.new()
+  end
+
+  # Update dynamic payload types from the SDP answer
+  # This ensures we use the negotiated telephone-event PT (which matches the codec clock rate)
+  # rather than the offer's telephone-event which might have a different clock rate
+  defp update_dynamic_pts_from_answer(sdp_answer, original_dyn_pts) do
+    case Sdp.parse(sdp_answer) do
+      {:ok, parsed_answer} ->
+        case Enum.find(parsed_answer.media, &(&1.type == :audio)) do
+          nil ->
+            original_dyn_pts
+
+          audio_media ->
+            # Extract telephone-event from answer and update the map
+            answer_dyn_pts = extract_dynamic_payload_types(audio_media)
+
+            # Merge answer's telephone-event over original (answer takes precedence)
+            case Map.get(answer_dyn_pts, "telephone-event") do
+              nil -> original_dyn_pts
+              te_pt -> Map.put(original_dyn_pts, "telephone-event", te_pt)
+            end
+        end
+
+      {:error, _} ->
+        original_dyn_pts
+    end
   end
 
   defp process_sdp_answer(sdp_answer, data) do
@@ -1197,7 +1356,7 @@ defmodule ParrotMedia.MediaSession do
       local_rtp_port: data.local_rtp_port,
       remote_rtp_address: data.remote_rtp_address,
       remote_rtp_port: data.remote_rtp_port,
-      audio_file: data.audio_file || :default_audio,
+      audio_file: data.audio_file || :deferred,
       media_handler: data.media_handler,
       handler_state: data.handler_state,
       # Pass new audio configuration
@@ -1207,7 +1366,12 @@ defmodule ParrotMedia.MediaSession do
       input_device_id: data.input_device_id,
       output_device_id: data.output_device_id,
       # Pass the selected codec
-      selected_codec: data.selected_codec
+      selected_codec: data.selected_codec,
+      # Pass MediaSession PID for pipeline events (DTMF, play_complete, etc.)
+      media_session_pid: self(),
+      # Dynamic payload types from SDP (encoding name -> PT)
+      # Per RFC 3551, PTs 96-127 are dynamically assigned
+      dynamic_payload_types: data.dynamic_payload_types || %{}
     }
 
     Logger.info("MediaSession #{data.id}: Pipeline init args: #{inspect(init_arg)}")
@@ -1511,6 +1675,9 @@ defmodule ParrotMedia.MediaSession do
       ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
     end
 
+    # Stop MOS Calculator if running
+    maybe_stop_mos_calculator(data)
+
     # Close RTP socket if still open
     if data.rtp_socket do
       Logger.debug("MediaSession #{data.id}: Closing RTP socket")
@@ -1554,6 +1721,15 @@ defmodule ParrotMedia.MediaSession do
   # Fallback for any other format
   defp normalize_ip(_), do: {127, 0, 0, 1}
 
+  # Map audio format atoms to file extensions for TTS audio temp files
+  defp audio_format_to_extension(:wav), do: "wav"
+  defp audio_format_to_extension(:mp3), do: "mp3"
+  defp audio_format_to_extension(:opus), do: "opus"
+  defp audio_format_to_extension(:ogg), do: "ogg"
+  defp audio_format_to_extension(:flac), do: "flac"
+  defp audio_format_to_extension(:aac), do: "aac"
+  defp audio_format_to_extension(_), do: "wav"
+
   defp ensure_pipeline_termination(pipeline_pid, _pipeline_module) when is_pid(pipeline_pid) do
     ref = Process.monitor(pipeline_pid)
 
@@ -1589,6 +1765,65 @@ defmodule ParrotMedia.MediaSession do
         error
     end
   end
+
+  # MOS Calculator helpers
+
+  @doc false
+  # Start MOS Calculator if MOS monitoring is enabled
+  defp maybe_start_mos_calculator(data) do
+    if MOS.Config.enabled?() do
+      config = MOS.Config.merge([])
+      codec = map_selected_codec_to_mos_codec(data.selected_codec)
+
+      case MOS.Calculator.start_link(
+             session_id: data.id,
+             codec: codec,
+             config: config
+           ) do
+        {:ok, calc_pid} ->
+          Logger.info("MediaSession #{data.id}: MOS Calculator started")
+          %{data | mos_calculator_pid: calc_pid}
+
+        {:error, reason} ->
+          Logger.warning(
+            "MediaSession #{data.id}: Failed to start MOS Calculator: #{inspect(reason)}"
+          )
+
+          data
+      end
+    else
+      data
+    end
+  end
+
+  @doc false
+  # Stop MOS Calculator if running, returning the call summary
+  defp maybe_stop_mos_calculator(%{mos_calculator_pid: nil}), do: :ok
+
+  defp maybe_stop_mos_calculator(%{mos_calculator_pid: pid, id: session_id}) when is_pid(pid) do
+    if Process.alive?(pid) do
+      Logger.info("MediaSession #{session_id}: Stopping MOS Calculator")
+
+      case MOS.Calculator.stop(pid) do
+        %MOS.CallSummary{} = summary ->
+          Logger.info(
+            "MediaSession #{session_id}: MOS summary - avg: #{summary.avg_mos}, " <>
+              "min: #{summary.min_mos}, max: #{summary.max_mos}"
+          )
+
+          :ok
+
+        :ok ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp map_selected_codec_to_mos_codec(:pcma), do: :g711
+  defp map_selected_codec_to_mos_codec(:opus), do: :opus
+  defp map_selected_codec_to_mos_codec(_), do: :g711
 
   @impl true
   def terminate(reason, _state, data) do

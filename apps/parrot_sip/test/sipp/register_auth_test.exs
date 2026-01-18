@@ -19,44 +19,55 @@ defmodule SippTest.RegisterAuthTest do
   @moduletag :auth
 
   # Test handler that uses Registrar for authentication
+  # Note: Implements registration callbacks directly (does not depend on parrot app)
   defmodule AuthTestHandler do
     @moduledoc false
     @behaviour ParrotSip.Handler
 
     require Logger
 
-    # Implements RegistrationHandler callbacks
-    use Parrot.RegistrationHandler
-
-    @impl Parrot.RegistrationHandler
+    # Registration handler callbacks (standalone implementation)
     def get_password("alice"), do: {:ok, "secret123"}
     def get_password("bob"), do: {:ok, "bobspassword"}
     def get_password(_), do: :error
 
-    @impl Parrot.RegistrationHandler
+    def authenticate(%{username: username}) do
+      case get_password(username) do
+        {:ok, _} -> :ok
+        :error -> :error
+      end
+    end
+
     def store_binding(aor, contact, expires) do
       Logger.debug("[AuthTestHandler] store_binding: #{aor} -> #{contact} (expires: #{expires})")
       # Store in process dictionary for testing
+      # Store as rich binding map for Contact headers
       bindings = Process.get(:auth_test_bindings, %{})
       contacts = Map.get(bindings, aor, [])
 
       new_contacts =
         if expires > 0 do
-          [{contact, expires} | Enum.reject(contacts, fn {c, _} -> c == contact end)]
+          binding = %{
+            contact: contact,
+            expires: expires,
+            registered_at: System.system_time(:second)
+          }
+
+          [binding | Enum.reject(contacts, fn b -> b.contact == contact end)]
         else
-          Enum.reject(contacts, fn {c, _} -> c == contact end)
+          Enum.reject(contacts, fn b -> b.contact == contact end)
         end
 
       Process.put(:auth_test_bindings, Map.put(bindings, aor, new_contacts))
       :ok
     end
 
-    @impl Parrot.RegistrationHandler
     def get_bindings(aor) do
       bindings = Process.get(:auth_test_bindings, %{})
-      contacts = Map.get(bindings, aor, [])
-      Enum.map(contacts, fn {contact, _expires} -> contact end)
+      Map.get(bindings, aor, [])
     end
+
+    def handle_registration_expired(_aor, _contact), do: :ok
 
     # ParrotSip.Handler callbacks
     @impl ParrotSip.Handler

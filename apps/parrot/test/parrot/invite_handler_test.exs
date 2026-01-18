@@ -59,9 +59,19 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_hangup, 1} in callbacks
     end
 
-    test "defines all 11 expected callbacks" do
+    test "defines all 13 expected callbacks" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 11
+      assert length(callbacks) == 13
+    end
+
+    test "defines handle_sdp_error/2 callback (T029)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_sdp_error, 2} in callbacks
+    end
+
+    test "defines handle_tts_error/3 callback (T042, FR-017)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_tts_error, 3} in callbacks
     end
   end
 
@@ -118,12 +128,30 @@ defmodule Parrot.InviteHandlerTest do
 
     test "provides default handle_fork_media_connected/2 implementation" do
       call = Call.new()
-      assert {:noreply, ^call} = MinimalHandler.handle_fork_media_connected("wss://service.com", call)
+
+      assert {:noreply, ^call} =
+               MinimalHandler.handle_fork_media_connected("wss://service.com", call)
     end
 
     test "provides default handle_hangup/1 implementation" do
       call = Call.new()
       assert {:noreply, ^call} = MinimalHandler.handle_hangup(call)
+    end
+
+    test "provides default handle_sdp_error/2 implementation that rejects with 488 (T029, FR-012)" do
+      call = Call.new()
+      # Default implementation should reject with 488 Not Acceptable Here
+      result = MinimalHandler.handle_sdp_error(:codec_mismatch, call)
+      operations = Call.get_operations(result)
+      assert [{:reject, 488}] = operations
+    end
+
+    test "provides default handle_tts_error/3 implementation that logs and returns {:noreply, call} (T042, FR-018)" do
+      call = Call.new()
+      # Default implementation should log warning and return {:noreply, call}
+      result = MinimalHandler.handle_tts_error("Hello world", :synthesis_failed, call)
+      # Should return {:noreply, call} (consistent with other callbacks)
+      assert result == {:noreply, call}
     end
 
     test "imports Parrot.Call functions for pipeline operations" do
@@ -379,7 +407,8 @@ defmodule Parrot.InviteHandlerTest do
       end
 
       def handle_conference_leave(room, reason, call) do
-        {:noreply, %{call | assigns: Map.merge(call.assigns, %{left_room: room, leave_reason: reason})}}
+        {:noreply,
+         %{call | assigns: Map.merge(call.assigns, %{left_room: room, leave_reason: reason})}}
       end
     end
 
@@ -410,10 +439,15 @@ defmodule Parrot.InviteHandlerTest do
       end
 
       def handle_record_complete(filename, duration, call) do
-        {:noreply, %{call | assigns: Map.merge(call.assigns, %{
-          recording: filename,
-          duration: duration
-        })}}
+        {:noreply,
+         %{
+           call
+           | assigns:
+               Map.merge(call.assigns, %{
+                 recording: filename,
+                 duration: duration
+               })
+         }}
       end
     end
 
@@ -442,9 +476,151 @@ defmodule Parrot.InviteHandlerTest do
 
     test "tracks media fork connection" do
       call = Call.new()
-      {:noreply, result} = MediaForkHandler.handle_fork_media_connected("wss://ai-service.com/stream", call)
+
+      {:noreply, result} =
+        MediaForkHandler.handle_fork_media_connected("wss://ai-service.com/stream", call)
 
       assert result.assigns.ai_stream == "wss://ai-service.com/stream"
+    end
+  end
+
+  describe "TTS error handling (T042, FR-017, FR-019)" do
+    defmodule TTSErrorHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite
+        |> answer()
+      end
+
+      # Custom error handler that tracks errors in assigns
+      # Signature: handle_tts_error(text, error, call) per quickstart.md
+      def handle_tts_error(text, error, call) do
+        %{call | assigns: Map.merge(call.assigns, %{
+          tts_error: error,
+          failed_text: text,
+          error_count: Map.get(call.assigns, :error_count, 0) + 1
+        })}
+      end
+    end
+
+    defmodule TTSErrorWithFallbackHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite
+        |> answer()
+      end
+
+      # Custom handler that plays a fallback audio file on TTS error
+      def handle_tts_error(_text, _error, call) do
+        call
+        |> play("error-fallback.wav")
+      end
+    end
+
+    defmodule TTSErrorRetryHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite
+        |> answer()
+      end
+
+      # Handler that retries with backup provider (FR-019 scenario)
+      def handle_tts_error(_text, _error, %{assigns: %{tts_retry: true}} = call) do
+        # Already retried, give up and play fallback
+        call |> play("sorry-technical-difficulties.wav")
+      end
+
+      def handle_tts_error(text, _error, call) do
+        # First failure - retry with backup provider
+        call
+        |> assign(:tts_retry, true)
+        |> assign(:retry_text, text)
+      end
+    end
+
+    test "custom handler can track TTS errors in assigns" do
+      call = Call.new()
+      result = TTSErrorHandler.handle_tts_error("Hello world", :api_timeout, call)
+
+      assert result.assigns.tts_error == :api_timeout
+      assert result.assigns.failed_text == "Hello world"
+      assert result.assigns.error_count == 1
+    end
+
+    test "custom handler accumulates error count across multiple errors" do
+      call = Call.new(assigns: %{error_count: 2})
+      result = TTSErrorHandler.handle_tts_error("Test", :rate_limited, call)
+
+      assert result.assigns.error_count == 3
+    end
+
+    test "custom handler can queue fallback audio playback on error (FR-019)" do
+      call = Call.new()
+      result = TTSErrorWithFallbackHandler.handle_tts_error("Failed text", :synthesis_failed, call)
+
+      operations = Call.get_operations(result)
+      assert [{:play, "error-fallback.wav", []}] = operations
+    end
+
+    test "handle_tts_error is defoverridable" do
+      # Verify that a module using InviteHandler can override handle_tts_error
+      # This is implicitly tested by TTSErrorHandler above working correctly
+      call = Call.new()
+      # MinimalHandler uses default, TTSErrorHandler overrides
+      minimal_result = Parrot.InviteHandlerTest.MinimalHandler.handle_tts_error("text", :error, call)
+      custom_result = TTSErrorHandler.handle_tts_error("text", :error, call)
+
+      # Default returns {:noreply, call}
+      assert minimal_result == {:noreply, call}
+      # Custom tracks the error and returns modified call
+      assert custom_result.assigns[:tts_error] == :error
+    end
+
+    test "callback receives text that failed, error reason, and call struct (T042)" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      result = TTSErrorHandler.handle_tts_error("Welcome to Parrot", {:provider_error, "Rate limit"}, call)
+
+      # Verify all three arguments are accessible
+      assert result.assigns.failed_text == "Welcome to Parrot"
+      assert result.assigns.tts_error == {:provider_error, "Rate limit"}
+      # Original assigns preserved
+      assert result.assigns.session_id == "test-123"
+    end
+
+    test "custom handler can implement retry logic (FR-019)" do
+      call = Call.new()
+
+      # First failure - should mark for retry
+      result1 = TTSErrorRetryHandler.handle_tts_error("Original text", :api_timeout, call)
+      assert result1.assigns.tts_retry == true
+      assert result1.assigns.retry_text == "Original text"
+
+      # Second failure - should play fallback
+      result2 = TTSErrorRetryHandler.handle_tts_error("Different text", :api_timeout, result1)
+      operations = Call.get_operations(result2)
+      assert [{:play, "sorry-technical-difficulties.wav", []}] = operations
+    end
+
+    test "custom handler receives different error types" do
+      call = Call.new()
+
+      # Test various error types that might come from synthesizer
+      errors = [
+        :api_timeout,
+        :synthesis_failed,
+        :rate_limited,
+        {:provider_error, "Service unavailable"},
+        {:network_error, :econnrefused},
+        {:http_error, 503}
+      ]
+
+      for error <- errors do
+        result = TTSErrorHandler.handle_tts_error("test", error, call)
+        assert result.assigns.tts_error == error
+      end
     end
   end
 
@@ -453,9 +629,11 @@ defmodule Parrot.InviteHandlerTest do
       use Parrot.InviteHandler
 
       def handle_invite(invite) do
+        # Note: prompt/3 DSL is blocked pending MediaSession DTMF support
+        # This test only verifies the callback handling
         invite
         |> answer()
-        |> prompt("enter-pin.wav", collect: [max: 4])
+        |> play("enter-pin.wav")
       end
 
       def handle_prompt_complete("enter-pin.wav", digits, call) do
@@ -467,7 +645,7 @@ defmodule Parrot.InviteHandlerTest do
       end
     end
 
-    test "captures collected digits from prompt" do
+    test "captures collected digits from prompt callback" do
       call = Call.new()
       {:noreply, result} = PromptHandler.handle_prompt_complete("enter-pin.wav", "1234", call)
 
@@ -494,14 +672,16 @@ defmodule Parrot.InviteHandlerTest do
         {:noreply, %{call | assigns: Map.put(call.assigns, :answered_by, destination)}}
       end
 
-      def handle_fork_complete({:failed, reason}, call) do
+      def handle_fork_complete({:failed, _reason}, call) do
         call |> play("all-lines-busy.wav")
       end
     end
 
     test "tracks which destination answered" do
       call = Call.new()
-      {:noreply, result} = ForkHandler.handle_fork_complete({:answered, "sip:alice@device2"}, call)
+
+      {:noreply, result} =
+        ForkHandler.handle_fork_complete({:answered, "sip:alice@device2"}, call)
 
       assert result.assigns.answered_by == "sip:alice@device2"
     end

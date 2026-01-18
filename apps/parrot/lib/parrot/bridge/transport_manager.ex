@@ -178,7 +178,9 @@ defmodule Parrot.Bridge.TransportManager do
             actual_port
           )
 
-        Logger.info("[TransportManager] Started UDP transport on #{format_ip(actual_ip)}:#{actual_port}")
+        Logger.info(
+          "[TransportManager] Started UDP transport on #{format_ip(actual_ip)}:#{actual_port}"
+        )
 
         new_listeners = Map.put(state.listeners, {:udp, actual_ip, actual_port}, listener)
         {:ok, %{state | listeners: new_listeners}}
@@ -214,7 +216,9 @@ defmodule Parrot.Bridge.TransportManager do
             actual_port
           )
 
-        Logger.info("[TransportManager] Started TCP transport on #{format_ip(actual_ip)}:#{actual_port}")
+        Logger.info(
+          "[TransportManager] Started TCP transport on #{format_ip(actual_ip)}:#{actual_port}"
+        )
 
         new_listeners = Map.put(state.listeners, {:tcp, actual_ip, actual_port}, listener)
         {:ok, %{state | listeners: new_listeners}}
@@ -256,7 +260,9 @@ defmodule Parrot.Bridge.TransportManager do
             actual_port
           )
 
-        Logger.info("[TransportManager] Started TLS transport on #{format_ip(actual_ip)}:#{actual_port}")
+        Logger.info(
+          "[TransportManager] Started TLS transport on #{format_ip(actual_ip)}:#{actual_port}"
+        )
 
         new_listeners = Map.put(state.listeners, {:tls, actual_ip, actual_port}, listener)
         {:ok, %{state | listeners: new_listeners}}

@@ -53,7 +53,7 @@ defmodule Parrot.Examples.EchoServer do
     """
     use Parrot.Router
 
-    invite "*", Parrot.Examples.EchoServer.Handler
+    invite("*", Parrot.Examples.EchoServer.Handler)
   end
 
   # ============================================================================

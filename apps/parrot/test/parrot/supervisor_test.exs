@@ -6,7 +6,7 @@ defmodule Parrot.SupervisorTest do
   defmodule TestRouter do
     @moduledoc false
     use Parrot.Router
-    invite "*", SomeHandler
+    invite("*", SomeHandler)
   end
 
   defmodule InvalidRouter do
@@ -44,10 +44,11 @@ defmodule Parrot.SupervisorTest do
 
     test "TransportManager is a valid child spec" do
       # Verify the TransportManager can be configured correctly
-      child_spec = Parrot.Bridge.TransportManager.child_spec(
-        router: TestRouter,
-        transports: [{:udp, port: 0}]
-      )
+      child_spec =
+        Parrot.Bridge.TransportManager.child_spec(
+          router: TestRouter,
+          transports: [{:udp, port: 0}]
+        )
 
       assert child_spec.id == Parrot.Bridge.TransportManager
       assert is_tuple(child_spec.start)
@@ -58,12 +59,13 @@ defmodule Parrot.SupervisorTest do
         children = Supervisor.which_children(sup_pid)
 
         # Check for TransportManager in the children
-        has_transport_manager = Enum.any?(children, fn {id, _pid, _type, _mods} ->
-          id == Parrot.Bridge.TransportManager
-        end)
+        has_transport_manager =
+          Enum.any?(children, fn {id, _pid, _type, _mods} ->
+            id == Parrot.Bridge.TransportManager
+          end)
 
         assert has_transport_manager,
-          "Expected TransportManager child. Children: #{inspect(Enum.map(children, &elem(&1, 0)))}"
+               "Expected TransportManager child. Children: #{inspect(Enum.map(children, &elem(&1, 0)))}"
       end
     end
   end
