@@ -123,6 +123,52 @@ defmodule ParrotMedia.Sdp do
   end
 
   @doc """
+  Builds an SDP answer for a specific codec, preserving auxiliary payload types from offer.
+
+  This function is useful when you've already parsed the offer and negotiated a codec,
+  and just need to generate the SDP answer string. It preserves auxiliary payload types
+  like telephone-event (RFC 4733 DTMF) from the offer.
+
+  ## Options
+
+  - `:local_ip` - Local IP address (string or tuple, required)
+  - `:local_port` - Local RTP port (required)
+  - `:direction` - Media direction (defaults to :sendrecv)
+  - `:offer_audio_media` - Parsed audio media from offer (to extract telephone-event)
+
+  ## Returns
+
+  - `{:ok, sdp_answer_string}` on success
+  - `{:error, reason}` on failure
+
+  ## Examples
+
+      # After parsing offer and negotiating codec
+      {:ok, answer_sdp} = Sdp.build_answer_for_codec(:pcma,
+        local_ip: "192.168.1.200",
+        local_port: 20000,
+        offer_audio_media: parsed_audio_media
+      )
+  """
+  @spec build_answer_for_codec(codec(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def build_answer_for_codec(selected_codec, opts) do
+    # Get offer's audio media to extract telephone-event
+    offer_audio_media = Keyword.get(opts, :offer_audio_media)
+
+    if offer_audio_media do
+      build_answer(nil, offer_audio_media, selected_codec, opts)
+    else
+      # Fallback to simple offer (no telephone-event)
+      build_offer(
+        local_ip: Keyword.get(opts, :local_ip),
+        local_port: Keyword.get(opts, :local_port),
+        supported_codecs: [selected_codec],
+        direction: Keyword.get(opts, :direction, :sendrecv)
+      )
+    end
+  end
+
+  @doc """
   Processes an SDP offer and generates an answer with all negotiated information.
 
   ## Options
@@ -389,14 +435,25 @@ defmodule ParrotMedia.Sdp do
     base_attrs ++ codec_specific_attrs
   end
 
-  defp build_answer(_parsed_offer, _audio_media, selected_codec, opts) do
+  defp build_answer(_parsed_offer, audio_media, selected_codec, opts) do
     with {:ok, local_ip} <- get_required_option(opts, :local_ip),
          {:ok, local_port} <- get_required_option(opts, :local_port) do
       direction = Keyword.get(opts, :direction, :sendrecv)
       ip_tuple = normalize_ip_to_tuple(local_ip)
       info = codec_info(selected_codec)
 
-      attributes = build_codec_attributes(selected_codec) ++ [direction]
+      # Start with the selected audio codec attributes
+      base_attributes = build_codec_attributes(selected_codec)
+      base_fmt = [info.payload_type]
+
+      # Extract telephone-event from offer if present (RFC 4733)
+      # This ensures DTMF support is echoed back in the answer
+      # Pass the codec's clock rate to match telephone-event (per RFC 4733)
+      {te_fmt, te_attributes} = extract_telephone_event_from_offer(audio_media, info.clock_rate)
+
+      # Combine formats and attributes
+      fmt = base_fmt ++ te_fmt
+      attributes = base_attributes ++ te_attributes ++ [direction]
 
       sdp = %ExSDP{
         version: 0,
@@ -421,13 +478,64 @@ defmodule ParrotMedia.Sdp do
             type: :audio,
             port: local_port,
             protocol: "RTP/AVP",
-            fmt: [info.payload_type],
+            fmt: fmt,
             attributes: attributes
           }
         ]
       }
 
       {:ok, to_string(sdp)}
+    end
+  end
+
+  # Extract telephone-event payload type and attributes from offer
+  # Returns {[pt], [attributes]} or {[], []} if not present
+  # Per RFC 4733, telephone-event clock rate should match the audio codec clock rate
+  defp extract_telephone_event_from_offer(audio_media, target_clock_rate) do
+    # Find all telephone-event rtpmaps in offer attributes
+    te_rtpmaps =
+      audio_media.attributes
+      |> Enum.filter(fn
+        %ExSDP.Attribute.RTPMapping{encoding: encoding} ->
+          String.downcase(encoding) == "telephone-event"
+
+        _ ->
+          false
+      end)
+
+    # Prefer telephone-event matching the audio codec's clock rate (per RFC 4733)
+    # Fall back to any telephone-event if no exact match
+    te_rtpmap =
+      Enum.find(te_rtpmaps, fn %ExSDP.Attribute.RTPMapping{clock_rate: cr} ->
+        cr == target_clock_rate
+      end) || List.first(te_rtpmaps)
+
+    case te_rtpmap do
+      %ExSDP.Attribute.RTPMapping{payload_type: pt, clock_rate: clock_rate} ->
+        # Echo back the telephone-event with same PT
+        rtpmap = %ExSDP.Attribute.RTPMapping{
+          payload_type: pt,
+          encoding: "telephone-event",
+          clock_rate: clock_rate
+        }
+
+        # Find and echo back fmtp attribute if present (e.g., "0-15" for digits)
+        fmtp =
+          Enum.find(audio_media.attributes, fn
+            %ExSDP.Attribute.FMTP{pt: fmtp_pt} -> fmtp_pt == pt
+            _ -> false
+          end)
+
+        fmtp_attrs =
+          case fmtp do
+            %ExSDP.Attribute.FMTP{} = f -> [f]
+            _ -> []
+          end
+
+        {[pt], [rtpmap | fmtp_attrs]}
+
+      nil ->
+        {[], []}
     end
   end
 

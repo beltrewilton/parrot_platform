@@ -209,52 +209,6 @@ defmodule Parrot.CallTest do
     end
   end
 
-  describe "collect_dtmf/2" do
-    test "adds collect_dtmf operation with max option" do
-      call = %Call{} |> Call.collect_dtmf(max: 4)
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [max: 4]}
-    end
-
-    test "adds collect_dtmf operation with timeout option" do
-      call = %Call{} |> Call.collect_dtmf(timeout: 5_000)
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [timeout: 5_000]}
-    end
-
-    test "adds collect_dtmf operation with terminators option" do
-      call = %Call{} |> Call.collect_dtmf(max: 16, terminators: ["#"])
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [max: 16, terminators: ["#"]]}
-    end
-
-    test "adds collect_dtmf operation with all options" do
-      call = %Call{} |> Call.collect_dtmf(max: 4, timeout: 5_000, terminators: ["#", "*"])
-
-      assert [operation] = call.__operations__
-      assert operation == {:collect_dtmf, [max: 4, timeout: 5_000, terminators: ["#", "*"]]}
-    end
-  end
-
-  describe "prompt/3" do
-    test "adds prompt operation combining play and collect" do
-      call = %Call{} |> Call.prompt("enter-pin.wav", collect: [max: 4])
-
-      assert [operation] = call.__operations__
-      assert operation == {:prompt, "enter-pin.wav", [collect: [max: 4]]}
-    end
-
-    test "adds prompt operation with timeout in collect options" do
-      call = %Call{} |> Call.prompt("enter-pin.wav", collect: [max: 4, timeout: 10_000])
-
-      assert [operation] = call.__operations__
-      assert operation == {:prompt, "enter-pin.wav", [collect: [max: 4, timeout: 10_000]]}
-    end
-  end
-
   describe "bridge/2" do
     test "adds bridge operation with destination" do
       call = %Call{} |> Call.bridge("sip:dest@somewhere")
@@ -369,7 +323,7 @@ defmodule Parrot.CallTest do
         |> Call.answer()
         |> Call.assign(:menu, :main)
         |> Call.play("welcome.wav")
-        |> Call.collect_dtmf(max: 1, timeout: 10_000)
+        |> Call.play("menu.wav")
 
       assert call.assigns == %{menu: :main}
 
@@ -377,7 +331,7 @@ defmodule Parrot.CallTest do
       assert [
                {:answer, []},
                {:play, "welcome.wav", []},
-               {:collect_dtmf, [max: 1, timeout: 10_000]}
+               {:play, "menu.wav", []}
              ] = Call.get_operations(call)
     end
 
@@ -388,7 +342,7 @@ defmodule Parrot.CallTest do
         |> Call.assign(:menu, :main)
         |> Call.assign(:retries, 0)
         |> Call.play("welcome.wav")
-        |> Call.prompt("main-menu.wav", collect: [max: 1, timeout: 10_000])
+        |> Call.record("input.wav", max_duration: 10_000)
 
       assert call.from == "sip:alice@example.com"
       assert call.to == "sip:100@pbx.local"
@@ -398,7 +352,7 @@ defmodule Parrot.CallTest do
       assert [
                {:answer, []},
                {:play, "welcome.wav", []},
-               {:prompt, "main-menu.wav", [collect: [max: 1, timeout: 10_000]]}
+               {:record, "input.wav", [max_duration: 10_000]}
              ] = Call.get_operations(call)
     end
 
@@ -469,8 +423,7 @@ defmodule Parrot.CallTest do
       assert [operation] = call.__operations__
 
       assert operation ==
-               {:fork_media, "192.168.1.100:5000",
-                [fork_id: "transcription", transport: :rtp]}
+               {:fork_media, "192.168.1.100:5000", [fork_id: "transcription", transport: :rtp]}
     end
   end
 
@@ -480,6 +433,299 @@ defmodule Parrot.CallTest do
 
       assert [operation] = call.__operations__
       assert operation == {:stop_fork_media, "transcription"}
+    end
+  end
+
+  describe "collect_dtmf/2" do
+    test "adds {:collect_dtmf, opts} operation to the call" do
+      call = %Call{} |> Call.collect_dtmf(max: 4, timeout: 10_000)
+
+      assert [operation] = call.__operations__
+      assert {:collect_dtmf, opts} = operation
+      assert opts[:max] == 4
+      assert opts[:timeout] == 10_000
+    end
+
+    test "passes all options through" do
+      call = %Call{} |> Call.collect_dtmf(max: 6, timeout: 15_000, terminators: ["#", "*"])
+
+      [{:collect_dtmf, opts}] = Call.get_operations(call)
+      assert opts[:max] == 6
+      assert opts[:timeout] == 15_000
+      assert opts[:terminators] == ["#", "*"]
+    end
+
+    test "uses default options when not specified" do
+      call = %Call{} |> Call.collect_dtmf([])
+
+      [{:collect_dtmf, opts}] = Call.get_operations(call)
+      assert opts[:max] == 20
+      assert opts[:timeout] == 30_000
+      assert opts[:terminators] == []
+    end
+  end
+
+  describe "prompt/3" do
+    # T016: Test that prompt/3 works as convenience function for play-then-collect pattern
+    test "stores collect options in __pending_collect__ assign" do
+      call = %Call{} |> Call.prompt("enter-pin.wav", max: 4, timeout: 10_000)
+
+      assert call.assigns[:__pending_collect__] == [max: 4, timeout: 10_000]
+    end
+
+    # T017: Test that prompt/3 stores the collect options in call.assigns[:__pending_collect__]
+    test "preserves existing assigns while adding __pending_collect__" do
+      call =
+        %Call{}
+        |> Call.assign(:menu, :pin_entry)
+        |> Call.prompt("enter-pin.wav", max: 4)
+
+      assert call.assigns[:menu] == :pin_entry
+      assert call.assigns[:__pending_collect__] == [max: 4]
+    end
+
+    # T018: Test that prompt/3 queues a play operation (NOT a collect_dtmf operation yet)
+    test "queues play operation for the audio file" do
+      call = %Call{} |> Call.prompt("enter-pin.wav", max: 4)
+
+      operations = Call.get_operations(call)
+      assert [{:play, "enter-pin.wav", []}] = operations
+    end
+
+    test "does not queue collect_dtmf operation directly" do
+      call = %Call{} |> Call.prompt("enter-pin.wav", max: 4)
+
+      operations = Call.get_operations(call)
+      refute Enum.any?(operations, fn op -> match?({:collect_dtmf, _}, op) end)
+    end
+
+    test "chains with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.prompt("enter-pin.wav", max: 4, timeout: 10_000)
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:play, "enter-pin.wav", []}
+             ] = operations
+
+      assert call.assigns[:__pending_collect__] == [max: 4, timeout: 10_000]
+    end
+  end
+
+  describe "say/2" do
+    test "adds say operation with text and default options" do
+      call = %Call{} |> Call.say("Hello, welcome to our service.")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello, welcome to our service.", []}
+    end
+
+    test "adds say operation with different text" do
+      call = %Call{} |> Call.say("Please enter your account number.")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Please enter your account number.", []}
+    end
+  end
+
+  describe "say/3" do
+    test "adds say operation with profile option" do
+      call = %Call{} |> Call.say("Hello there", profile: :announcements)
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello there", [profile: :announcements]}
+    end
+
+    test "adds say operation with voice override option" do
+      call = %Call{} |> Call.say("Welcome", voice: "en-US-Neural2-F")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Welcome", [voice: "en-US-Neural2-F"]}
+    end
+
+    test "adds say operation with multiple options" do
+      call = %Call{} |> Call.say("Hello", profile: :announcements, voice: "en-US-Neural2-F")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello", [profile: :announcements, voice: "en-US-Neural2-F"]}
+    end
+
+    test "adds say operation with engine option" do
+      call = %Call{} |> Call.say("Hello", engine: :google)
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Hello", [engine: :google]}
+    end
+
+    test "adds say operation with language option" do
+      call = %Call{} |> Call.say("Bonjour", language: "fr-FR")
+
+      assert [operation] = call.__operations__
+      assert operation == {:say, "Bonjour", [language: "fr-FR"]}
+    end
+  end
+
+  describe "say/2,3 chaining" do
+    test "multiple say operations can be chained" do
+      call =
+        %Call{}
+        |> Call.say("Welcome to our service.")
+        |> Call.say("Please listen carefully.", profile: :announcements)
+        |> Call.say("Goodbye.")
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:say, "Welcome to our service.", []},
+               {:say, "Please listen carefully.", [profile: :announcements]},
+               {:say, "Goodbye.", []}
+             ] = operations
+    end
+
+    test "say chains with play and other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.say("Welcome to the system.")
+        |> Call.play("menu.wav")
+        |> Call.say("Please make a selection.", profile: :prompts)
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say, "Welcome to the system.", []},
+               {:play, "menu.wav", []},
+               {:say, "Please make a selection.", [profile: :prompts]}
+             ] = operations
+    end
+
+    test "say works in IVR flow" do
+      call =
+        Call.new(from: "sip:alice@example.com", to: "sip:100@pbx.local", method: "INVITE")
+        |> Call.answer()
+        |> Call.say("Hello, thank you for calling.")
+        |> Call.assign(:menu, :main)
+        |> Call.say("Please enter your PIN followed by the pound sign.", profile: :prompts)
+
+      assert call.from == "sip:alice@example.com"
+      assert call.assigns == %{menu: :main}
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say, "Hello, thank you for calling.", []},
+               {:say, "Please enter your PIN followed by the pound sign.", [profile: :prompts]}
+             ] = operations
+    end
+  end
+
+  describe "say_prompt/3 (T022 - TTS + DTMF collection)" do
+    # T022: Test that say_prompt/3 combines say() with prompt() pattern
+    # say_prompt plays TTS audio, then starts DTMF collection after playback
+
+    test "adds say_prompt operation with text and collect options" do
+      call = %Call{} |> Call.say_prompt("Please enter your PIN.", max: 4, timeout: 10_000)
+
+      assert [operation] = call.__operations__
+      assert {:say_prompt, "Please enter your PIN.", opts} = operation
+      assert opts[:max] == 4
+      assert opts[:timeout] == 10_000
+    end
+
+    test "stores collect options in __pending_collect__ assign" do
+      call = %Call{} |> Call.say_prompt("Enter your account number.", max: 6, timeout: 15_000)
+
+      # Includes default terminators: [] from @default_collect_opts merge
+      pending = call.assigns[:__pending_collect__]
+      assert pending[:max] == 6
+      assert pending[:timeout] == 15_000
+      assert pending[:terminators] == []
+    end
+
+    test "supports profile option for TTS" do
+      call = %Call{} |> Call.say_prompt("Enter PIN", max: 4, profile: :premium)
+
+      [{:say_prompt, _text, opts}] = Call.get_operations(call)
+      assert opts[:profile] == :premium
+      assert opts[:max] == 4
+    end
+
+    test "supports terminator option for DTMF collection" do
+      call = %Call{} |> Call.say_prompt("Enter code", max: 6, terminators: ["#"])
+
+      [{:say_prompt, _text, opts}] = Call.get_operations(call)
+      assert opts[:terminators] == ["#"]
+      assert call.assigns[:__pending_collect__][:terminators] == ["#"]
+    end
+
+    test "preserves existing assigns while adding __pending_collect__" do
+      call =
+        %Call{}
+        |> Call.assign(:menu, :pin_entry)
+        |> Call.assign(:retries, 0)
+        |> Call.say_prompt("Enter PIN", max: 4)
+
+      assert call.assigns[:menu] == :pin_entry
+      assert call.assigns[:retries] == 0
+      pending = call.assigns[:__pending_collect__]
+      assert pending[:max] == 4
+      # Default timeout and terminators are merged
+      assert pending[:timeout] == 30_000
+      assert pending[:terminators] == []
+    end
+
+    test "chains with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.say_prompt("Welcome. Please enter your PIN.", max: 4, timeout: 10_000)
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say_prompt, "Welcome. Please enter your PIN.", _opts}
+             ] = operations
+    end
+
+    test "uses default collect options when not specified" do
+      call = %Call{} |> Call.say_prompt("Enter digits")
+
+      [{:say_prompt, _text, opts}] = Call.get_operations(call)
+      # Default options from collect_dtmf
+      assert opts[:max] == 20
+      assert opts[:timeout] == 30_000
+      assert opts[:terminators] == []
+    end
+
+    test "works in IVR flow with mixed operations" do
+      call =
+        Call.new(from: "sip:alice@example.com", to: "sip:100@pbx.local", method: "INVITE")
+        |> Call.answer()
+        |> Call.say("Welcome to the banking system.", profile: :announcements)
+        |> Call.say_prompt("Please enter your 4-digit PIN.", max: 4, timeout: 15_000, profile: :prompts)
+
+      assert call.from == "sip:alice@example.com"
+      # __pending_collect__ only contains DTMF collection options (max, timeout, terminators)
+      # profile is a TTS option and goes in the operation opts
+      pending = call.assigns[:__pending_collect__]
+      assert pending[:max] == 4
+      assert pending[:timeout] == 15_000
+      assert pending[:terminators] == []
+
+      operations = Call.get_operations(call)
+
+      assert [
+               {:answer, []},
+               {:say, "Welcome to the banking system.", [profile: :announcements]},
+               {:say_prompt, "Please enter your 4-digit PIN.", _opts}
+             ] = operations
     end
   end
 

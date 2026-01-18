@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAC BYE No Dialog Scenario
+
+  Tests RFC 3261 Section 15.1.2 compliance:
+  A BYE request for a non-existent dialog MUST receive a 481 response.
+
+  This scenario sends a BYE with fabricated dialog identifiers (Call-ID,
+  From-tag, To-tag) that do not correspond to any existing dialog on the
+  server. The server must respond with 481 "Call/Transaction Does Not Exist".
+-->
+
+<scenario name="UAC BYE No Dialog - Expect 481">
+  <!-- Send BYE with non-existent dialog identifiers -->
+  <!-- Use [call_id] so SIPp can match the response to this call -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:test@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[call_number]
+      To: <sip:bob@[remote_ip]:[remote_port]>;tag=nonexistent-to-tag
+      Call-ID: [call_id]
+      CSeq: 1 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 481 Call/Transaction Does Not Exist -->
+  <recv response="481" crlf="true">
+  </recv>
+
+</scenario>

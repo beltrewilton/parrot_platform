@@ -371,7 +371,9 @@ defmodule ParrotSip.Message do
       to: request.to,
       call_id: request.call_id,
       cseq: request.cseq,
-      contact: request.contact,
+      # Contact is NOT copied - responses need their own Contact header
+      # set by the UAS (not the UAC's Contact from the request)
+      contact: nil,
       route: request.route,
       record_route: request.record_route,
       other_headers: Map.get(request, :other_headers, %{})

@@ -44,6 +44,10 @@ defmodule Parrot.Call do
   ### Playback
   * `play/2`, `play/3` - Play audio file(s)
 
+  ### Text-to-Speech
+  * `say/2`, `say/3` - Synthesize and play text
+  * `say_prompt/3` - Synthesize and play text, then collect DTMF digits
+
   ### Recording
   * `record/2`, `record/3` - Start recording
   * `stop_record/1` - Stop recording
@@ -72,7 +76,8 @@ defmodule Parrot.Call do
           __uas__: term() | nil,
           __media_pid__: pid() | nil,
           __dialog_id__: String.t() | nil,
-          __sip_msg__: term() | nil
+          __sip_msg__: term() | nil,
+          __bidirectional_ws_pid__: pid() | nil
         }
 
   defstruct id: nil,
@@ -87,7 +92,8 @@ defmodule Parrot.Call do
             __uas__: nil,
             __media_pid__: nil,
             __dialog_id__: nil,
-            __sip_msg__: nil
+            __sip_msg__: nil,
+            __bidirectional_ws_pid__: nil
 
   @doc """
   Creates a new Call struct from keyword options.
@@ -260,6 +266,156 @@ defmodule Parrot.Call do
   end
 
   # ---------------------------------------------------------------------------
+  # Text-to-Speech Operations
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Synthesizes and plays text using text-to-speech with default profile.
+
+  The text will be converted to speech using the default TTS profile
+  configured for the application.
+
+  ## Examples
+
+      call |> say("Hello, welcome to our service.")
+      call |> say("Please enter your account number.")
+
+  """
+  @spec say(t(), String.t()) :: t()
+  def say(%__MODULE__{} = call, text) when is_binary(text) do
+    add_operation(call, {:say, text, []})
+  end
+
+  @doc """
+  Synthesizes and plays text using text-to-speech with options.
+
+  ## Options
+
+  * `:profile` - Named TTS profile to use (e.g., `:announcements`, `:prompts`)
+  * `:voice` - Voice identifier to use (e.g., "en-US-Neural2-F")
+  * `:engine` - TTS engine to use (e.g., `:google`, `:aws`, `:azure`)
+  * `:language` - Language/locale code (e.g., "en-US", "fr-FR")
+
+  ## Examples
+
+      call |> say("Hello there", profile: :announcements)
+      call |> say("Welcome", voice: "en-US-Neural2-F")
+      call |> say("Bonjour", language: "fr-FR", engine: :google)
+
+  """
+  @spec say(t(), String.t(), keyword()) :: t()
+  def say(%__MODULE__{} = call, text, opts) when is_binary(text) and is_list(opts) do
+    add_operation(call, {:say, text, opts})
+  end
+
+  # ---------------------------------------------------------------------------
+  # DTMF Operations
+  # ---------------------------------------------------------------------------
+
+  @default_collect_opts [max: 20, timeout: 30_000, terminators: []]
+
+  @doc """
+  Starts DTMF digit collection on the active call.
+
+  ## Options
+
+    * `:max` - Maximum digits to collect (default: 20)
+    * `:timeout` - Timeout in milliseconds (default: 30,000)
+    * `:terminators` - Digits that end collection early (default: [])
+
+  ## Examples
+
+      call |> collect_dtmf(max: 4, timeout: 10_000, terminators: ["#"])
+
+  """
+  @spec collect_dtmf(t(), keyword()) :: t()
+  def collect_dtmf(%__MODULE__{} = call, opts \\ []) do
+    opts = Keyword.merge(@default_collect_opts, opts)
+    add_operation(call, {:collect_dtmf, opts})
+  end
+
+  @doc """
+  Plays an audio file then starts DTMF collection after playback completes.
+
+  The handler must check for `__pending_collect__` in `handle_play_complete/2`:
+
+      def handle_play_complete(file, %{assigns: %{__pending_collect__: opts}} = call)
+          when not is_nil(opts) do
+        call
+        |> assign(:__pending_collect__, nil)
+        |> collect_dtmf(opts)
+      end
+
+  ## Options
+
+  Same as `collect_dtmf/2`:
+    * `:max` - Maximum digits to collect (default: 20)
+    * `:timeout` - Timeout in milliseconds (default: 30,000)
+    * `:terminators` - Digits that end collection early (default: [])
+
+  ## Examples
+
+      call |> prompt("enter-pin.wav", max: 4, timeout: 10_000)
+
+  """
+  @spec prompt(t(), String.t(), keyword()) :: t()
+  def prompt(%__MODULE__{} = call, file, opts \\ []) do
+    call
+    |> assign(:__pending_collect__, opts)
+    |> play(file)
+  end
+
+  @doc """
+  Synthesizes text using TTS and plays it, then starts DTMF collection after playback.
+
+  This function combines `say/3` with DTMF collection. The text is synthesized
+  using the configured TTS profile, played to the caller, and then DTMF
+  collection begins automatically after playback completes.
+
+  The handler must check for `__pending_collect__` in `handle_play_complete/2`
+  (same pattern as `prompt/3`).
+
+  ## Options
+
+  TTS options (passed to synthesizer):
+    * `:profile` - Named TTS profile to use (default: `:default`)
+    * `:voice` - Voice identifier to use
+    * `:engine` - TTS engine to use
+    * `:language` - Language/locale code
+
+  DTMF collection options:
+    * `:max` - Maximum digits to collect (default: 20)
+    * `:timeout` - Timeout in milliseconds (default: 30,000)
+    * `:terminators` - Digits that end collection early (default: [])
+
+  ## Examples
+
+      # Simple PIN entry with TTS
+      call |> say_prompt("Please enter your 4-digit PIN.", max: 4, timeout: 10_000)
+
+      # With TTS profile and DTMF terminator
+      call |> say_prompt("Enter your account number followed by pound.",
+        max: 10,
+        terminators: ["#"],
+        profile: :prompts
+      )
+
+  """
+  @spec say_prompt(t(), String.t(), keyword()) :: t()
+  def say_prompt(%__MODULE__{} = call, text, opts \\ []) when is_binary(text) do
+    # Merge with default DTMF collection options
+    opts = Keyword.merge(@default_collect_opts, opts)
+
+    # Extract DTMF collection options for __pending_collect__
+    collect_keys = [:max, :timeout, :terminators]
+    collect_opts = Keyword.take(opts, collect_keys)
+
+    call
+    |> assign(:__pending_collect__, collect_opts)
+    |> add_operation({:say_prompt, text, opts})
+  end
+
+  # ---------------------------------------------------------------------------
   # Recording Operations
   # ---------------------------------------------------------------------------
 
@@ -307,49 +463,6 @@ defmodule Parrot.Call do
   @spec stop_record(t()) :: t()
   def stop_record(%__MODULE__{} = call) do
     add_operation(call, {:stop_record, []})
-  end
-
-  # ---------------------------------------------------------------------------
-  # DTMF Operations
-  # ---------------------------------------------------------------------------
-
-  @doc """
-  Collects DTMF digits from the caller.
-
-  ## Options
-
-  * `:max` - Maximum number of digits to collect
-  * `:timeout` - Timeout in milliseconds
-  * `:terminators` - List of terminating digits (e.g., ["#", "*"])
-
-  ## Examples
-
-      call |> collect_dtmf(max: 4, timeout: 5_000)
-      call |> collect_dtmf(max: 16, terminators: ["#"])
-
-  """
-  @spec collect_dtmf(t(), keyword()) :: t()
-  def collect_dtmf(%__MODULE__{} = call, opts) when is_list(opts) do
-    add_operation(call, {:collect_dtmf, opts})
-  end
-
-  @doc """
-  Plays an audio file and collects DTMF digits.
-
-  This is a convenience function that combines `play/2` and `collect_dtmf/2`.
-
-  ## Options
-
-  * `:collect` - Keyword list of collect_dtmf options (max, timeout, terminators)
-
-  ## Examples
-
-      call |> prompt("enter-pin.wav", collect: [max: 4, timeout: 10_000])
-
-  """
-  @spec prompt(t(), String.t(), keyword()) :: t()
-  def prompt(%__MODULE__{} = call, file, opts) when is_binary(file) and is_list(opts) do
-    add_operation(call, {:prompt, file, opts})
   end
 
   # ---------------------------------------------------------------------------
@@ -491,6 +604,144 @@ defmodule Parrot.Call do
   @spec stop_fork_media(t(), String.t()) :: t()
   def stop_fork_media(%__MODULE__{} = call, fork_id) when is_binary(fork_id) do
     add_operation(call, {:stop_fork_media, fork_id})
+  end
+
+  # ---------------------------------------------------------------------------
+  # Bidirectional WebSocket Operations
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Connects to a bidirectional WebSocket for real-time AI audio streaming.
+
+  Establishes a WebSocket connection that enables bidirectional audio streaming
+  between the call and an external AI service (e.g., OpenAI Realtime API).
+
+  ## Examples
+
+      call |> connect_bidirectional_ws("wss://api.openai.com/v1/realtime")
+
+  """
+  @spec connect_bidirectional_ws(t(), String.t()) :: t()
+  def connect_bidirectional_ws(call, url), do: connect_bidirectional_ws(call, url, [])
+
+  @doc """
+  Connects to a bidirectional WebSocket with options.
+
+  ## Options
+
+  * `:headers` - List of HTTP headers for the WebSocket connection
+  * `:callback_module` - Module implementing WebSocket message callbacks
+  * `:callback_state` - Initial state for the callback module
+  * `:inbound_format` - Audio format for inbound audio (AI → caller)
+  * `:outbound_format` - Audio format for outbound audio (caller → AI)
+  * `:sample_rate` - Sample rate for audio (e.g., 24000 for OpenAI)
+
+  ## Examples
+
+      call |> connect_bidirectional_ws("wss://api.openai.com/v1/realtime",
+        headers: [{"Authorization", "Bearer token"}],
+        callback_module: MyApp.OpenAICallback,
+        sample_rate: 24000
+      )
+
+  """
+  @spec connect_bidirectional_ws(t(), String.t(), keyword()) :: t()
+  def connect_bidirectional_ws(%__MODULE__{} = call, url, opts)
+      when is_binary(url) and is_list(opts) do
+    add_operation(call, {:connect_bidirectional_ws, url, opts})
+  end
+
+  @doc """
+  Disconnects from the bidirectional WebSocket.
+
+  Gracefully closes the WebSocket connection and stops audio streaming.
+
+  ## Examples
+
+      call |> disconnect_bidirectional_ws()
+
+  """
+  @spec disconnect_bidirectional_ws(t()) :: t()
+  def disconnect_bidirectional_ws(%__MODULE__{} = call) do
+    add_operation(call, {:disconnect_bidirectional_ws, []})
+  end
+
+  @doc """
+  Mutes outbound audio (caller → AI).
+
+  Stops sending the caller's audio to the AI service while maintaining
+  the connection. Useful during AI responses to prevent interruption.
+
+  ## Examples
+
+      call |> mute_outbound()
+
+  """
+  @spec mute_outbound(t()) :: t()
+  def mute_outbound(%__MODULE__{} = call) do
+    add_operation(call, {:mute_bidirectional, :outbound})
+  end
+
+  @doc """
+  Unmutes outbound audio (caller → AI).
+
+  Resumes sending the caller's audio to the AI service.
+
+  ## Examples
+
+      call |> unmute_outbound()
+
+  """
+  @spec unmute_outbound(t()) :: t()
+  def unmute_outbound(%__MODULE__{} = call) do
+    add_operation(call, {:unmute_bidirectional, :outbound})
+  end
+
+  @doc """
+  Mutes inbound audio (AI → caller).
+
+  Stops sending AI audio to the caller while maintaining the connection.
+
+  ## Examples
+
+      call |> mute_inbound()
+
+  """
+  @spec mute_inbound(t()) :: t()
+  def mute_inbound(%__MODULE__{} = call) do
+    add_operation(call, {:mute_bidirectional, :inbound})
+  end
+
+  @doc """
+  Unmutes inbound audio (AI → caller).
+
+  Resumes sending AI audio to the caller.
+
+  ## Examples
+
+      call |> unmute_inbound()
+
+  """
+  @spec unmute_inbound(t()) :: t()
+  def unmute_inbound(%__MODULE__{} = call) do
+    add_operation(call, {:unmute_bidirectional, :inbound})
+  end
+
+  @doc """
+  Sends a message through the bidirectional WebSocket.
+
+  Used to send control messages or data to the AI service,
+  such as session configuration or conversation items.
+
+  ## Examples
+
+      call |> send_ws_message(~s({"type": "response.create"}))
+      call |> send_ws_message(Jason.encode!(%{type: "session.update"}))
+
+  """
+  @spec send_ws_message(t(), String.t() | binary()) :: t()
+  def send_ws_message(%__MODULE__{} = call, message) when is_binary(message) do
+    add_operation(call, {:send_ws_message, message})
   end
 
   # ---------------------------------------------------------------------------

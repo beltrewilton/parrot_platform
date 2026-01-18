@@ -83,7 +83,9 @@ defmodule ParrotSip.DialogStatem do
 
   require Logger
 
-  alias ParrotSip.{Dialog, Message, Branch}
+  alias ParrotSip.{Dialog, Message, Branch, DialogBroadcast}
+  alias ParrotSip.CDR
+  alias ParrotSip.CDR.{Generator, Dispatcher, TerminationCause}
   alias ParrotSip.Headers.{Contact, Via}
 
   @type trans :: {:trans, pid()}
@@ -109,7 +111,14 @@ defmodule ParrotSip.DialogStatem do
       :dialog_type,
       need_cleanup: true,
       # Owner process monitor
-      owner_mon: nil
+      owner_mon: nil,
+      # Flag indicating if this dialog was recovered from stored state
+      recovered: false,
+      # CDR timing fields
+      # Timestamp when INVITE was received (dialog creation)
+      invite_received_at: nil,
+      # Timestamp when call was answered (:early -> :confirmed transition)
+      answered_at: nil
     ]
 
     @type t :: %__MODULE__{
@@ -120,7 +129,10 @@ defmodule ParrotSip.DialogStatem do
             log_id: String.t() | nil,
             dialog_type: :invite | :notify | nil,
             need_cleanup: boolean(),
-            owner_mon: reference() | nil
+            owner_mon: reference() | nil,
+            recovered: boolean(),
+            invite_received_at: DateTime.t() | nil,
+            answered_at: DateTime.t() | nil
           }
   end
 
@@ -144,6 +156,38 @@ defmodule ParrotSip.DialogStatem do
       args,
       []
     )
+  end
+
+  @doc """
+  Start a DialogStatem from recovered state (cluster failover).
+  Skips initial negotiation, starts directly in :confirmed state.
+
+  ## Parameters
+    - `stored_state` - Map containing dialog state fields from DialogBroadcast
+
+  ## Returns
+    - `{:ok, pid}` on success
+    - `{:error, reason}` on failure
+
+  ## Example
+
+      stored_state = %{
+        call_id: "call-123@example.com",
+        local_tag: "local-tag",
+        remote_tag: "remote-tag",
+        local_uri: "sip:alice@example.com",
+        remote_uri: "sip:bob@example.com",
+        local_seq: 1,
+        remote_seq: 1,
+        secure: false,
+        route_set: []
+      }
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+  """
+  @spec start_recovered(map()) :: :gen_statem.start_ret()
+  def start_recovered(stored_state) do
+    :gen_statem.start_link(__MODULE__, {:recover, stored_state}, [])
   end
 
   @impl :gen_statem
@@ -174,7 +218,8 @@ defmodule ParrotSip.DialogStatem do
       dialog: dialog,
       local_contact: Message.get_header(req_sip_msg, "contact"),
       log_id: uas_log_id(resp_sip_msg),
-      dialog_type: dialog_type(req_sip_msg)
+      dialog_type: dialog_type(req_sip_msg),
+      invite_received_at: DateTime.utc_now()
     }
 
     # Set a timer for NOTIFY dialogs
@@ -207,6 +252,24 @@ defmodule ParrotSip.DialogStatem do
       call_id: call_id
     )
 
+    # Broadcast creation and set answered_at if starting directly in confirmed state
+    data =
+      if initial_state == :confirmed do
+        broadcast_state = %{
+          call_id: dialog.call_id,
+          local_tag: dialog.local_tag,
+          remote_tag: dialog.remote_tag,
+          state: :confirmed,
+          owner_node: node()
+        }
+
+        maybe_broadcast_create(dialog.id, broadcast_state)
+        # Set answered_at for dialogs starting directly in confirmed state
+        %{data | answered_at: DateTime.utc_now()}
+      else
+        data
+      end
+
     {:ok, initial_state, data, actions}
   end
 
@@ -234,7 +297,8 @@ defmodule ParrotSip.DialogStatem do
       local_contact: Message.get_header(out_req, "contact"),
       early_branch: branch,
       log_id: uac_log_id(resp_sip_msg),
-      dialog_type: dialog_type(out_req)
+      dialog_type: dialog_type(out_req),
+      invite_received_at: DateTime.utc_now()
     }
 
     initial_state = dialog.state
@@ -260,12 +324,88 @@ defmodule ParrotSip.DialogStatem do
       local_contact: Message.get_header(out_req, "contact"),
       early_branch: nil,
       log_id: uac_log_id(resp_sip_msg),
-      dialog_type: dialog_type(out_req)
+      dialog_type: dialog_type(out_req),
+      invite_received_at: DateTime.utc_now()
     }
 
     initial_state = dialog.state
     Logger.info("dialog #{inspect(dialog.id)}: starting in #{inspect(initial_state)} state")
+
+    # Broadcast creation and set answered_at if starting directly in confirmed state
+    data =
+      if initial_state == :confirmed do
+        broadcast_state = %{
+          call_id: dialog.call_id,
+          local_tag: dialog.local_tag,
+          remote_tag: dialog.remote_tag,
+          state: :confirmed,
+          owner_node: node()
+        }
+
+        maybe_broadcast_create(dialog.id, broadcast_state)
+        # Set answered_at for dialogs starting directly in confirmed state
+        %{data | answered_at: DateTime.utc_now()}
+      else
+        data
+      end
+
     {:ok, initial_state, data}
+  end
+
+  @doc false
+  def init({:recover, stored_state}) do
+    Logger.info("[DialogStatem] Recovering dialog #{stored_state.call_id}")
+
+    # RFC 3261 Section 12: Generate dialog ID from call-id, local-tag, remote-tag
+    # For recovered dialogs, we assume UAS perspective (local=to_tag, remote=from_tag)
+    dialog_id = Dialog.generate_id(:uas, stored_state.call_id, stored_state.local_tag, stored_state.remote_tag)
+
+    # Build Dialog struct from stored state
+    dialog = %Dialog{
+      id: dialog_id,
+      state: :confirmed,
+      call_id: stored_state.call_id,
+      local_tag: stored_state.local_tag,
+      remote_tag: stored_state.remote_tag,
+      local_uri: stored_state.local_uri,
+      remote_uri: stored_state.remote_uri,
+      remote_target: Map.get(stored_state, :remote_target),
+      local_seq: stored_state.local_seq,
+      remote_seq: stored_state.remote_seq,
+      route_set: Map.get(stored_state, :route_set, []),
+      secure: Map.get(stored_state, :secure, false),
+      local_host: Map.get(stored_state, :local_host),
+      local_port: Map.get(stored_state, :local_port),
+      transport: Map.get(stored_state, :transport)
+    }
+
+    # Register the dialog
+    case Registry.register(ParrotSip.Registry, dialog_id, nil) do
+      {:ok, _} ->
+        Logger.info("[DialogStatem] Recovered dialog registered with ID #{inspect(dialog_id)}")
+
+      {:error, {:already_registered, _}} ->
+        Logger.warning("[DialogStatem] Recovered dialog already registered: #{inspect(dialog_id)}")
+    end
+
+    # For recovered dialogs, use stored timing or fall back to current time
+    now = DateTime.utc_now()
+
+    data = %Data{
+      id: dialog_id,
+      dialog: dialog,
+      local_contact: nil,
+      early_branch: nil,
+      log_id: "recovered-#{stored_state.call_id}",
+      dialog_type: :invite,
+      recovered: true,
+      invite_received_at: Map.get(stored_state, :invite_received_at, now),
+      answered_at: Map.get(stored_state, :answered_at, now)
+    }
+
+    Logger.info("[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state")
+
+    {:ok, :confirmed, data}
   end
 
   # Update to replace "Dialog.is_complete" by pattern matching on the Message struct below
@@ -597,6 +737,11 @@ defmodule ParrotSip.DialogStatem do
         # Check if dialog should transition states
         new_state = if updated_dialog.state == :terminated, do: :terminated, else: state
 
+        # Broadcast delete when dialog terminates
+        if new_state == :terminated do
+          maybe_broadcast_delete(data.id)
+        end
+
         {:next_state, new_state, updated_data, [{:reply, from, :process}]}
 
       {:error, :cseq_out_of_order} ->
@@ -618,6 +763,20 @@ defmodule ParrotSip.DialogStatem do
 
   defp process_uas_response(:early, %Message{status_code: status_code}, _req_sip_msg, data)
        when status_code >= 200 and status_code < 300 do
+    # Capture answered_at timestamp for CDR when transitioning to confirmed
+    data = %{data | answered_at: DateTime.utc_now()}
+
+    # Broadcast dialog creation when transitioning to confirmed
+    broadcast_state = %{
+      call_id: data.dialog.call_id,
+      local_tag: data.dialog.local_tag,
+      remote_tag: data.dialog.remote_tag,
+      state: :confirmed,
+      owner_node: node()
+    }
+
+    maybe_broadcast_create(data.id, broadcast_state)
+
     {:next_state, :confirmed, data}
   end
 
@@ -633,6 +792,33 @@ defmodule ParrotSip.DialogStatem do
 
     # Check state transitions
     new_state = determine_new_state(state, updated_dialog.state)
+
+    # Capture answered_at timestamp for CDR when transitioning from early to confirmed
+    updated_data =
+      if state == :early and new_state == :confirmed do
+        %{updated_data | answered_at: DateTime.utc_now()}
+      else
+        updated_data
+      end
+
+    # Broadcast dialog creation when transitioning from early to confirmed
+    if state == :early and new_state == :confirmed do
+      broadcast_state = %{
+        call_id: updated_dialog.call_id,
+        local_tag: updated_dialog.local_tag,
+        remote_tag: updated_dialog.remote_tag,
+        state: :confirmed,
+        owner_node: node()
+      }
+
+      maybe_broadcast_create(data.id, broadcast_state)
+    end
+
+    # Broadcast update for any state change in confirmed state
+    if state == :confirmed and updated_dialog.state == :confirmed do
+      maybe_broadcast_update(data.id, %{})
+    end
+
     {:next_state, new_state, updated_data}
   end
 
@@ -872,5 +1058,138 @@ defmodule ParrotSip.DialogStatem do
   defp uac_trans_result(dialog_pid, trans_result) do
     :gen_statem.cast(dialog_pid, {:uac_trans_result, trans_result})
     :ok
+  end
+
+  # ===========================================================================
+  # gen_statem terminate callback - CDR generation
+  # ===========================================================================
+
+  @doc """
+  Generates and dispatches CDR when dialog terminates.
+
+  RFC 3261 Section 12.3: Termination of a Dialog
+
+  Called by gen_statem for all termination paths:
+  - BYE request processed (normal call end)
+  - Transaction stop signal
+  - Owner process dies
+  - Subscription expired
+
+  Only generates CDRs for INVITE dialogs (not SUBSCRIBE/NOTIFY).
+  Dispatches to handlers asynchronously to avoid blocking termination.
+  """
+  @impl :gen_statem
+  def terminate(reason, state, data) do
+    # Only generate CDR for INVITE dialogs with valid dialog data
+    if data.dialog_type == :invite and data.dialog != nil do
+      generate_and_dispatch_cdr(data, state, reason)
+    end
+
+    :ok
+  end
+
+  # Generates CDR and dispatches to all registered handlers asynchronously.
+  # Errors are logged but do not affect dialog termination.
+  @spec generate_and_dispatch_cdr(Data.t(), atom(), term()) :: :ok
+  defp generate_and_dispatch_cdr(data, state, reason) do
+    # Build termination cause based on how dialog ended
+    termination_cause = build_termination_cause(data, state, reason)
+
+    # Build timing data - ended_at is captured now at termination
+    timing_data = %{
+      invite_received_at: data.invite_received_at,
+      answered_at: data.answered_at,
+      ended_at: DateTime.utc_now()
+    }
+
+    # Generate CDR
+    case Generator.generate(data.dialog, timing_data, termination_cause) do
+      {:ok, cdr} ->
+        # Fire-and-forget dispatch to all handlers
+        handlers = CDR.list_handlers()
+
+        if handlers != [] do
+          Logger.debug("dialog #{inspect(data.id)}: dispatching CDR to #{length(handlers)} handlers")
+          Dispatcher.dispatch(cdr, handlers)
+        else
+          Logger.debug("dialog #{inspect(data.id)}: no CDR handlers registered")
+        end
+
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("dialog #{inspect(data.id)}: failed to generate CDR: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  # Builds termination cause based on dialog state and termination context.
+  # Determines disposition based on whether call was answered and how it ended.
+  @spec build_termination_cause(Data.t(), atom(), term()) :: TerminationCause.t()
+  defp build_termination_cause(data, state, _reason) do
+    cond do
+      # Call was answered (has answered_at) - normal termination via BYE
+      data.answered_at != nil ->
+        %TerminationCause{
+          party: :caller,
+          sip_code: 200,
+          reason: "BYE",
+          method: :bye
+        }
+
+      # Early state - call was cancelled or rejected before answer
+      state == :early ->
+        %TerminationCause{
+          party: :caller,
+          sip_code: 487,
+          reason: "Request Terminated",
+          method: :cancel
+        }
+
+      # Default - system termination (owner died, timeout, etc.)
+      true ->
+        %TerminationCause{
+          party: :system,
+          sip_code: 500,
+          reason: "Dialog Terminated",
+          method: nil
+        }
+    end
+  end
+
+  # DialogBroadcast integration helpers
+  # These functions provide graceful degradation if DialogBroadcast is not running
+
+  defp maybe_broadcast_create(dialog_id, state) do
+    case Process.whereis(:dialog_broadcast) do
+      nil ->
+        Logger.debug("dialog #{dialog_id}: DialogBroadcast not running, skipping broadcast")
+        :ok
+
+      pid ->
+        DialogBroadcast.broadcast_create(pid, dialog_id, state)
+    end
+  end
+
+  defp maybe_broadcast_update(dialog_id, changes) do
+    case Process.whereis(:dialog_broadcast) do
+      nil ->
+        Logger.debug("dialog #{dialog_id}: DialogBroadcast not running, skipping broadcast")
+        :ok
+
+      pid ->
+        DialogBroadcast.broadcast_update(pid, dialog_id, changes)
+    end
+  end
+
+  defp maybe_broadcast_delete(dialog_id) do
+    case Process.whereis(:dialog_broadcast) do
+      nil ->
+        Logger.debug("dialog #{dialog_id}: DialogBroadcast not running, skipping broadcast")
+        :ok
+
+      pid ->
+        DialogBroadcast.broadcast_delete(pid, dialog_id)
+    end
   end
 end

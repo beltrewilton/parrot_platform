@@ -34,7 +34,15 @@ installer/parrot_new/_build/
 
 *.log
 
+# Test script logs
+/logs/*
+!/logs/.gitkeep
+
 .DS_Store
 
 # Git worktrees for isolated development
 .worktrees/
+
+# Speckit tooling
+.specify/
+specs/

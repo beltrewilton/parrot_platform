@@ -25,6 +25,8 @@ defmodule ParrotMedia.AlawPipeline do
 
   alias ParrotMedia.ForkConfig
   alias ParrotMedia.ForkSink
+  alias ParrotMedia.Elements.TelephoneEventParser
+  alias ParrotMedia.MOS.Observer
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -45,6 +47,18 @@ defmodule ParrotMedia.AlawPipeline do
     Logger.info("  RTP destination: #{opts.remote_rtp_address}:#{opts.remote_rtp_port}")
     Logger.info("  Local RTP port: #{opts.local_rtp_port}")
 
+    # Get dynamic payload types from SDP (encoding name -> {pt, clock_rate})
+    # Per RFC 3551, PTs 96-127 are dynamically assigned via SDP rtpmap
+    dynamic_payload_types = Map.get(opts, :dynamic_payload_types, %{})
+
+    # Build reverse map (PT -> encoding name) for efficient lookup when RTP streams arrive
+    pt_to_encoding =
+      for {encoding, {pt, _clock_rate}} <- dynamic_payload_types, into: %{} do
+        {pt, encoding}
+      end
+
+    Logger.info("AlawPipeline: Dynamic payload types: #{inspect(dynamic_payload_types)}")
+
     # Generate SSRC once for consistency
     ssrc = :rand.uniform(0xFFFFFFFF)
     has_audio? = has_audio_file?(opts)
@@ -52,11 +66,26 @@ defmodule ParrotMedia.AlawPipeline do
     # Create bidirectional UDP endpoint
     udp_endpoint_spec = build_udp_endpoint_spec(opts, has_audio?)
 
+    # Build fmt_mapping with static PT=8 (PCMA) plus all dynamic PTs from SDP
+    # Per RFC 3551, PTs 96-127 are dynamically assigned via SDP rtpmap
+    # SessionBin requires ALL expected PTs in fmt_mapping to accept incoming streams
+    # Uses clock_rate from SDP (not hardcoded) for proper codec handling
+    base_fmt_mapping = %{8 => {:PCMA, 8000}}
+
+    dynamic_fmt_mapping =
+      for {encoding, {pt, clock_rate}} <- dynamic_payload_types, into: %{} do
+        # Use encoding atom and clock_rate from SDP
+        {pt, {String.to_atom(encoding), clock_rate}}
+      end
+
+    fmt_mapping = Map.merge(base_fmt_mapping, dynamic_fmt_mapping)
+    Logger.info("AlawPipeline: RTP fmt_mapping: #{inspect(fmt_mapping)}")
+
     # Create RTP SessionBin for bidirectional RTP handling
     rtp_session_spec =
       child(:rtp, %Membrane.RTP.SessionBin{
-        # payload type 8 = G.711 A-law (static encoding uses atom format)
-        fmt_mapping: %{8 => {:PCMA, 8000}},
+        # Include all expected payload types (static + dynamic from SDP)
+        fmt_mapping: fmt_mapping,
         # RTCP intervals per RFC 3550
         rtcp_receiver_report_interval: Membrane.Time.seconds(5),
         rtcp_sender_report_interval: Membrane.Time.seconds(5)
@@ -133,7 +162,12 @@ defmodule ParrotMedia.AlawPipeline do
        udp_sink_config: "#{format_ip(opts.remote_rtp_address)}:#{opts.remote_rtp_port}",
        ssrc: ssrc,
        # Track active forks for cleanup
-       active_forks: %{}
+       active_forks: %{},
+       # Dynamic payload type mapping (PT -> encoding name)
+       # Per RFC 3551, PTs 96-127 are dynamically assigned via SDP
+       pt_to_encoding: pt_to_encoding,
+       # Optional MediaSession PID for forwarding events
+       media_session_pid: Map.get(opts, :media_session_pid)
      }}
   end
 
@@ -198,29 +232,33 @@ defmodule ParrotMedia.AlawPipeline do
 
   @impl true
   def handle_child_notification(
-        {:new_rtp_stream, ssrc, _pt, _extensions} = notification,
+        {:new_rtp_stream, ssrc, pt, _extensions} = notification,
         :rtp,
         _ctx,
         state
       ) do
-    Logger.info("AlawPipeline #{state.session_id}: New incoming RTP stream with SSRC: #{ssrc}")
-
+    Logger.info("AlawPipeline #{state.session_id}: New incoming RTP stream with SSRC: #{ssrc}, PT: #{pt}")
     Logger.debug("  Full notification: #{inspect(notification)}")
 
-    # Create a pipeline to handle incoming RTP audio
-    receive_audio_spec = [
-      get_child(:rtp)
-      |> via_out(Pad.ref(:output, ssrc),
-        options: [depayloader: Membrane.RTP.G711.Depayloader]
-      )
-      |> child({:g711_decoder, ssrc}, Membrane.G711.Decoder)
-      |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
-    ]
+    # Look up dynamic payload type by PT number (RFC 3551: PTs 96-127 are dynamic)
+    encoding = Map.get(state.pt_to_encoding, pt)
 
-    {[spec: receive_audio_spec], state}
+    handle_rtp_stream_by_encoding(ssrc, pt, encoding, state)
   end
 
-  @impl true
+  # Handle DTMF notification from TelephoneEventParser
+  # Forward to MediaSession for handler processing
+  def handle_child_notification({:dtmf, digit}, {child_type, _ssrc}, _ctx, state)
+      when child_type == :dtmf_parser do
+    Logger.info("AlawPipeline #{state.session_id}: DTMF digit detected: #{digit}")
+
+    if state.media_session_pid do
+      send(state.media_session_pid, {:pipeline_event, :dtmf, digit})
+    end
+
+    {[], state}
+  end
+
   def handle_child_notification({:file_complete, filename}, :audio_source, _ctx, state) do
     # SwitchableFileSource notifies us when a file completes
     # Forward this to MediaSession if we have a reference
@@ -233,9 +271,134 @@ defmodule ParrotMedia.AlawPipeline do
     {[], state}
   end
 
-  @impl true
   def handle_child_notification(_notification, _child, _ctx, state) do
     {[], state}
+  end
+
+  # Handle RTP streams based on encoding name from SDP negotiation
+  # Per RFC 3551, static PTs (0-95) have fixed meanings, dynamic PTs (96-127) are from SDP
+
+  # RFC 4733 telephone-event for DTMF detection
+  defp handle_rtp_stream_by_encoding(ssrc, pt, "telephone-event", state) do
+    Logger.info("AlawPipeline #{state.session_id}: Detected telephone-event stream (PT=#{pt})")
+
+    # Create pipeline to parse DTMF events
+    # TelephoneEventParser emits {:dtmf, digit} notifications on end_bit=1
+    dtmf_spec = [
+      get_child(:rtp)
+      |> via_out(Pad.ref(:output, ssrc))
+      |> child({:dtmf_parser, ssrc}, %TelephoneEventParser{payload_type: pt})
+      |> child({:dtmf_sink, ssrc}, %Membrane.Debug.Sink{})
+    ]
+
+    {[spec: dtmf_spec], state}
+  end
+
+  # no-op stream (used by SIPp for DTMF mode)
+  defp handle_rtp_stream_by_encoding(ssrc, pt, "no-op", state) do
+    Logger.info("AlawPipeline #{state.session_id}: Detected no-op stream (PT=#{pt})")
+
+    # Route to null sink to consume the stream
+    noop_spec = [
+      get_child(:rtp)
+      |> via_out(Pad.ref(:output, ssrc))
+      |> child({:noop_sink, ssrc}, %Membrane.Debug.Sink{})
+    ]
+
+    {[spec: noop_spec], state}
+  end
+
+  # G.711 A-law audio via dynamic SDP encoding (pjsua includes pcma in offer)
+  defp handle_rtp_stream_by_encoding(ssrc, pt, "pcma", state) do
+    Logger.info("AlawPipeline #{state.session_id}: Detected pcma stream via SDP (PT=#{pt})")
+    # Reuse the same PCMA handler logic
+    handle_pcma_stream(ssrc, pt, state)
+  end
+
+  # No dynamic encoding found - check static payload types
+  defp handle_rtp_stream_by_encoding(ssrc, pt, nil, state) do
+    case pt do
+      # G.711 A-law audio stream (PT=8 is static per RFC 3551)
+      8 ->
+        handle_pcma_stream(ssrc, pt, state)
+
+      # Unknown static payload type - log and ignore
+      _ ->
+        Logger.warning("AlawPipeline #{state.session_id}: Unknown payload type #{pt}, ignoring stream")
+        {[], state}
+    end
+  end
+
+  # Other dynamic encoding we recognize but don't specifically handle
+  defp handle_rtp_stream_by_encoding(ssrc, pt, encoding, state) do
+    Logger.info("AlawPipeline #{state.session_id}: Detected #{encoding} stream (PT=#{pt}) - routing to sink")
+
+    # Route to null sink to consume the stream
+    other_spec = [
+      get_child(:rtp)
+      |> via_out(Pad.ref(:output, ssrc))
+      |> child({:other_sink, ssrc}, %Membrane.Debug.Sink{})
+    ]
+
+    {[spec: other_spec], state}
+  end
+
+  # Find telephone-event payload type from pt_to_encoding map
+  defp find_telephone_event_pt(pt_to_encoding) do
+    Enum.find_value(pt_to_encoding, fn
+      {pt, "telephone-event"} -> pt
+      _ -> nil
+    end)
+  end
+
+  # Common handler for PCMA streams (from both static PT and SDP encoding)
+  defp handle_pcma_stream(ssrc, pt, state) do
+    # Find telephone-event PT from SDP negotiation (RFC 4733 DTMF)
+    # DTMF packets share the same SSRC as audio but have different PT
+    telephone_event_pt = find_telephone_event_pt(state.pt_to_encoding)
+
+    if telephone_event_pt do
+      Logger.info(
+        "AlawPipeline #{state.session_id}: Adding inline DTMF parser for PT=#{telephone_event_pt}"
+      )
+
+      # Insert TelephoneEventParser to detect DTMF before depayloading
+      # TelephoneEventParser passes through non-DTMF packets unchanged
+      # MOS Observer collects metrics for quality monitoring
+      receive_audio_spec = [
+        get_child(:rtp)
+        |> via_out(Pad.ref(:output, ssrc))
+        |> child({:dtmf_parser, ssrc}, %TelephoneEventParser{payload_type: telephone_event_pt})
+        |> child({:g711_depayloader, ssrc}, Membrane.RTP.G711.Depayloader)
+        |> child({:mos_observer, ssrc}, %Observer{
+          session_id: state.session_id,
+          stats_interval_ms: 1000
+        })
+        |> child({:g711_decoder, ssrc}, Membrane.G711.Decoder)
+        |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
+      ]
+
+      {[spec: receive_audio_spec], state}
+    else
+      Logger.info("AlawPipeline #{state.session_id}: Detected G.711 A-law audio stream (PT=#{pt})")
+
+      # No telephone-event negotiated - standard audio pipeline
+      # MOS Observer collects metrics for quality monitoring
+      receive_audio_spec = [
+        get_child(:rtp)
+        |> via_out(Pad.ref(:output, ssrc),
+          options: [depayloader: Membrane.RTP.G711.Depayloader]
+        )
+        |> child({:mos_observer, ssrc}, %Observer{
+          session_id: state.session_id,
+          stats_interval_ms: 1000
+        })
+        |> child({:g711_decoder, ssrc}, Membrane.G711.Decoder)
+        |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
+      ]
+
+      {[spec: receive_audio_spec], state}
+    end
   end
 
   # Handle play_files_request from MediaSession

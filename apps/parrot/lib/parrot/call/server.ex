@@ -156,19 +156,20 @@ defmodule Parrot.Call.Server do
     dialog_id = context && Map.get(context, :dialog_id)
 
     # Create the initial Call struct from invite data
-    call = Call.new(
-      id: Map.get(invite, :id),
-      handler: handler,
-      from: Map.get(invite, :from),
-      to: Map.get(invite, :to),
-      call_id: Map.get(invite, :call_id),
-      method: Map.get(invite, :method, "INVITE"),
-      assigns: Map.get(invite, :assigns, %{}),
-      uas: uas,
-      sip_msg: sip_msg,
-      media_pid: media_pid,
-      dialog_id: dialog_id
-    )
+    call =
+      Call.new(
+        id: Map.get(invite, :id),
+        handler: handler,
+        from: Map.get(invite, :from),
+        to: Map.get(invite, :to),
+        call_id: Map.get(invite, :call_id),
+        method: Map.get(invite, :method, "INVITE"),
+        assigns: Map.get(invite, :assigns, %{}),
+        uas: uas,
+        sip_msg: sip_msg,
+        media_pid: media_pid,
+        dialog_id: dialog_id
+      )
 
     # Invoke handle_invite/1 with the Call struct
     # Handlers use pipeline operations (answer, play, etc.) on the struct
@@ -232,6 +233,30 @@ defmodule Parrot.Call.Server do
   end
 
   @impl true
+  def handle_info({:media_event, _session_id, {:prompt_complete, filename, digits}}, state) do
+    state = dispatch_event({:prompt_complete, filename, digits}, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:media_event, _session_id, {:conference_join, room}}, state) do
+    state = dispatch_event({:conference_join, room}, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:media_event, _session_id, {:conference_leave, room, reason}}, state) do
+    state = dispatch_event({:conference_leave, room, reason}, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:media_event, _session_id, {:fork_media_connected, url}}, state) do
+    state = dispatch_event({:fork_media_connected, url}, state)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(msg, state) do
     Logger.debug("Call.Server received unhandled message: #{inspect(msg)}")
     {:noreply, state}
@@ -259,6 +284,22 @@ defmodule Parrot.Call.Server do
 
   defp dispatch_event({:record_complete, filename, duration_ms}, state) do
     invoke_callback(:handle_record_complete, [filename, duration_ms], state)
+  end
+
+  defp dispatch_event({:prompt_complete, filename, digits}, state) do
+    invoke_callback(:handle_prompt_complete, [filename, digits], state)
+  end
+
+  defp dispatch_event({:conference_join, room}, state) do
+    invoke_callback(:handle_conference_join, [room], state)
+  end
+
+  defp dispatch_event({:conference_leave, room, reason}, state) do
+    invoke_callback(:handle_conference_leave, [room, reason], state)
+  end
+
+  defp dispatch_event({:fork_media_connected, url}, state) do
+    invoke_callback(:handle_fork_media_connected, [url], state)
   end
 
   defp dispatch_event(:hangup, state) do
@@ -314,18 +355,21 @@ defmodule Parrot.Call.Server do
       executor_context = %{
         uas: call.__uas__ || Map.get(context, :uas),
         sip_msg: call.__sip_msg__ || Map.get(context, :sip_msg),
-        media_pid: call.__media_pid__ || Map.get(context, :media_pid)
+        media_pid: call.__media_pid__ || Map.get(context, :media_pid),
+        sdp_answer: Map.get(context, :sdp_answer),
+        response_fn: Map.get(context, :response_fn)
       }
 
       case ActionExecutor.execute(operations, call, executor_context) do
         {:ok, updated_call} ->
           # Preserve context fields and clear operations
-          %{updated_call |
-            __uas__: call.__uas__,
-            __sip_msg__: call.__sip_msg__,
-            __media_pid__: call.__media_pid__,
-            __dialog_id__: call.__dialog_id__,
-            __operations__: []
+          %{
+            updated_call
+            | __uas__: call.__uas__,
+              __sip_msg__: call.__sip_msg__,
+              __media_pid__: call.__media_pid__,
+              __dialog_id__: call.__dialog_id__,
+              __operations__: []
           }
 
         {:error, reason} ->

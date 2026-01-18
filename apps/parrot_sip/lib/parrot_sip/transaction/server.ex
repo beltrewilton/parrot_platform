@@ -31,9 +31,16 @@ defmodule ParrotSip.Transaction.Server do
         Logger.debug("UAS: process_request #{inspect(sip_msg.method)}")
 
         # Check if this is an in-dialog request
-        DialogStatem.uas_request(sip_msg)
-        Logger.debug("UAS: process_request process #{inspect(sip_msg.method)}")
-        {:process, sip_msg}
+        # RFC 3261 Section 15.1.2: BYE for non-existent dialog gets 481
+        case DialogStatem.uas_request(sip_msg) do
+          {:reply, _response} = reply ->
+            Logger.debug("UAS: dialog returned reply for #{inspect(sip_msg.method)}")
+            reply
+
+          :process ->
+            Logger.debug("UAS: process_request process #{inspect(sip_msg.method)}")
+            {:process, sip_msg}
+        end
       end,
       fn sip_msg ->
         case sip_msg.method == :cancel do
@@ -115,7 +122,8 @@ defmodule ParrotSip.Transaction.Server do
   end
 
   # RFC 3261 Section 12.1.1: Dialog-creating response with tag already present
-  @spec response(Message.t(), Transaction.t()) :: :ok
+  # Returns {:ok, final_response} so caller can extract To tag for dialog_id
+  @spec response(Message.t(), Transaction.t()) :: {:ok, Message.t()}
   def response(
         %Message{status_code: status_code, to: %{parameters: %{"tag" => _tag}}} = resp_sip_msg,
         %Transaction{request: %Message{method: method} = req_sip_msg} = transaction
@@ -123,11 +131,13 @@ defmodule ParrotSip.Transaction.Server do
       when status_code >= 200 and status_code < 300 and method in [:invite, :subscribe] do
     Logger.debug("UAS: response #{inspect(resp_sip_msg.method)} - tag present")
 
-    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg, req_sip_msg)
-    TransactionStatem.server_response(resp_sip_msg, transaction)
+    final_response = DialogStatem.uas_response(resp_sip_msg, req_sip_msg)
+    TransactionStatem.server_response(final_response, transaction)
+    {:ok, final_response}
   end
 
   # RFC 3261 Section 12.1.1: Dialog-creating response without tag - generate and add one
+  # Returns {:ok, final_response} so caller can extract generated To tag for dialog_id
   def response(
         %Message{status_code: status_code, to: %{parameters: params} = to_header} = resp_sip_msg,
         %Transaction{request: %Message{method: method} = req_sip_msg} = transaction
@@ -140,22 +150,26 @@ defmodule ParrotSip.Transaction.Server do
     updated_to = %{to_header | parameters: Map.put(params, "tag", tag)}
     resp_sip_msg_with_tag = %{resp_sip_msg | to: updated_to}
 
-    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg_with_tag, req_sip_msg)
-    TransactionStatem.server_response(resp_sip_msg, transaction)
+    final_response = DialogStatem.uas_response(resp_sip_msg_with_tag, req_sip_msg)
+    TransactionStatem.server_response(final_response, transaction)
+    {:ok, final_response}
   end
 
   # Non-dialog-creating response - process as-is
+  # Returns {:ok, final_response} for consistency
   def response(resp_sip_msg, %Transaction{request: req_sip_msg} = transaction) do
     Logger.debug("UAS: response #{inspect(resp_sip_msg.method)}")
 
-    resp_sip_msg = DialogStatem.uas_response(resp_sip_msg, req_sip_msg)
-    TransactionStatem.server_response(resp_sip_msg, transaction)
+    final_response = DialogStatem.uas_response(resp_sip_msg, req_sip_msg)
+    TransactionStatem.server_response(final_response, transaction)
+    {:ok, final_response}
   end
 
   # Test/mock transaction reference - bypass transaction layer
+  # Returns {:ok, final_response} for consistency with other clauses
   def response(resp_sip_msg, _mock_transaction_ref) do
     Logger.debug("UAS: response #{inspect(resp_sip_msg.status_code)} (mock transaction)")
-    :ok
+    {:ok, resp_sip_msg}
   end
 
   @spec response_retransmit(Message.t(), Transaction.t()) :: :ok

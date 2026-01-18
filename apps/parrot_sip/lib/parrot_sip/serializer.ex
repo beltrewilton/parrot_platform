@@ -464,13 +464,7 @@ defmodule ParrotSip.Serializer do
       end
 
     formatted_value = format_header_value(name, value)
-
-    # Handle long header values (> 75 chars) with folding according to RFC 3261 Section 7.3.1
-    if String.length(formatted_value) > 75 do
-      fold_header_value("#{header_name}: ", formatted_value)
-    else
-      "#{header_name}: #{formatted_value}\r\n"
-    end
+    "#{header_name}: #{formatted_value}\r\n"
   end
 
   # Formats header values based on their type
@@ -547,45 +541,6 @@ defmodule ParrotSip.Serializer do
   # Catch-all for unknown types - fallback to inspect
   defp format_header_value(_name, value) do
     inspect(value)
-  end
-
-  # Folds long header values according to RFC 3261 Section 7.3.1
-  defp fold_header_value(header_name, value) do
-    # Split value into chunks of max 70 chars to leave room for folding
-    chunks = chunk_string(value, 70)
-
-    # First line has the header name
-    first_line = "#{header_name}#{hd(chunks)}\r\n"
-
-    # Subsequent lines are indented with space or tab (using space here)
-    rest_lines =
-      tl(chunks)
-      |> Enum.map(fn chunk -> " #{chunk}\r\n" end)
-      |> Enum.join("")
-
-    first_line <> rest_lines
-  end
-
-  # Splits string into chunks of specified size, preserving words when possible
-  defp chunk_string(str, chunk_size) do
-    words = String.split(str, " ")
-    chunk_words(words, chunk_size, "", [])
-  end
-
-  defp chunk_words([], _chunk_size, current_chunk, chunks) do
-    Enum.reverse([current_chunk | chunks])
-  end
-
-  defp chunk_words([word | rest], chunk_size, current_chunk, chunks) do
-    potential_chunk = if current_chunk == "", do: word, else: "#{current_chunk} #{word}"
-
-    if String.length(potential_chunk) <= chunk_size do
-      # Word fits in current chunk
-      chunk_words(rest, chunk_size, potential_chunk, chunks)
-    else
-      # Start a new chunk
-      chunk_words(rest, chunk_size, word, [current_chunk | chunks])
-    end
   end
 
   # Ensures the Content-Length header is present and accurate in a message struct

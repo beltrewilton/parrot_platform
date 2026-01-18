@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC RFC 4733 DTMF Over RTP Scenario
+
+  Tests in-band DTMF detection using RFC 4733 telephone-event packets.
+  Unlike the INFO-based DTMF test, this sends actual RTP packets with
+  payload type 101 (telephone-event) that the TelephoneEventParser
+  element should detect.
+
+  Flow:
+  1. Send INVITE with telephone-event SDP
+  2. Receive 200 OK with media setup
+  3. Send ACK
+  4. Wait for call establishment
+  5. Send DTMF "1234#" via RFC 4733 RTP telephone-event
+  6. Wait for server to process DTMF
+  7. Send BYE to end call
+
+  Requirements:
+  - SIPp must be compiled with RTP support (PCAP or play_dtmf)
+  - Server must have TelephoneEventParser wired into pipeline
+  - Server handler should acknowledge DTMF collection
+
+  Usage:
+    sipp -sf uac_rtp_dtmf.xml -m 1 [server_ip]:[server_port]
+-->
+<scenario name="UAC RFC 4733 DTMF">
+  <!-- Initial INVITE with telephone-event support -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:dtmf-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:dtmf-test@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: RFC 4733 DTMF Test
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=dtmftest 123456 123456 IN IP4 [local_ip]
+      s=DTMF Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [auto_media_port] RTP/AVP 8 96 97
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:96 telephone-event/8000
+      a=fmtp:96 0-15
+      a=rtpmap:97 no-op/8000
+      a=sendrecv
+      a=ptime:20
+
+    ]]>
+  </send>
+
+  <!-- Optional 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Optional 180 Ringing -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" rtd="true" rrs="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:dtmf-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Wait for call to be established and media started -->
+  <pause milliseconds="500"/>
+
+  <!-- Send DTMF "1234#" using RFC 4733 telephone-event RTP packets -->
+  <!-- play_dtmf syntax: "digits[,length]" where length is ms per digit (default 200) -->
+  <nop>
+    <action>
+      <exec play_dtmf="1234#,200"/>
+    </action>
+  </nop>
+
+  <!-- Wait for DTMF to be processed by server (5 digits * 200ms + buffer) -->
+  <pause milliseconds="2000"/>
+
+  <!-- Send BYE to end call -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:dtmf-test@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>

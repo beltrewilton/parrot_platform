@@ -36,9 +36,14 @@ defmodule Parrot.Sipp.DSL.RegistrarTest do
         ParrotSip.Stack.stop(stack)
       end
 
-      # Stop the TableOwner process
+      # Stop the TableOwner process (wrapped in try/catch to handle race condition
+      # where the process may die between whereis and stop)
       if pid = Process.whereis(Registrar.TableOwner) do
-        GenServer.stop(pid)
+        try do
+          GenServer.stop(pid)
+        catch
+          :exit, {:noproc, _} -> :ok
+        end
       end
 
       # Clean up ETS table
