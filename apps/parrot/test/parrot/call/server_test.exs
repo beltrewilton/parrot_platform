@@ -4,6 +4,39 @@ defmodule Parrot.Call.ServerTest do
   alias Parrot.Call
   alias Parrot.Call.Server
 
+  # Mock gen_statem for testing MediaSession.start_media/1 calls
+  # MediaSession uses :gen_statem.call/3 for start_media, so we need a proper gen_statem mock.
+  # This mock also captures messages like {:play_files, ...} and {:stop_media} for assertions.
+  defmodule MockMediaSession do
+    @behaviour :gen_statem
+
+    def callback_mode, do: :state_functions
+
+    def start_link(test_pid) do
+      :gen_statem.start_link(__MODULE__, test_pid, [])
+    end
+
+    def init(test_pid), do: {:ok, :idle, %{test_pid: test_pid, messages: []}}
+
+    # Handle :start_media call from MediaSession.start_media/1
+    def idle({:call, from}, :start_media, data) do
+      send(data.test_pid, {:start_media_called})
+      {:keep_state, data, [{:reply, from, :ok}]}
+    end
+
+    def idle(:cast, _msg, data), do: {:keep_state, data}
+
+    # Handle messages sent to the mock (e.g., {:play_files, ...}, {:stop_media})
+    def idle(:info, {:get_messages, from}, data) do
+      send(from, {:messages, Enum.reverse(data.messages)})
+      {:keep_state, data}
+    end
+
+    def idle(:info, msg, data) do
+      {:keep_state, %{data | messages: [msg | data.messages]}}
+    end
+  end
+
   # Test handler that tracks callback invocations
   defmodule TestHandler do
     use Parrot.InviteHandler
@@ -500,8 +533,8 @@ defmodule Parrot.Call.ServerTest do
     end
 
     test "executes operations via ActionExecutor when context provided" do
-      # Create a mock media process to receive play commands
-      media_pid = spawn(fn -> receive_loop([]) end)
+      # Create a mock media gen_statem to handle start_media calls
+      {:ok, media_pid} = MockMediaSession.start_link(self())
 
       invite_data = %{
         from: "sip:a@b.com",
@@ -531,7 +564,8 @@ defmodule Parrot.Call.ServerTest do
     end
 
     test "executes operations from callback results" do
-      media_pid = spawn(fn -> receive_loop([]) end)
+      # Create a mock media gen_statem to handle start_media calls
+      {:ok, media_pid} = MockMediaSession.start_link(self())
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
 
@@ -561,7 +595,8 @@ defmodule Parrot.Call.ServerTest do
     end
 
     test "stores context fields in call struct" do
-      media_pid = spawn(fn -> receive_loop([]) end)
+      # Create a mock media gen_statem to handle start_media calls
+      {:ok, media_pid} = MockMediaSession.start_link(self())
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
 
@@ -583,18 +618,6 @@ defmodule Parrot.Call.ServerTest do
       assert call.__uas__ == self()
       assert call.__media_pid__ == media_pid
       assert call.__dialog_id__ == "dialog-123"
-    end
-  end
-
-  # Helper to receive and store messages
-  defp receive_loop(messages) do
-    receive do
-      {:get_messages, from} ->
-        send(from, {:messages, Enum.reverse(messages)})
-        receive_loop(messages)
-
-      msg ->
-        receive_loop([msg | messages])
     end
   end
 
@@ -656,7 +679,8 @@ defmodule Parrot.Call.ServerTest do
 
     test "hangup operation is dispatched correctly after play_complete" do
       # T039: Test hangup after play_complete
-      media_pid = spawn(fn -> receive_loop([]) end)
+      # Create a mock media gen_statem to handle start_media calls
+      {:ok, media_pid} = MockMediaSession.start_link(self())
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
 
@@ -707,7 +731,8 @@ defmodule Parrot.Call.ServerTest do
     end
 
     test "hangup stops media session when context has media_pid" do
-      media_pid = spawn(fn -> receive_loop([]) end)
+      # Create a mock media gen_statem to handle start_media calls
+      {:ok, media_pid} = MockMediaSession.start_link(self())
 
       invite_data = %{from: "sip:a@b.com", to: "sip:c@d.com"}
 
