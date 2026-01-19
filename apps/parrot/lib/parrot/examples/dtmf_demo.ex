@@ -12,6 +12,8 @@ defmodule Parrot.Examples.DTMFDemo do
   - Multi-step IVR flow with state management via `assign/3`
   - `handle_dtmf/2` callback with pattern matching on call state
   - `handle_play_complete/2` callback for pending collect handling
+  - `handle_media_started/1` callback for tracking call start time
+  - `handle_media_stopped/2` callback for calculating call duration
 
   ## Running the Example
 
@@ -47,8 +49,9 @@ defmodule Parrot.Examples.DTMFDemo do
     @moduledoc """
     IVR handler demonstrating DTMF collection patterns.
 
-    Uses assigns to track menu state:
+    Uses assigns to track state:
     - `:step` - Current IVR step (`:menu` or `:pin`)
+    - `:media_started_at` - Monotonic timestamp when media started (for duration tracking)
     """
     use Parrot.InviteHandler
 
@@ -135,6 +138,41 @@ defmodule Parrot.Examples.DTMFDemo do
     @impl true
     def handle_hangup(call) do
       Logger.info("[DTMFDemo] Call ended")
+      {:noreply, call}
+    end
+
+    # -------------------------------------------------------------------------
+    # Media Lifecycle Callbacks
+    # -------------------------------------------------------------------------
+
+    @impl true
+    def handle_media_started(call) do
+      # Record when media started for duration tracking
+      start_time = System.monotonic_time(:millisecond)
+      Logger.info("[DTMFDemo] Media started, recording start time")
+
+      # Store in assigns for later duration calculation
+      {:noreply, %{call | assigns: Map.put(call.assigns, :media_started_at, start_time)}}
+    end
+
+    @impl true
+    def handle_media_stopped(reason, call) do
+      # Calculate and log call duration if we have a start time
+      case Map.get(call.assigns, :media_started_at) do
+        nil ->
+          Logger.info("[DTMFDemo] Media stopped (reason: #{inspect(reason)}), no start time recorded")
+
+        start_time ->
+          end_time = System.monotonic_time(:millisecond)
+          duration_ms = end_time - start_time
+          duration_sec = Float.round(duration_ms / 1000, 2)
+
+          Logger.info(
+            "[DTMFDemo] Media stopped (reason: #{inspect(reason)}), " <>
+              "call duration: #{duration_sec}s (#{duration_ms}ms)"
+          )
+      end
+
       {:noreply, call}
     end
   end
