@@ -61,6 +61,21 @@ defmodule Parrot.InviteHandler do
   This two-phase approach allows the play operation to complete before
   starting DTMF collection, ensuring proper timing of the IVR flow.
 
+  ## Automatic SDP Negotiation
+
+  When an INVITE with SDP is received, Parrot automatically handles SDP negotiation:
+
+  1. Creates a MediaSession for the call
+  2. Calls `MediaSession.process_offer/2` to negotiate codecs
+  3. Includes the SDP answer in the 200 OK response
+
+  If negotiation fails (e.g., no compatible codecs), the `handle_sdp_error/2` callback
+  is invoked. The default implementation rejects with 488 Not Acceptable Here.
+
+  Media lifecycle events are delivered via `handle_media_started/1` and
+  `handle_media_stopped/2` callbacks for observability (e.g., tracking call duration,
+  emitting telemetry).
+
   ## Callbacks
 
   All callbacks receive a `Parrot.Call` struct and should return either:
@@ -86,6 +101,10 @@ defmodule Parrot.InviteHandler do
   - `handle_conference_leave/3` - Called when leaving a conference
   - `handle_fork_media_connected/2` - Called when media fork establishes
   - `handle_hangup/1` - Called when the call ends
+  - `handle_sdp_error/2` - Called when SDP negotiation fails
+  - `handle_media_started/1` - Called when media stream starts
+  - `handle_media_stopped/2` - Called when media stream stops
+  - `handle_tts_error/3` - Called when TTS synthesis fails
   """
 
   alias Parrot.Call
