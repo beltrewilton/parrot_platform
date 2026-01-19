@@ -29,6 +29,8 @@ defmodule Parrot.Bridge.ActionExecutor do
   require Logger
 
   alias Parrot.Call
+  alias ParrotMedia.WsBidirectional
+  alias ParrotMedia.WsBidirectional.Config, as: WsConfig
   alias ParrotSip.Message
   alias ParrotSip.Transaction.Server, as: UAS
 
@@ -197,8 +199,9 @@ defmodule Parrot.Bridge.ActionExecutor do
   Execute the `:hangup` operation.
 
   1. Stop MediaSession if running
-  2. Send BYE to remote party (if dialog exists)
-  3. Update call state to `:terminated`
+  2. Disconnect bidirectional WebSocket if connected
+  3. Send BYE to remote party (if dialog exists)
+  4. Update call state to `:terminated`
   """
   @spec execute_hangup(Call.t(), context()) :: execute_result()
   def execute_hangup(call, context) do
@@ -213,7 +216,16 @@ defmodule Parrot.Bridge.ActionExecutor do
       send(media_pid, {:stop_media})
     end
 
-    # 2. Send BYE if we have a dialog
+    # 2. Disconnect bidirectional WebSocket if connected
+    # This prevents orphaned WS connections when the call terminates
+    if call.__bidirectional_ws_pid__ do
+      Logger.debug("[ActionExecutor] Auto-disconnecting bidirectional WS on hangup: #{inspect(call.__bidirectional_ws_pid__)}")
+      # WsBidirectional.disconnect handles already-terminated processes gracefully
+      # by returning {:error, :not_found}, so we ignore the return value
+      _ = WsBidirectional.disconnect(call.__bidirectional_ws_pid__)
+    end
+
+    # 3. Send BYE if we have a dialog
     case call.__dialog_id__ do
       nil ->
         Logger.warning("[ActionExecutor] No dialog_id, cannot send BYE")
@@ -222,7 +234,7 @@ defmodule Parrot.Bridge.ActionExecutor do
         send_bye(dialog_id, call)
     end
 
-    # 3. Update call state
+    # 4. Update call state
     updated_call = %{call | state: :terminated}
 
     {:ok, updated_call}
@@ -878,39 +890,137 @@ defmodule Parrot.Bridge.ActionExecutor do
   defp status_code_reason(code), do: "Status #{code}"
 
   # ============================================================================
-  # Bidirectional WebSocket Operations (Stubs)
-  # Real implementation will be added in Phase 4 (US2-US4)
+  # Bidirectional WebSocket Operations
   # ============================================================================
 
+  # Execute the :connect_bidirectional_ws operation.
+  #
+  # 1. Verify call is in :answered state
+  # 2. Build WsBidirectional.Config from url and options
+  # 3. Start the connection with WsBidirectional.start_link
+  # 4. Store the PID in call.__bidirectional_ws_pid__
   @spec execute_connect_bidirectional_ws(Call.t(), context(), String.t(), keyword()) ::
-          {:ok, Call.t()}
-  defp execute_connect_bidirectional_ws(call, _context, _url, _opts) do
-    # Phase 4 implementation will establish WsBidirectional connection
-    {:ok, call}
+          {:ok, Call.t()} | {:error, term()}
+  defp execute_connect_bidirectional_ws(%Call{state: state}, _context, _url, _opts)
+       when state != :answered do
+    {:error, :invalid_state}
   end
 
-  @spec execute_disconnect_bidirectional_ws(Call.t(), context()) :: {:ok, Call.t()}
+  defp execute_connect_bidirectional_ws(call, _context, url, opts) do
+    Logger.debug("[ActionExecutor] Executing connect_bidirectional_ws: #{url}")
+
+    # Generate a unique connection_id based on the call_id
+    connection_id = "#{call.call_id}_bidirectional"
+
+    # Build config from url and opts
+    config_opts =
+      opts
+      |> Keyword.put(:connection_id, connection_id)
+      |> Keyword.put(:url, url)
+
+    case WsConfig.new(config_opts) do
+      {:ok, config} ->
+        case WsBidirectional.start_link(config) do
+          {:ok, pid} ->
+            Logger.debug("[ActionExecutor] WsBidirectional started: #{inspect(pid)}")
+            updated_call = %{call | __bidirectional_ws_pid__: pid}
+            {:ok, updated_call}
+
+          {:error, reason} ->
+            Logger.error("[ActionExecutor] Failed to start WsBidirectional: #{inspect(reason)}")
+            {:error, {:ws_connect_failed, reason}}
+        end
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Invalid WsBidirectional config: #{inspect(reason)}")
+        {:error, {:invalid_ws_config, reason}}
+    end
+  end
+
+  # Execute the :disconnect_bidirectional_ws operation.
+  # Gracefully disconnects from the bidirectional WebSocket and clears the PID.
+  @spec execute_disconnect_bidirectional_ws(Call.t(), context()) ::
+          {:ok, Call.t()} | {:error, :no_bidirectional_connection}
+  defp execute_disconnect_bidirectional_ws(%Call{__bidirectional_ws_pid__: nil}, _context) do
+    {:error, :no_bidirectional_connection}
+  end
+
   defp execute_disconnect_bidirectional_ws(call, _context) do
-    # Phase 4 implementation will close WsBidirectional connection
-    {:ok, call}
+    Logger.debug("[ActionExecutor] Executing disconnect_bidirectional_ws")
+
+    case WsBidirectional.disconnect(call.__bidirectional_ws_pid__) do
+      :ok ->
+        updated_call = %{call | __bidirectional_ws_pid__: nil}
+        {:ok, updated_call}
+
+      {:error, :not_found} ->
+        # Process already terminated, just clear the PID
+        updated_call = %{call | __bidirectional_ws_pid__: nil}
+        {:ok, updated_call}
+    end
   end
 
-  @spec execute_mute_bidirectional(Call.t(), context(), :inbound | :outbound) :: {:ok, Call.t()}
-  defp execute_mute_bidirectional(call, _context, _direction) do
-    # Phase 4 implementation will mute WsBidirectional stream direction
-    {:ok, call}
+  # Execute the :mute_bidirectional operation.
+  # Mutes audio in the specified direction (:inbound or :outbound).
+  @spec execute_mute_bidirectional(Call.t(), context(), :inbound | :outbound) ::
+          {:ok, Call.t()} | {:error, :no_bidirectional_connection}
+  defp execute_mute_bidirectional(%Call{__bidirectional_ws_pid__: nil}, _context, _direction) do
+    {:error, :no_bidirectional_connection}
   end
 
-  @spec execute_unmute_bidirectional(Call.t(), context(), :inbound | :outbound) :: {:ok, Call.t()}
-  defp execute_unmute_bidirectional(call, _context, _direction) do
-    # Phase 4 implementation will unmute WsBidirectional stream direction
-    {:ok, call}
+  defp execute_mute_bidirectional(call, _context, direction) do
+    Logger.debug("[ActionExecutor] Executing mute_bidirectional: #{direction}")
+
+    case WsBidirectional.mute(direction, call.__bidirectional_ws_pid__) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :not_found} ->
+        {:error, :no_bidirectional_connection}
+    end
   end
 
-  @spec execute_send_ws_message(Call.t(), context(), String.t() | binary()) :: {:ok, Call.t()}
-  defp execute_send_ws_message(call, _context, _message) do
-    # Phase 4 implementation will send message via WsBidirectional connection
-    {:ok, call}
+  # Execute the :unmute_bidirectional operation.
+  # Unmutes audio in the specified direction (:inbound or :outbound).
+  @spec execute_unmute_bidirectional(Call.t(), context(), :inbound | :outbound) ::
+          {:ok, Call.t()} | {:error, :no_bidirectional_connection}
+  defp execute_unmute_bidirectional(%Call{__bidirectional_ws_pid__: nil}, _context, _direction) do
+    {:error, :no_bidirectional_connection}
+  end
+
+  defp execute_unmute_bidirectional(call, _context, direction) do
+    Logger.debug("[ActionExecutor] Executing unmute_bidirectional: #{direction}")
+
+    case WsBidirectional.unmute(direction, call.__bidirectional_ws_pid__) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :not_found} ->
+        {:error, :no_bidirectional_connection}
+    end
+  end
+
+  # Execute the :send_ws_message operation.
+  # Sends a text/JSON message through the bidirectional WebSocket connection.
+  @spec execute_send_ws_message(Call.t(), context(), String.t() | binary()) ::
+          {:ok, Call.t()} | {:error, :no_bidirectional_connection | :not_connected}
+  defp execute_send_ws_message(%Call{__bidirectional_ws_pid__: nil}, _context, _message) do
+    {:error, :no_bidirectional_connection}
+  end
+
+  defp execute_send_ws_message(call, _context, message) do
+    Logger.debug("[ActionExecutor] Executing send_ws_message: #{inspect(message)}")
+
+    case WsBidirectional.send_message(call.__bidirectional_ws_pid__, message) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :not_found} ->
+        {:error, :no_bidirectional_connection}
+
+      {:error, :not_connected} ->
+        {:error, :not_connected}
+    end
   end
 
   # Build a Contact header with our local address
