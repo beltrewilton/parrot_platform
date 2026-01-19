@@ -199,8 +199,9 @@ defmodule Parrot.Bridge.ActionExecutor do
   Execute the `:hangup` operation.
 
   1. Stop MediaSession if running
-  2. Send BYE to remote party (if dialog exists)
-  3. Update call state to `:terminated`
+  2. Disconnect bidirectional WebSocket if connected
+  3. Send BYE to remote party (if dialog exists)
+  4. Update call state to `:terminated`
   """
   @spec execute_hangup(Call.t(), context()) :: execute_result()
   def execute_hangup(call, context) do
@@ -215,7 +216,16 @@ defmodule Parrot.Bridge.ActionExecutor do
       send(media_pid, {:stop_media})
     end
 
-    # 2. Send BYE if we have a dialog
+    # 2. Disconnect bidirectional WebSocket if connected
+    # This prevents orphaned WS connections when the call terminates
+    if call.__bidirectional_ws_pid__ do
+      Logger.debug("[ActionExecutor] Auto-disconnecting bidirectional WS on hangup: #{inspect(call.__bidirectional_ws_pid__)}")
+      # WsBidirectional.disconnect handles already-terminated processes gracefully
+      # by returning {:error, :not_found}, so we ignore the return value
+      _ = WsBidirectional.disconnect(call.__bidirectional_ws_pid__)
+    end
+
+    # 3. Send BYE if we have a dialog
     case call.__dialog_id__ do
       nil ->
         Logger.warning("[ActionExecutor] No dialog_id, cannot send BYE")
@@ -224,7 +234,7 @@ defmodule Parrot.Bridge.ActionExecutor do
         send_bye(dialog_id, call)
     end
 
-    # 3. Update call state
+    # 4. Update call state
     updated_call = %{call | state: :terminated}
 
     {:ok, updated_call}

@@ -2295,6 +2295,118 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "execute_hangup/2 auto-cleanup of bidirectional WS (T045)" do
+    # T045: Auto-cleanup when call terminates
+    # When execute_hangup is called, any active bidirectional WebSocket
+    # connection should be automatically disconnected to prevent orphaned connections
+
+    test "disconnects active bidirectional WS connection on hangup" do
+      # Create a call with an active bidirectional WS connection
+      call = Call.new(state: :answered, call_id: "hangup-ws-test")
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      # First, establish a bidirectional WS connection
+      connect_ops = [{:connect_bidirectional_ws, "wss://api.example.com", []}]
+      {:ok, connected_call} = ActionExecutor.execute(connect_ops, call, context)
+      ws_pid = connected_call.__bidirectional_ws_pid__
+      assert is_pid(ws_pid)
+      assert Process.alive?(ws_pid)
+
+      # Now execute hangup - it should auto-disconnect the WS
+      {:ok, terminated_call} = ActionExecutor.execute_hangup(connected_call, context)
+
+      # Call should be terminated
+      assert terminated_call.state == :terminated
+
+      # Give time for disconnect to complete
+      Process.sleep(50)
+
+      # WS process should no longer be alive
+      refute Process.alive?(ws_pid)
+    end
+
+    test "hangup works correctly when no bidirectional connection exists" do
+      # Call with no bidirectional WS connection
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      # Hangup should succeed without errors
+      {:ok, updated_call} = ActionExecutor.execute_hangup(call, context)
+      assert updated_call.state == :terminated
+    end
+
+    test "hangup handles already-terminated WS connection gracefully" do
+      # Create a call with an active bidirectional WS connection
+      call = Call.new(state: :answered, call_id: "hangup-dead-ws-test")
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      # Establish a bidirectional WS connection
+      connect_ops = [{:connect_bidirectional_ws, "wss://api.example.com", []}]
+      {:ok, connected_call} = ActionExecutor.execute(connect_ops, call, context)
+      ws_pid = connected_call.__bidirectional_ws_pid__
+
+      # Kill the WS process before hangup
+      ParrotMedia.WsBidirectional.disconnect(ws_pid)
+      Process.sleep(50)
+      refute Process.alive?(ws_pid)
+
+      # Hangup should still succeed without crashing
+      {:ok, terminated_call} = ActionExecutor.execute_hangup(connected_call, context)
+      assert terminated_call.state == :terminated
+    end
+
+    test "hangup disconnects WS and stops media session together" do
+      # Test that both cleanup actions happen
+      call = Call.new(state: :answered, call_id: "hangup-both-test")
+      test_pid = self()
+
+      # Create a mock media process
+      media_pid =
+        spawn(fn ->
+          receive do
+            {:stop_media} -> send(test_pid, :media_stopped)
+          end
+        end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid
+      }
+
+      # Establish a bidirectional WS connection
+      connect_ops = [{:connect_bidirectional_ws, "wss://api.example.com", []}]
+      {:ok, connected_call} = ActionExecutor.execute(connect_ops, call, context)
+      ws_pid = connected_call.__bidirectional_ws_pid__
+
+      # Hangup should cleanup both media and WS
+      {:ok, terminated_call} = ActionExecutor.execute_hangup(connected_call, context)
+      assert terminated_call.state == :terminated
+
+      # Media session should receive stop message
+      assert_receive :media_stopped, 500
+
+      # WS should be disconnected
+      Process.sleep(50)
+      refute Process.alive?(ws_pid)
+    end
+  end
+
   describe "bidirectional operations via Call DSL" do
     test "connect_bidirectional_ws operation is queued correctly" do
       call =
