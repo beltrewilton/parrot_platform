@@ -2105,6 +2105,280 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  # ============================================================================
+  # Bidirectional WebSocket Operations Tests
+  # ============================================================================
+
+  describe "execute_connect_bidirectional_ws/4" do
+    test "returns error when call is not in answered state" do
+      call = Call.new(state: :incoming, call_id: "test-call-id")
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:connect_bidirectional_ws, "wss://api.example.com/stream", []}]
+      assert {:error, :invalid_state} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "returns error for invalid URL scheme" do
+      call = Call.new(state: :answered, call_id: "test-call-id")
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:connect_bidirectional_ws, "http://invalid.example.com", []}]
+      result = ActionExecutor.execute(operations, call, context)
+      assert {:error, {:invalid_ws_config, :invalid_url_scheme}} = result
+    end
+
+    test "successfully creates connection when call_id is nil (uses '_bidirectional' suffix)" do
+      call = Call.new(state: :answered, call_id: nil)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:connect_bidirectional_ws, "wss://api.example.com", []}]
+      result = ActionExecutor.execute(operations, call, context)
+      # connection_id will be "_bidirectional" which is valid
+      assert {:ok, updated_call} = result
+      assert is_pid(updated_call.__bidirectional_ws_pid__)
+
+      # Cleanup: disconnect the connection
+      if updated_call.__bidirectional_ws_pid__ do
+        ParrotMedia.WsBidirectional.disconnect(updated_call.__bidirectional_ws_pid__)
+      end
+    end
+  end
+
+  describe "execute_disconnect_bidirectional_ws/2" do
+    test "returns error when no bidirectional connection exists" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:disconnect_bidirectional_ws, []}]
+      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "clears __bidirectional_ws_pid__ after disconnect with real connection" do
+      # Create a real WsBidirectional connection first
+      call = Call.new(state: :answered, call_id: "disconnect-test-call")
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      # First, establish a connection
+      connect_ops = [{:connect_bidirectional_ws, "wss://api.example.com", []}]
+      {:ok, connected_call} = ActionExecutor.execute(connect_ops, call, context)
+      assert is_pid(connected_call.__bidirectional_ws_pid__)
+
+      # Now disconnect
+      disconnect_ops = [{:disconnect_bidirectional_ws, []}]
+      {:ok, disconnected_call} = ActionExecutor.execute(disconnect_ops, connected_call, context)
+
+      # PID should be cleared
+      assert disconnected_call.__bidirectional_ws_pid__ == nil
+    end
+
+    test "handles already-terminated process gracefully" do
+      # Start a real WsBidirectional, then stop it before calling disconnect
+      call = Call.new(state: :answered, call_id: "terminated-test-call")
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      # Establish connection
+      connect_ops = [{:connect_bidirectional_ws, "wss://api.example.com", []}]
+      {:ok, connected_call} = ActionExecutor.execute(connect_ops, call, context)
+      ws_pid = connected_call.__bidirectional_ws_pid__
+
+      # Disconnect the process using the proper API
+      ParrotMedia.WsBidirectional.disconnect(ws_pid)
+      Process.sleep(50)
+
+      # Now calling disconnect again should handle the dead process gracefully
+      disconnect_ops = [{:disconnect_bidirectional_ws, []}]
+      {:ok, disconnected_call} = ActionExecutor.execute(disconnect_ops, connected_call, context)
+
+      # PID should be cleared
+      assert disconnected_call.__bidirectional_ws_pid__ == nil
+    end
+  end
+
+  describe "execute_mute_bidirectional/3" do
+    test "returns error when no bidirectional connection exists" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:mute_bidirectional, :outbound}]
+      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "returns error when no bidirectional connection exists for inbound" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:mute_bidirectional, :inbound}]
+      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+    end
+  end
+
+  describe "execute_unmute_bidirectional/3" do
+    test "returns error when no bidirectional connection exists" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:unmute_bidirectional, :outbound}]
+      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "returns error when no bidirectional connection exists for inbound" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:unmute_bidirectional, :inbound}]
+      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+    end
+  end
+
+  describe "execute_send_ws_message/3" do
+    test "returns error when no bidirectional connection exists" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      operations = [{:send_ws_message, ~s({"type": "test"})}]
+      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+    end
+  end
+
+  describe "bidirectional operations via Call DSL" do
+    test "connect_bidirectional_ws operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.connect_bidirectional_ws("wss://api.example.com", headers: [{"Authorization", "Bearer token"}])
+
+      operations = Call.get_operations(call)
+      assert [{:connect_bidirectional_ws, "wss://api.example.com", opts}] = operations
+      assert opts[:headers] == [{"Authorization", "Bearer token"}]
+    end
+
+    test "disconnect_bidirectional_ws operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.disconnect_bidirectional_ws()
+
+      operations = Call.get_operations(call)
+      assert [{:disconnect_bidirectional_ws, []}] = operations
+    end
+
+    test "mute_outbound operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.mute_outbound()
+
+      operations = Call.get_operations(call)
+      assert [{:mute_bidirectional, :outbound}] = operations
+    end
+
+    test "unmute_outbound operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.unmute_outbound()
+
+      operations = Call.get_operations(call)
+      assert [{:unmute_bidirectional, :outbound}] = operations
+    end
+
+    test "mute_inbound operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.mute_inbound()
+
+      operations = Call.get_operations(call)
+      assert [{:mute_bidirectional, :inbound}] = operations
+    end
+
+    test "unmute_inbound operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.unmute_inbound()
+
+      operations = Call.get_operations(call)
+      assert [{:unmute_bidirectional, :inbound}] = operations
+    end
+
+    test "send_ws_message operation is queued correctly" do
+      call =
+        Call.new(state: :answered)
+        |> Call.send_ws_message(~s({"type": "session.update"}))
+
+      operations = Call.get_operations(call)
+      assert [{:send_ws_message, ~s({"type": "session.update"})}] = operations
+    end
+
+    test "multiple bidirectional operations can be chained" do
+      call =
+        Call.new(state: :answered)
+        |> Call.connect_bidirectional_ws("wss://api.example.com", [])
+        |> Call.mute_outbound()
+        |> Call.send_ws_message(~s({"type": "test"}))
+        |> Call.unmute_outbound()
+        |> Call.disconnect_bidirectional_ws()
+
+      operations = Call.get_operations(call)
+      assert length(operations) == 5
+      assert {:connect_bidirectional_ws, "wss://api.example.com", []} = Enum.at(operations, 0)
+      assert {:mute_bidirectional, :outbound} = Enum.at(operations, 1)
+      assert {:send_ws_message, ~s({"type": "test"})} = Enum.at(operations, 2)
+      assert {:unmute_bidirectional, :outbound} = Enum.at(operations, 3)
+      assert {:disconnect_bidirectional_ws, []} = Enum.at(operations, 4)
+    end
+  end
+
   # Helper functions
 
   # Starts a mock synthesizer GenServer that delegates to the provided function
