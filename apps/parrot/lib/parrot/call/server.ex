@@ -256,6 +256,20 @@ defmodule Parrot.Call.Server do
     {:noreply, state}
   end
 
+  # Handle media started event (FR-010, US4)
+  @impl true
+  def handle_info({:media_event, _session_id, :media_started}, state) do
+    state = dispatch_event(:media_started, state)
+    {:noreply, state}
+  end
+
+  # Handle media stopped event (FR-011, US4)
+  @impl true
+  def handle_info({:media_event, _session_id, {:media_stopped, reason}}, state) do
+    state = dispatch_event({:media_stopped, reason}, state)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(msg, state) do
     Logger.debug("Call.Server received unhandled message: #{inspect(msg)}")
@@ -308,6 +322,16 @@ defmodule Parrot.Call.Server do
     # Ensure state is terminated after hangup
     call = %{state.call | state: :terminated}
     %{state | call: call}
+  end
+
+  # Handle media started event (FR-010, US4)
+  defp dispatch_event(:media_started, state) do
+    invoke_callback(:handle_media_started, [], state)
+  end
+
+  # Handle media stopped event (FR-011, US4)
+  defp dispatch_event({:media_stopped, reason}, state) do
+    invoke_callback(:handle_media_stopped, [reason], state)
   end
 
   defp dispatch_event(unknown, state) do

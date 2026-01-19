@@ -59,9 +59,21 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_hangup, 1} in callbacks
     end
 
-    test "defines all 13 expected callbacks" do
+    test "defines all 15 expected callbacks" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 13
+      assert length(callbacks) == 15
+    end
+
+    # T038: Unit test for handle_media_started/1 callback definition
+    test "defines handle_media_started/1 callback (T038, FR-010, US4)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_media_started, 1} in callbacks
+    end
+
+    # T039: Unit test for handle_media_stopped/2 callback definition
+    test "defines handle_media_stopped/2 callback (T039, FR-011, US4)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_media_stopped, 2} in callbacks
     end
 
     test "defines handle_sdp_error/2 callback (T029)" do
@@ -152,6 +164,21 @@ defmodule Parrot.InviteHandlerTest do
       result = MinimalHandler.handle_tts_error("Hello world", :synthesis_failed, call)
       # Should return {:noreply, call} (consistent with other callbacks)
       assert result == {:noreply, call}
+    end
+
+    # T038/T043: Unit test for default handle_media_started/1 implementation
+    test "provides default handle_media_started/1 implementation (T038, T043, FR-010, US4)" do
+      call = Call.new()
+      # Default implementation should return {:noreply, call}
+      assert {:noreply, ^call} = MinimalHandler.handle_media_started(call)
+    end
+
+    # T039/T043: Unit test for default handle_media_stopped/2 implementation
+    test "provides default handle_media_stopped/2 implementation (T039, T043, FR-011, US4)" do
+      call = Call.new()
+      # Default implementation should return {:noreply, call}
+      # Reason could be :normal, :terminated, etc.
+      assert {:noreply, ^call} = MinimalHandler.handle_media_stopped(:normal, call)
     end
 
     test "imports Parrot.Call functions for pipeline operations" do
@@ -650,6 +677,156 @@ defmodule Parrot.InviteHandlerTest do
       {:noreply, result} = PromptHandler.handle_prompt_complete("enter-pin.wav", "1234", call)
 
       assert result.assigns.pin == "1234"
+    end
+  end
+
+  # ===========================================================================
+  # Media Event Callbacks (US4: Media Event Observability - T038, T039, T040)
+  # ===========================================================================
+
+  describe "media event callbacks (US4, FR-010, FR-011)" do
+    defmodule MediaEventTrackingHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite
+        |> answer()
+      end
+
+      # Override handle_media_started to track the event
+      def handle_media_started(call) do
+        # Track media start time in assigns for observability
+        start_time = System.monotonic_time(:millisecond)
+        {:noreply, %{call | assigns: Map.put(call.assigns, :media_started_at, start_time)}}
+      end
+
+      # Override handle_media_stopped to track the event and reason
+      def handle_media_stopped(reason, call) do
+        stop_time = System.monotonic_time(:millisecond)
+        duration = calculate_duration(call.assigns[:media_started_at], stop_time)
+
+        new_assigns =
+          call.assigns
+          |> Map.put(:media_stopped_at, stop_time)
+          |> Map.put(:media_stop_reason, reason)
+          |> Map.put(:media_duration, duration)
+
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+
+      defp calculate_duration(nil, _stop), do: nil
+      defp calculate_duration(start, stop), do: stop - start
+    end
+
+    defmodule MediaEventCleanupHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Handler that performs cleanup when media stops
+      def handle_media_stopped(:terminated, call) do
+        # Perform cleanup on terminated
+        {:noreply, %{call | assigns: Map.put(call.assigns, :cleanup_performed, true)}}
+      end
+
+      def handle_media_stopped(_reason, call) do
+        {:noreply, call}
+      end
+    end
+
+    test "handle_media_started/1 receives call struct and can track media start" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      {:noreply, result} = MediaEventTrackingHandler.handle_media_started(call)
+
+      # Should have media_started_at timestamp
+      assert result.assigns[:media_started_at] != nil
+      # Original assigns preserved
+      assert result.assigns[:session_id] == "test-123"
+    end
+
+    test "handle_media_stopped/2 receives reason and call struct" do
+      call = Call.new(assigns: %{media_started_at: System.monotonic_time(:millisecond) - 5000})
+      {:noreply, result} = MediaEventTrackingHandler.handle_media_stopped(:normal, call)
+
+      # Should track stop time and reason
+      assert result.assigns[:media_stopped_at] != nil
+      assert result.assigns[:media_stop_reason] == :normal
+    end
+
+    test "handle_media_stopped/2 can calculate call duration" do
+      start_time = System.monotonic_time(:millisecond) - 5000
+      call = Call.new(assigns: %{media_started_at: start_time})
+      {:noreply, result} = MediaEventTrackingHandler.handle_media_stopped(:normal, call)
+
+      # Duration should be approximately 5000ms (with some tolerance for test execution)
+      assert result.assigns[:media_duration] != nil
+      assert result.assigns[:media_duration] >= 4900
+    end
+
+    test "handle_media_stopped/2 can pattern match on reason for different behaviors" do
+      call = Call.new()
+
+      {:noreply, result1} = MediaEventCleanupHandler.handle_media_stopped(:terminated, call)
+      assert result1.assigns[:cleanup_performed] == true
+
+      {:noreply, result2} = MediaEventCleanupHandler.handle_media_stopped(:normal, call)
+      assert result2.assigns[:cleanup_performed] == nil
+    end
+
+    test "handle_media_started/1 is defoverridable" do
+      call = Call.new()
+
+      # MinimalHandler uses default implementation (from "use Parrot.InviteHandler" describe block)
+      minimal_result =
+        Parrot.InviteHandlerTest.MinimalHandler.handle_media_started(call)
+
+      assert minimal_result == {:noreply, call}
+
+      # MediaEventTrackingHandler overrides it
+      {:noreply, custom_result} = MediaEventTrackingHandler.handle_media_started(call)
+      assert custom_result.assigns[:media_started_at] != nil
+    end
+
+    test "handle_media_stopped/2 is defoverridable" do
+      call = Call.new()
+
+      # MinimalHandler uses default implementation (from "use Parrot.InviteHandler" describe block)
+      minimal_result =
+        Parrot.InviteHandlerTest.MinimalHandler.handle_media_stopped(:normal, call)
+
+      assert minimal_result == {:noreply, call}
+
+      # MediaEventTrackingHandler overrides it
+      {:noreply, custom_result} = MediaEventTrackingHandler.handle_media_stopped(:normal, call)
+      assert custom_result.assigns[:media_stop_reason] == :normal
+    end
+
+    test "handlers can track call duration using both callbacks together" do
+      call = Call.new()
+
+      # Simulate media started
+      {:noreply, call_with_start} = MediaEventTrackingHandler.handle_media_started(call)
+      assert call_with_start.assigns[:media_started_at] != nil
+
+      # Simulate some time passing (mock by adjusting start time)
+      call_after_time = %{
+        call_with_start
+        | assigns:
+            Map.put(
+              call_with_start.assigns,
+              :media_started_at,
+              System.monotonic_time(:millisecond) - 10_000
+            )
+      }
+
+      # Simulate media stopped
+      {:noreply, call_with_stop} =
+        MediaEventTrackingHandler.handle_media_stopped(:normal, call_after_time)
+
+      assert call_with_stop.assigns[:media_duration] >= 9900
+      assert call_with_stop.assigns[:media_stop_reason] == :normal
     end
   end
 
