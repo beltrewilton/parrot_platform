@@ -366,29 +366,26 @@ defmodule ParrotMedia.WsAudioForkerIntegrationTest do
   end
 
   describe "error handling" do
-    test "forker handles connection failure gracefully" do
+    test "forker handles initial connection failure gracefully" do
+      # Trap exits so we don't crash when the forker exits
+      Process.flag(:trap_exit, true)
+
       # Try to connect to a port where nothing is listening
       {:ok, config} =
         Config.new(
           fork_id: "connection_failure_test",
           url: "ws://localhost:59999/ws",
-          max_retries: 0
+          max_retries: 5
         )
 
-      # Should start but fail to connect
-      result = WsAudioForker.start_link(config)
+      # With P2.3 behavior: initial connection failure terminates immediately
+      # without retrying (distinguish initial failure from mid-stream failure)
+      {:ok, pid} = WsAudioForker.start_link(config)
+      ref = Process.monitor(pid)
 
-      case result do
-        {:ok, forker} ->
-          # If it starts, it should report disconnected state
-          Process.sleep(200)
-          refute WsAudioForker.connected?(forker)
-          WsAudioForker.stop(forker)
-
-        {:error, _reason} ->
-          # Or it may fail to start entirely, which is also acceptable
-          :ok
-      end
+      # Should terminate quickly with initial_connection_failed reason
+      assert_receive {:DOWN, ^ref, :process, ^pid, reason}, 1000
+      assert match?({:shutdown, {:initial_connection_failed, _}}, reason)
     end
 
     test "forker buffers data when reconnecting" do

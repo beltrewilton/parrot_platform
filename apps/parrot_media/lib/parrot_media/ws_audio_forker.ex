@@ -370,6 +370,20 @@ defmodule ParrotMedia.WsAudioForker do
     {:stop, {:shutdown, {:connection_failed, reason}}, state}
   end
 
+  def handle_info({:connection_event, {:initial_connection_failed, reason}}, state) do
+    Logger.error(
+      "WsAudioForker #{state.config.fork_id}: Initial connection failed, not retrying: #{inspect(reason)}"
+    )
+
+    # Notify callback if configured - use {:failed, {:initial_connection_failed, reason}} for consistency
+    notify_callback(
+      state.config,
+      {:fork_event, state.config.fork_id, {:failed, {:initial_connection_failed, reason}}}
+    )
+
+    {:stop, {:shutdown, {:initial_connection_failed, reason}}, state}
+  end
+
   def handle_info({:connection_event, {:max_retries_exceeded, attempt}}, state) do
     Logger.error(
       "WsAudioForker #{state.config.fork_id}: Max retries exceeded after #{attempt} attempts"
