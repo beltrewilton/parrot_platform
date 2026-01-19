@@ -38,8 +38,8 @@ defmodule ParrotMedia.WsAudioForker.Connection do
   ## Options
 
   - `:uri` - WebSocket URL (required)
-  - `:state` - Initial state containing `:parent` pid and `:fork_id` (required)
-  - `:opts` - Fresh options including `:headers` (optional)
+  - `:state` - Initial state containing `:parent` pid, `:fork_id`, `:max_retries` (required)
+  - `:opts` - Fresh options including `:headers`, `:backoff_initial`, `:backoff_max` (optional)
 
   ## Returns
 
@@ -63,10 +63,17 @@ defmodule ParrotMedia.WsAudioForker.Connection do
   def handle_connect(_status, _headers, state) do
     Logger.debug("WsAudioForker.Connection #{state.fork_id}: WebSocket connected")
 
+    # Reset reconnect_attempt counter on successful connection
+    # Mark that we have successfully connected at least once
+    new_state =
+      state
+      |> Map.put(:reconnect_attempt, 0)
+      |> Map.put(:has_connected, true)
+
     # Notify parent that connection is established
     send(state.parent, {:connection_event, :connected})
 
-    {:ok, state}
+    {:ok, new_state}
   end
 
   @doc false
@@ -106,15 +113,46 @@ defmodule ParrotMedia.WsAudioForker.Connection do
       "WsAudioForker.Connection #{state.fork_id}: Disconnected, code: #{inspect(code)}, reason: #{inspect(reason)}"
     )
 
+    # Check if we ever successfully connected
+    has_connected = Map.get(state, :has_connected, false)
+
+    if has_connected do
+      # Mid-stream failure: we were connected, then lost connection
+      # Use normal retry logic with exponential backoff
+      handle_midstream_failure(state, {code, reason})
+    else
+      # Initial connection failure: never successfully connected
+      # Fail immediately without retrying
+      Logger.warning(
+        "WsAudioForker.Connection #{state.fork_id}: Initial connection failed, not retrying"
+      )
+
+      send(state.parent, {:connection_event, {:initial_connection_failed, {code, reason}}})
+      {:close, {:initial_connection_failed, {code, reason}}}
+    end
+  end
+
+  # Handle mid-stream failures with retry logic
+  defp handle_midstream_failure(state, disconnect_reason) do
     # Notify parent of disconnection
-    send(state.parent, {:connection_event, {:disconnected, {code, reason}}})
+    send(state.parent, {:connection_event, {:disconnected, disconnect_reason}})
 
-    # Tell Fresh to attempt reconnection
-    # The reconnect_count is tracked in WsAudioForker, but Fresh handles the actual retry logic
+    # Update reconnect attempt counter
     new_state = Map.update(state, :reconnect_attempt, 1, &(&1 + 1))
-    send(state.parent, {:connection_event, {:reconnecting, new_state.reconnect_attempt}})
+    max_retries = Map.get(state, :max_retries, 5)
 
-    {:reconnect, new_state}
+    # Check if max retries exceeded (0 means unlimited)
+    if max_retries > 0 and new_state.reconnect_attempt > max_retries do
+      Logger.warning(
+        "WsAudioForker.Connection #{state.fork_id}: Max retries (#{max_retries}) exceeded, stopping"
+      )
+
+      send(state.parent, {:connection_event, {:max_retries_exceeded, new_state.reconnect_attempt}})
+      {:close, {:max_retries_exceeded, new_state.reconnect_attempt}}
+    else
+      send(state.parent, {:connection_event, {:reconnecting, new_state.reconnect_attempt}})
+      {:reconnect, new_state}
+    end
   end
 
   @doc false
@@ -132,9 +170,23 @@ defmodule ParrotMedia.WsAudioForker.Connection do
         {:ignore, state}
 
       _other ->
-        # For other errors, attempt reconnection
-        send(state.parent, {:connection_event, {:disconnected, error}})
-        :reconnect
+        # Check if we ever successfully connected
+        has_connected = Map.get(state, :has_connected, false)
+
+        if has_connected do
+          # Mid-stream failure: we were connected, then got an error
+          # Use normal retry logic with exponential backoff
+          handle_midstream_failure(state, error)
+        else
+          # Initial connection failure: never successfully connected
+          # Fail immediately without retrying
+          Logger.warning(
+            "WsAudioForker.Connection #{state.fork_id}: Initial connection failed (error), not retrying"
+          )
+
+          send(state.parent, {:connection_event, {:initial_connection_failed, error}})
+          {:close, {:initial_connection_failed, error}}
+        end
     end
   end
 
