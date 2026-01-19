@@ -26,7 +26,9 @@ defmodule ParrotMedia.WsAudioForker.Config do
   * `:audio_format` - Audio encoding format, :pcm_16le or :opus (default: :pcm_16le)
   * `:buffer_size` - Max frames to buffer during reconnection, 1-500 (default: 100)
   * `:connect_timeout_ms` - WebSocket connection timeout in ms (default: 5000)
-  * `:max_retries` - Maximum reconnection attempts before giving up (default: 5)
+  * `:max_retries` - Maximum reconnection attempts before giving up, 0 for unlimited (default: 5)
+  * `:backoff_initial_ms` - Initial backoff delay in ms for reconnection (default: 1000)
+  * `:backoff_max_ms` - Maximum backoff delay in ms for reconnection (default: 30000)
 
   ## Audio Formats
 
@@ -57,7 +59,9 @@ defmodule ParrotMedia.WsAudioForker.Config do
           audio_format: :pcm_16le | :opus,
           buffer_size: pos_integer(),
           connect_timeout_ms: pos_integer(),
-          max_retries: non_neg_integer()
+          max_retries: non_neg_integer(),
+          backoff_initial_ms: pos_integer(),
+          backoff_max_ms: pos_integer()
         }
 
   @enforce_keys [:fork_id, :url]
@@ -70,7 +74,9 @@ defmodule ParrotMedia.WsAudioForker.Config do
     audio_format: :pcm_16le,
     buffer_size: 100,
     connect_timeout_ms: 5000,
-    max_retries: 5
+    max_retries: 5,
+    backoff_initial_ms: 1000,
+    backoff_max_ms: 30_000
   ]
 
   @max_buffer_size 500
@@ -92,7 +98,9 @@ defmodule ParrotMedia.WsAudioForker.Config do
   * `:audio_format` - :pcm_16le or :opus (default: :pcm_16le)
   * `:buffer_size` - Buffer size 1-500 (default: 100)
   * `:connect_timeout_ms` - Connection timeout in ms (default: 5000)
-  * `:max_retries` - Max reconnection attempts (default: 5)
+  * `:max_retries` - Max reconnection attempts, 0 for unlimited (default: 5)
+  * `:backoff_initial_ms` - Initial backoff delay in ms (default: 1000)
+  * `:backoff_max_ms` - Maximum backoff delay in ms (default: 30000)
 
   ## Returns
 
@@ -112,12 +120,16 @@ defmodule ParrotMedia.WsAudioForker.Config do
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, atom()}
   def new(opts) when is_list(opts) do
+    backoff_initial = Keyword.get(opts, :backoff_initial_ms, 1000)
+    backoff_max = Keyword.get(opts, :backoff_max_ms, 30_000)
+
     with {:ok, fork_id} <- validate_required(opts, :fork_id),
          {:ok, url} <- validate_required(opts, :url),
          :ok <- validate_url_scheme(url),
          {:ok, audio_format} <- validate_audio_format(Keyword.get(opts, :audio_format, :pcm_16le)),
          {:ok, buffer_size} <- validate_buffer_size(Keyword.get(opts, :buffer_size, 100)),
-         {:ok, headers} <- validate_headers(Keyword.get(opts, :headers, [])) do
+         {:ok, headers} <- validate_headers(Keyword.get(opts, :headers, [])),
+         :ok <- validate_backoff(backoff_initial, backoff_max) do
       config = %__MODULE__{
         fork_id: fork_id,
         url: url,
@@ -127,7 +139,9 @@ defmodule ParrotMedia.WsAudioForker.Config do
         audio_format: audio_format,
         buffer_size: buffer_size,
         connect_timeout_ms: Keyword.get(opts, :connect_timeout_ms, 5000),
-        max_retries: Keyword.get(opts, :max_retries, 5)
+        max_retries: Keyword.get(opts, :max_retries, 5),
+        backoff_initial_ms: backoff_initial,
+        backoff_max_ms: backoff_max
       }
 
       {:ok, config}
@@ -175,7 +189,8 @@ defmodule ParrotMedia.WsAudioForker.Config do
     with :ok <- validate_url_scheme(url),
          {:ok, _} <- validate_audio_format(config.audio_format),
          {:ok, _} <- validate_buffer_size(config.buffer_size),
-         {:ok, _} <- validate_headers(config.headers) do
+         {:ok, _} <- validate_headers(config.headers),
+         :ok <- validate_backoff(config.backoff_initial_ms, config.backoff_max_ms) do
       :ok
     end
   end
@@ -230,4 +245,18 @@ defmodule ParrotMedia.WsAudioForker.Config do
 
   defp valid_header?({name, value}) when is_binary(name) and is_binary(value), do: true
   defp valid_header?(_), do: false
+
+  defp validate_backoff(initial, _max) when not is_integer(initial) or initial < 1 do
+    {:error, :invalid_backoff_initial}
+  end
+
+  defp validate_backoff(_initial, max) when not is_integer(max) or max < 1 do
+    {:error, :invalid_backoff_max}
+  end
+
+  defp validate_backoff(initial, max) when initial > max do
+    {:error, :backoff_initial_exceeds_max}
+  end
+
+  defp validate_backoff(_initial, _max), do: :ok
 end

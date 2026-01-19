@@ -326,8 +326,12 @@ defmodule ParrotMedia.WsAudioForker do
   def handle_info({:connection_event, :connected}, state) do
     Logger.info("WsAudioForker #{state.config.fork_id}: Connected to WebSocket")
 
-    # Flush buffered frames
-    new_state = flush_buffer(%{state | connection_state: :connected})
+    # Flush buffered frames and reset reconnect count on successful connection
+    new_state =
+      state
+      |> Map.put(:connection_state, :connected)
+      |> Map.put(:reconnect_count, 0)
+      |> flush_buffer()
 
     # Notify callback if configured
     notify_callback(state.config, {:fork_event, state.config.fork_id, :connected})
@@ -364,6 +368,20 @@ defmodule ParrotMedia.WsAudioForker do
     notify_callback(state.config, {:fork_event, state.config.fork_id, {:failed, reason}})
 
     {:stop, {:shutdown, {:connection_failed, reason}}, state}
+  end
+
+  def handle_info({:connection_event, {:max_retries_exceeded, attempt}}, state) do
+    Logger.error(
+      "WsAudioForker #{state.config.fork_id}: Max retries exceeded after #{attempt} attempts"
+    )
+
+    # Notify callback if configured
+    notify_callback(
+      state.config,
+      {:fork_event, state.config.fork_id, {:failed, {:max_retries_exceeded, attempt}}}
+    )
+
+    {:stop, {:shutdown, {:max_retries_exceeded, attempt}}, state}
   end
 
   def handle_info({:connection_event, {:ws_message, data}}, state) do
@@ -438,9 +456,16 @@ defmodule ParrotMedia.WsAudioForker do
 
     Connection.start_link(
       uri: config.url,
-      state: %{parent: parent, fork_id: config.fork_id},
+      state: %{
+        parent: parent,
+        fork_id: config.fork_id,
+        max_retries: config.max_retries,
+        reconnect_attempt: 0
+      },
       opts: [
-        headers: config.headers
+        headers: config.headers,
+        backoff_initial: config.backoff_initial_ms,
+        backoff_max: config.backoff_max_ms
       ]
     )
   end
