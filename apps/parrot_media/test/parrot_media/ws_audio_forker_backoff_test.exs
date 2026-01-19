@@ -307,6 +307,9 @@ defmodule ParrotMedia.WsAudioForkerBackoffTest do
     end
 
     test "callback receives reconnecting events with attempt count", %{fork_id: fork_id} do
+      # Trap exits so we don't crash when the forker terminates after max_retries
+      Process.flag(:trap_exit, true)
+
       {:ok, config} =
         Config.new(
           fork_id: fork_id,
