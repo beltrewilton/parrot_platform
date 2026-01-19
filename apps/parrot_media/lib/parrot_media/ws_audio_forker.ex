@@ -212,6 +212,8 @@ defmodule ParrotMedia.WsAudioForker do
   - `:connection_state` - `:connected`, `:disconnected`, `:connecting`, `:reconnecting`
   - `:buffer_size` - Current frames in buffer
   - `:buffer_capacity` - Max buffer size
+  - `:buffer_fill_percent` - Percentage of buffer capacity used (0.0 to 100.0)
+  - `:oldest_packet_age_ms` - Age of oldest buffered packet in milliseconds (nil if buffer empty)
   - `:frames_sent` - Total frames sent to WebSocket
   - `:frames_dropped` - Frames dropped due to backpressure
   - `:reconnect_count` - Number of reconnections
@@ -306,10 +308,23 @@ defmodule ParrotMedia.WsAudioForker do
 
   @impl true
   def handle_call(:status, _from, state) do
+    buffer_capacity = state.config.buffer_size
+
+    buffer_fill_percent =
+      if buffer_capacity > 0 do
+        state.buffer_size / buffer_capacity * 100.0
+      else
+        0.0
+      end
+
+    oldest_packet_age_ms = calculate_oldest_packet_age(state.buffer)
+
     status = %{
       connection_state: state.connection_state,
       buffer_size: state.buffer_size,
-      buffer_capacity: state.config.buffer_size,
+      buffer_capacity: buffer_capacity,
+      buffer_fill_percent: buffer_fill_percent,
+      oldest_packet_age_ms: oldest_packet_age_ms,
       frames_sent: state.frames_sent,
       frames_dropped: state.frames_dropped,
       reconnect_count: state.reconnect_count
@@ -489,24 +504,27 @@ defmodule ParrotMedia.WsAudioForker do
   end
 
   defp buffer_frame(state, audio_data) do
+    timestamp = System.monotonic_time(:millisecond)
+    entry = {timestamp, audio_data}
+
     if state.buffer_size >= state.config.buffer_size do
       # Buffer full - drop oldest frame
       {{:value, _dropped}, new_buffer} = :queue.out(state.buffer)
-      new_buffer = :queue.in(audio_data, new_buffer)
+      new_buffer = :queue.in(entry, new_buffer)
 
       %{state | buffer: new_buffer, frames_dropped: state.frames_dropped + 1}
     else
       # Add to buffer
-      new_buffer = :queue.in(audio_data, state.buffer)
+      new_buffer = :queue.in(entry, state.buffer)
       %{state | buffer: new_buffer, buffer_size: state.buffer_size + 1}
     end
   end
 
   defp flush_buffer(state) do
-    # Send all buffered frames
+    # Send all buffered frames (extract audio_data from {timestamp, audio_data} tuples)
     buffer_list = :queue.to_list(state.buffer)
 
-    Enum.each(buffer_list, fn audio_data ->
+    Enum.each(buffer_list, fn {_timestamp, audio_data} ->
       send_to_websocket(state.conn_pid, audio_data)
     end)
 
@@ -518,6 +536,17 @@ defmodule ParrotMedia.WsAudioForker do
         buffer_size: 0,
         frames_sent: state.frames_sent + frames_flushed
     }
+  end
+
+  defp calculate_oldest_packet_age(buffer) do
+    case :queue.peek(buffer) do
+      {:value, {timestamp, _audio_data}} ->
+        current_time = System.monotonic_time(:millisecond)
+        current_time - timestamp
+
+      :empty ->
+        nil
+    end
   end
 
   defp notify_callback(%Config{callback_module: nil}, _event), do: :ok
