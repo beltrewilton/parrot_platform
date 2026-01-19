@@ -74,6 +74,15 @@ defmodule ParrotMedia.WsBidirectionalTest do
   # Test helper functions for proper synchronization
   # ============================================================================
 
+  # Helper to get the conn_pid from connector state for testing.
+  # Uses :sys.get_state which is the standard OTP way to inspect process state.
+  # This is needed because the Connector validates that connection events come
+  # from the actual connection process.
+  defp get_conn_pid(connector_pid) do
+    state = :sys.get_state(connector_pid)
+    state.conn_pid
+  end
+
   # Waits for the connection to be established, polling until connected or timeout.
   # Returns :ok on success, {:error, :timeout} if timeout expires.
   defp wait_for_connected(pid, timeout \\ 1000) do
@@ -631,8 +640,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
 
       # Simulate receiving a text message from WebSocket
       # We need to send the message through the connector
+      # The message must include the conn_pid as the Connector validates message source
+      conn_pid = get_conn_pid(pid)
       json_message = ~s({"type": "transcript", "text": "Hello"})
-      send(pid, {:connection_event, {:ws_message, json_message}})
+      send(pid, {:connection_event, conn_pid, {:ws_message, json_message}})
 
       # Should receive callback with the message
       assert_receive {:received_ws_message, ^json_message}, 1000
@@ -665,8 +676,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
       Connector.register_source(pid, self())
 
       # Simulate receiving audio from WebSocket
+      # The message must include the conn_pid as the Connector validates message source
+      conn_pid = get_conn_pid(pid)
       audio_data = <<0xDE, 0xAD, 0xBE, 0xEF>>
-      send(pid, {:connection_event, {:ws_audio, audio_data}})
+      send(pid, {:connection_event, conn_pid, {:ws_audio, audio_data}})
 
       # Should receive the audio at registered source
       assert_receive {:ws_audio, ^audio_data}, 1000
@@ -696,9 +709,11 @@ defmodule ParrotMedia.WsBidirectionalTest do
       assert status_before.frames_received == 0
 
       # Simulate receiving audio frames
-      send(pid, {:connection_event, {:ws_audio, <<0x01>>}})
-      send(pid, {:connection_event, {:ws_audio, <<0x02>>}})
-      send(pid, {:connection_event, {:ws_audio, <<0x03>>}})
+      # The message must include the conn_pid as the Connector validates message source
+      conn_pid = get_conn_pid(pid)
+      send(pid, {:connection_event, conn_pid, {:ws_audio, <<0x01>>}})
+      send(pid, {:connection_event, conn_pid, {:ws_audio, <<0x02>>}})
+      send(pid, {:connection_event, conn_pid, {:ws_audio, <<0x03>>}})
 
       # Wait for frames to be processed by receiving them
       assert_receive {:ws_audio, _}, 1000
@@ -849,8 +864,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
       assert status.inbound_muted == true
 
       # Simulate receiving audio - should NOT be forwarded
+      # The message must include the conn_pid as the Connector validates message source
+      conn_pid = get_conn_pid(pid)
       audio_data = <<0xDE, 0xAD>>
-      send(pid, {:connection_event, {:ws_audio, audio_data}})
+      send(pid, {:connection_event, conn_pid, {:ws_audio, audio_data}})
 
       # Should NOT receive the audio (give a short timeout to verify)
       refute_receive {:ws_audio, ^audio_data}, 100
@@ -886,8 +903,10 @@ defmodule ParrotMedia.WsBidirectionalTest do
       assert status.inbound_muted == false
 
       # Simulate receiving audio - should now be forwarded
+      # The message must include the conn_pid as the Connector validates message source
+      conn_pid = get_conn_pid(pid)
       audio_data = <<0xBE, 0xEF>>
-      send(pid, {:connection_event, {:ws_audio, audio_data}})
+      send(pid, {:connection_event, conn_pid, {:ws_audio, audio_data}})
 
       # Should receive the audio
       assert_receive {:ws_audio, ^audio_data}, 1000
