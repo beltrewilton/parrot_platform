@@ -1011,6 +1011,165 @@ defmodule Parrot.Bridge.HandlerTest do
   end
 
   # ===========================================================================
+  # US4: Media Event Callbacks - Integration Tests (T040)
+  # ===========================================================================
+
+  describe "media event routing to handler callbacks (T040, US4, FR-010, FR-011)" do
+    # Handler that tracks media event callbacks via messages to test process
+    defmodule MediaEventTrackingHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      @impl true
+      def handle_media_started(call) do
+        # Send message to test process to verify callback was invoked
+        send(Application.get_env(:parrot, :test_pid), {:media_started_called, call.call_id})
+        {:noreply, %{call | assigns: Map.put(call.assigns, :media_active, true)}}
+      end
+
+      @impl true
+      def handle_media_stopped(reason, call) do
+        send(Application.get_env(:parrot, :test_pid), {:media_stopped_called, reason, call.call_id})
+        {:noreply, %{call | assigns: Map.put(call.assigns, :media_active, false)}}
+      end
+    end
+
+    defmodule MediaEventRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.MediaEventTrackingHandler)
+    end
+
+    test "routes :media_started event to handle_media_started/1 callback" do
+      # Store test PID for tracking
+      Application.put_env(:parrot, :test_pid, self())
+
+      # Start a Call.Server directly to test event routing
+      invite = %{
+        id: "test-call-#{System.unique_integer()}",
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: "media-event-test-call-id",
+        method: "INVITE"
+      }
+
+      {:ok, call_server} =
+        Parrot.Call.Server.start_link(
+          handler: MediaEventTrackingHandler,
+          invite: invite,
+          context: nil
+        )
+
+      # Dispatch media_started event
+      Parrot.Call.Server.dispatch(call_server, :media_started)
+
+      # Handler's handle_media_started should have been called
+      assert_receive {:media_started_called, "media-event-test-call-id"}, 1000
+    end
+
+    test "routes :media_stopped event to handle_media_stopped/2 callback" do
+      Application.put_env(:parrot, :test_pid, self())
+
+      invite = %{
+        id: "test-call-#{System.unique_integer()}",
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: "media-stop-test-call-id",
+        method: "INVITE"
+      }
+
+      {:ok, call_server} =
+        Parrot.Call.Server.start_link(
+          handler: MediaEventTrackingHandler,
+          invite: invite,
+          context: nil
+        )
+
+      # Dispatch media_stopped event with reason
+      Parrot.Call.Server.dispatch(call_server, {:media_stopped, :normal})
+
+      # Handler's handle_media_stopped should have been called with reason
+      assert_receive {:media_stopped_called, :normal, "media-stop-test-call-id"}, 1000
+    end
+
+    test "routes :media_stopped with :terminated reason" do
+      Application.put_env(:parrot, :test_pid, self())
+
+      invite = %{
+        id: "test-call-#{System.unique_integer()}",
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: "media-terminated-test",
+        method: "INVITE"
+      }
+
+      {:ok, call_server} =
+        Parrot.Call.Server.start_link(
+          handler: MediaEventTrackingHandler,
+          invite: invite,
+          context: nil
+        )
+
+      # Dispatch media_stopped event with terminated reason
+      Parrot.Call.Server.dispatch(call_server, {:media_stopped, :terminated})
+
+      assert_receive {:media_stopped_called, :terminated, "media-terminated-test"}, 1000
+    end
+
+    test "handles {:media_event, session_id, :media_started} message format" do
+      Application.put_env(:parrot, :test_pid, self())
+
+      invite = %{
+        id: "test-call-#{System.unique_integer()}",
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: "media-event-msg-test",
+        method: "INVITE"
+      }
+
+      {:ok, call_server} =
+        Parrot.Call.Server.start_link(
+          handler: MediaEventTrackingHandler,
+          invite: invite,
+          context: nil
+        )
+
+      # Send media event in the {:media_event, session_id, event} format
+      # (this is the format used by MediaSession)
+      send(call_server, {:media_event, "test_session", :media_started})
+
+      assert_receive {:media_started_called, "media-event-msg-test"}, 1000
+    end
+
+    test "handles {:media_event, session_id, {:media_stopped, reason}} message format" do
+      Application.put_env(:parrot, :test_pid, self())
+
+      invite = %{
+        id: "test-call-#{System.unique_integer()}",
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: "media-event-stop-msg-test",
+        method: "INVITE"
+      }
+
+      {:ok, call_server} =
+        Parrot.Call.Server.start_link(
+          handler: MediaEventTrackingHandler,
+          invite: invite,
+          context: nil
+        )
+
+      # Send media stopped event in the {:media_event, session_id, event} format
+      send(call_server, {:media_event, "test_session", {:media_stopped, :bye_received}})
+
+      assert_receive {:media_stopped_called, :bye_received, "media-event-stop-msg-test"}, 1000
+    end
+  end
+
+  # ===========================================================================
   # US1: SDP Negotiation Tests (T006-T007)
   # ===========================================================================
 

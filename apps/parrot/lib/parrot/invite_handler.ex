@@ -61,6 +61,21 @@ defmodule Parrot.InviteHandler do
   This two-phase approach allows the play operation to complete before
   starting DTMF collection, ensuring proper timing of the IVR flow.
 
+  ## Automatic SDP Negotiation
+
+  When an INVITE with SDP is received, Parrot automatically handles SDP negotiation:
+
+  1. Creates a MediaSession for the call
+  2. Calls `MediaSession.process_offer/2` to negotiate codecs
+  3. Includes the SDP answer in the 200 OK response
+
+  If negotiation fails (e.g., no compatible codecs), the `handle_sdp_error/2` callback
+  is invoked. The default implementation rejects with 488 Not Acceptable Here.
+
+  Media lifecycle events are delivered via `handle_media_started/1` and
+  `handle_media_stopped/2` callbacks for observability (e.g., tracking call duration,
+  emitting telemetry).
+
   ## Callbacks
 
   All callbacks receive a `Parrot.Call` struct and should return either:
@@ -86,6 +101,10 @@ defmodule Parrot.InviteHandler do
   - `handle_conference_leave/3` - Called when leaving a conference
   - `handle_fork_media_connected/2` - Called when media fork establishes
   - `handle_hangup/1` - Called when the call ends
+  - `handle_sdp_error/2` - Called when SDP negotiation fails
+  - `handle_media_started/1` - Called when media stream starts
+  - `handle_media_stopped/2` - Called when media stream stops
+  - `handle_tts_error/3` - Called when TTS synthesis fails
   """
 
   alias Parrot.Call
@@ -276,6 +295,65 @@ defmodule Parrot.InviteHandler do
               {:noreply, Call.t()} | Call.t()
 
   @doc """
+  Called when the media session is established and media starts flowing (FR-010).
+
+  This callback is invoked when the MediaSession signals that media has started.
+  Use this for observability tasks such as:
+  - Recording the call start time for duration tracking
+  - Starting call recording
+  - Updating call state for monitoring
+  - Emitting telemetry events
+
+  The default implementation returns `{:noreply, call}`.
+
+  ## Arguments
+
+  - `call` - The current call state
+
+  ## Example
+
+      def handle_media_started(call) do
+        start_time = System.monotonic_time(:millisecond)
+        {:noreply, %{call | assigns: Map.put(call.assigns, :media_started_at, start_time)}}
+      end
+  """
+  @callback handle_media_started(call :: Call.t()) :: {:noreply, Call.t()} | Call.t()
+
+  @doc """
+  Called when the media session stops (FR-011).
+
+  This callback is invoked when the MediaSession signals that media has stopped.
+  The reason indicates why media stopped:
+  - `:normal` - Normal termination (e.g., BYE received)
+  - `:terminated` - Call was terminated
+  - `:error` - Media error occurred
+  - Other atoms as appropriate
+
+  Use this for observability and cleanup tasks such as:
+  - Calculating call duration
+  - Finalizing call recordings
+  - Updating CDR records
+  - Emitting telemetry events
+
+  The default implementation returns `{:noreply, call}`.
+
+  ## Arguments
+
+  - `reason` - The reason for media stopping (atom)
+  - `call` - The current call state
+
+  ## Example
+
+      def handle_media_stopped(reason, call) do
+        duration = calculate_duration(call.assigns[:media_started_at])
+        Logger.info("Call ended after \#{duration}ms, reason: \#{reason}")
+        {:noreply, call}
+      end
+  """
+  @callback handle_media_stopped(reason :: atom(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
   Called when TTS synthesis fails (FR-017, FR-018, FR-019).
 
   This callback is invoked when the `say/2` or `say_prompt/3` operations fail to
@@ -420,6 +498,20 @@ defmodule Parrot.InviteHandler do
       end
 
       @impl Parrot.InviteHandler
+      def handle_media_started(call) do
+        # Default: return {:noreply, call} (FR-010)
+        # Handlers can override to track call start time, emit telemetry, etc.
+        {:noreply, call}
+      end
+
+      @impl Parrot.InviteHandler
+      def handle_media_stopped(_reason, call) do
+        # Default: return {:noreply, call} (FR-011)
+        # Handlers can override to calculate duration, finalize recordings, etc.
+        {:noreply, call}
+      end
+
+      @impl Parrot.InviteHandler
       def handle_tts_error(text, error, call) do
         # Default: log warning and return {:noreply, call} (FR-018)
         # This allows the call to continue without crashing
@@ -439,7 +531,9 @@ defmodule Parrot.InviteHandler do
                      handle_fork_media_connected: 2,
                      handle_hangup: 1,
                      handle_sdp_error: 2,
-                     handle_tts_error: 3
+                     handle_tts_error: 3,
+                     handle_media_started: 1,
+                     handle_media_stopped: 2
     end
   end
 end
