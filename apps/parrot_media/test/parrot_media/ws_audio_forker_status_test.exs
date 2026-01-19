@@ -294,4 +294,346 @@ defmodule ParrotMedia.WsAudioForkerStatusTest do
       WsAudioForker.stop(pid)
     end
   end
+
+  # ============================================================================
+  # Real buffering scenario tests (P3.3)
+  #
+  # These tests exercise actual buffering code paths by:
+  # 1. Connecting to a mock server
+  # 2. Disconnecting by stopping the server
+  # 3. Sending audio while disconnected (triggers buffering)
+  # 4. Verifying buffer metrics reflect real buffered data
+  # ============================================================================
+
+  describe "real buffering scenarios" do
+    test "buffer_fill_percent > 0 when actually buffering during disconnect", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      # Trap exits since the forker may terminate after max retries
+      Process.flag(:trap_exit, true)
+
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 10,
+          max_retries: 10,
+          backoff_initial_ms: 100,
+          backoff_max_ms: 200
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+      assert WsAudioForker.connected?(pid) == true
+
+      # Initial status should show empty buffer
+      {:ok, initial_status} = WsAudioForker.status(pid)
+      assert initial_status.buffer_fill_percent == 0.0
+      assert initial_status.buffer_size == 0
+
+      # Stop the mock server to trigger disconnect
+      stop_supervised({:mock_ws_server, port})
+
+      # Wait for disconnect to be detected
+      Process.sleep(100)
+      assert WsAudioForker.connected?(pid) == false
+
+      # Send audio while disconnected - this should buffer
+      WsAudioForker.send_audio(pid, <<1, 2, 3, 4>>)
+      WsAudioForker.send_audio(pid, <<5, 6, 7, 8>>)
+      WsAudioForker.send_audio(pid, <<9, 10, 11, 12>>)
+
+      # Give time for cast messages to be processed
+      Process.sleep(50)
+
+      # Check status - buffer should have 3 items (30% of 10)
+      {:ok, status} = WsAudioForker.status(pid)
+
+      assert status.buffer_size == 3
+      assert status.buffer_fill_percent == 30.0
+      assert status.buffer_capacity == 10
+
+      WsAudioForker.stop(pid)
+    end
+
+    test "oldest_packet_age_ms returns real age values when packets are buffered", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      Process.flag(:trap_exit, true)
+
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 10,
+          max_retries: 10,
+          backoff_initial_ms: 100,
+          backoff_max_ms: 200
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+      assert WsAudioForker.connected?(pid) == true
+
+      # Stop the mock server to trigger disconnect
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # Send audio while disconnected
+      WsAudioForker.send_audio(pid, <<1, 2, 3, 4>>)
+      Process.sleep(50)
+
+      # Check that oldest_packet_age_ms is a real positive value
+      {:ok, status} = WsAudioForker.status(pid)
+
+      assert status.buffer_size == 1
+      assert is_integer(status.oldest_packet_age_ms)
+      assert status.oldest_packet_age_ms >= 0
+      # Should be at least ~50ms since we slept
+      assert status.oldest_packet_age_ms >= 40
+
+      WsAudioForker.stop(pid)
+    end
+
+    test "oldest_packet_age_ms increases over time for buffered packets", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      Process.flag(:trap_exit, true)
+
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 10,
+          max_retries: 10,
+          backoff_initial_ms: 200,
+          backoff_max_ms: 500
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+      assert WsAudioForker.connected?(pid) == true
+
+      # Stop the mock server to trigger disconnect
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # Send one audio frame that will be buffered
+      WsAudioForker.send_audio(pid, <<1, 2, 3, 4>>)
+      Process.sleep(20)
+
+      # Get first age measurement
+      {:ok, status1} = WsAudioForker.status(pid)
+      age1 = status1.oldest_packet_age_ms
+
+      # Wait some time
+      Process.sleep(100)
+
+      # Get second age measurement
+      {:ok, status2} = WsAudioForker.status(pid)
+      age2 = status2.oldest_packet_age_ms
+
+      # Age should have increased by approximately 100ms
+      assert age2 > age1
+      # Allow some timing slack
+      assert age2 - age1 >= 80
+
+      WsAudioForker.stop(pid)
+    end
+
+    test "buffer drains (age becomes nil) after reconnection and flush", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      Process.flag(:trap_exit, true)
+
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 10,
+          max_retries: 10,
+          backoff_initial_ms: 50,
+          backoff_max_ms: 100
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+      assert WsAudioForker.connected?(pid) == true
+
+      # Stop the mock server to trigger disconnect
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # Send audio while disconnected - this buffers
+      WsAudioForker.send_audio(pid, <<1, 2, 3, 4>>)
+      WsAudioForker.send_audio(pid, <<5, 6, 7, 8>>)
+      Process.sleep(50)
+
+      # Verify buffered state
+      {:ok, buffered_status} = WsAudioForker.status(pid)
+      assert buffered_status.buffer_size == 2
+      assert buffered_status.oldest_packet_age_ms != nil
+
+      # Restart the mock server at the same port
+      {:ok, _server_pid} =
+        start_supervised(
+          {ParrotMedia.Test.MockWsServer, port: port, test_pid: self()},
+          id: {:mock_ws_server_restart, port}
+        )
+
+      # Wait for reconnection and buffer flush
+      Process.sleep(500)
+
+      # After reconnection, buffer should be empty
+      {:ok, flushed_status} = WsAudioForker.status(pid)
+      assert flushed_status.connection_state == :connected
+      assert flushed_status.buffer_size == 0
+      assert flushed_status.oldest_packet_age_ms == nil
+      assert flushed_status.buffer_fill_percent == 0.0
+
+      # The buffered frames should have been sent
+      # frames_sent includes both the flushed frames
+      assert flushed_status.frames_sent >= 2
+
+      WsAudioForker.stop(pid)
+    end
+
+    test "frames_dropped increments when buffer overflows", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      Process.flag(:trap_exit, true)
+
+      # Use a very small buffer (3) to easily trigger overflow
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 3,
+          max_retries: 10,
+          backoff_initial_ms: 200,
+          backoff_max_ms: 500
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+      assert WsAudioForker.connected?(pid) == true
+
+      # Verify no dropped frames initially
+      {:ok, initial_status} = WsAudioForker.status(pid)
+      assert initial_status.frames_dropped == 0
+
+      # Stop the mock server to trigger disconnect
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # Fill the buffer exactly (3 frames)
+      WsAudioForker.send_audio(pid, <<1>>)
+      WsAudioForker.send_audio(pid, <<2>>)
+      WsAudioForker.send_audio(pid, <<3>>)
+      Process.sleep(50)
+
+      {:ok, full_status} = WsAudioForker.status(pid)
+      assert full_status.buffer_size == 3
+      assert full_status.buffer_fill_percent == 100.0
+      assert full_status.frames_dropped == 0
+
+      # Send 2 more frames - these should cause 2 oldest frames to be dropped
+      WsAudioForker.send_audio(pid, <<4>>)
+      WsAudioForker.send_audio(pid, <<5>>)
+      Process.sleep(50)
+
+      {:ok, overflow_status} = WsAudioForker.status(pid)
+      # Buffer should still be at capacity
+      assert overflow_status.buffer_size == 3
+      assert overflow_status.buffer_fill_percent == 100.0
+      # 2 frames should have been dropped
+      assert overflow_status.frames_dropped == 2
+
+      WsAudioForker.stop(pid)
+    end
+
+    test "buffer_fill_percent returns correct value at various fill levels", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      Process.flag(:trap_exit, true)
+
+      # Use buffer size of 5 for easy percentage calculation
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 5,
+          max_retries: 10,
+          backoff_initial_ms: 200,
+          backoff_max_ms: 500
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Stop server to disconnect
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # 0% full (0/5)
+      {:ok, status0} = WsAudioForker.status(pid)
+      assert status0.buffer_fill_percent == 0.0
+
+      # 20% full (1/5)
+      WsAudioForker.send_audio(pid, <<1>>)
+      Process.sleep(20)
+      {:ok, status1} = WsAudioForker.status(pid)
+      assert status1.buffer_fill_percent == 20.0
+
+      # 40% full (2/5)
+      WsAudioForker.send_audio(pid, <<2>>)
+      Process.sleep(20)
+      {:ok, status2} = WsAudioForker.status(pid)
+      assert status2.buffer_fill_percent == 40.0
+
+      # 60% full (3/5)
+      WsAudioForker.send_audio(pid, <<3>>)
+      Process.sleep(20)
+      {:ok, status3} = WsAudioForker.status(pid)
+      assert status3.buffer_fill_percent == 60.0
+
+      # 80% full (4/5)
+      WsAudioForker.send_audio(pid, <<4>>)
+      Process.sleep(20)
+      {:ok, status4} = WsAudioForker.status(pid)
+      assert status4.buffer_fill_percent == 80.0
+
+      # 100% full (5/5)
+      WsAudioForker.send_audio(pid, <<5>>)
+      Process.sleep(20)
+      {:ok, status5} = WsAudioForker.status(pid)
+      assert status5.buffer_fill_percent == 100.0
+
+      WsAudioForker.stop(pid)
+    end
+  end
 end
