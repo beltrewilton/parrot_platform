@@ -144,8 +144,9 @@ defmodule SippTest.UATest do
       sipp_port = random_port()
       local_port = random_port()
 
-      # SIPp sends 180 then 200
-      sipp_task = start_sipp_uas("basic/uas_invite.xml", sipp_port)
+      # SIPp sends 200 and expects BYE from ParrotSip
+      # (Using uas_bye.xml instead of uas_invite.xml to avoid SIPp sending BYE on timeout)
+      sipp_task = start_sipp_uas("basic/uas_bye.xml", sipp_port)
 
       {:ok, ua} = UA.start_link(TestHandler, self(), port: local_port)
       handler = UA.get_handler(ua)
@@ -154,7 +155,10 @@ defmodule SippTest.UATest do
       {:ok, entity} = UA.dial(ua, "sip:test@127.0.0.1:#{sipp_port}", sdp: build_sdp())
 
       # Wait for answer
-      assert_receive {:ua_event, :answered, _entity}, 5_000
+      assert_receive {:ua_event, :answered, answered_entity}, 5_000
+
+      # Send BYE to properly terminate the call
+      :ok = UA.hangup(ua, answered_entity)
 
       assert :ok = Task.await(sipp_task, 10_000)
       SipStackHelper.stop(stack)
@@ -289,7 +293,8 @@ defmodule SippTest.UATest do
       local_port = random_port()
       sipp_port = random_port()
 
-      sipp_task = start_sipp_uas("basic/uas_invite.xml", sipp_port)
+      # Use uas_bye.xml which expects ParrotSip to send BYE
+      sipp_task = start_sipp_uas("basic/uas_bye.xml", sipp_port)
 
       {:ok, ua} = UA.start_link(TestHandler, self(), port: local_port)
       handler = UA.get_handler(ua)
@@ -309,6 +314,9 @@ defmodule SippTest.UATest do
       assert_receive {:ua_event, :answered, answered_entity}, 5_000
       assert answered_entity.state == :confirmed
       assert is_binary(answered_entity.remote_tag)
+
+      # Send BYE to properly terminate the call
+      :ok = UA.hangup(ua, answered_entity)
 
       assert :ok = Task.await(sipp_task, 10_000)
       SipStackHelper.stop(stack)

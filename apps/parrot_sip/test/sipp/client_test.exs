@@ -16,12 +16,13 @@ defmodule SippTest.ClientTest do
   describe "ParrotSip as UAC - basic INVITE scenarios" do
     test "INVITE - ParrotSip makes outbound call to SIPp UAS" do
       # Start SIPp in UAS mode (listening for calls)
+      # Note: Using uas_bye.xml which expects ParrotSip to send BYE (no fallback BYE from SIPp)
       sipp_port = get_random_port()
 
       sipp_task =
         Task.async(fn ->
           SippRunner.run_scenario(
-            scenario_file: "test/sipp/scenarios/basic/uas_invite.xml",
+            scenario_file: "test/sipp/scenarios/basic/uas_bye.xml",
             remote_host: "127.0.0.1",
             remote_port: sipp_port,
             local_port: sipp_port,
@@ -50,10 +51,23 @@ defmodule SippTest.ClientTest do
         end)
 
       # Wait for 200 OK response
-      assert_receive {:uac_result, {:response, %Message{status_code: 200}}}, 5_000
+      assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
 
-      # Wait for ACK to be processed
-      Process.sleep(100)
+      # Extract dialog information from response for BYE
+      to_tag = response.to.parameters["tag"]
+      from_tag = invite_msg.from.parameters["tag"]
+      call_id = invite_msg.call_id
+
+      # Send BYE to properly terminate the call
+      bye_msg = build_bye("127.0.0.1", sipp_port, stack.port, call_id, from_tag, to_tag)
+
+      _bye_uac_id =
+        Client.request(bye_msg, fn result ->
+          send(test_pid, {:bye_result, result})
+        end)
+
+      # Wait for 200 OK for BYE
+      assert_receive {:bye_result, {:response, %Message{status_code: 200}}}, 5_000
 
       # Verify SIPp completed successfully
       assert :ok = Task.await(sipp_task, 10_000)
@@ -120,12 +134,13 @@ defmodule SippTest.ClientTest do
 
     test "INVITE - multiple sequential outbound calls" do
       # Start SIPp in UAS mode
+      # Note: Using uas_bye.xml which expects ParrotSip to send BYE
       sipp_port = get_random_port()
 
       sipp_task =
         Task.async(fn ->
           SippRunner.run_scenario(
-            scenario_file: "test/sipp/scenarios/basic/uas_invite.xml",
+            scenario_file: "test/sipp/scenarios/basic/uas_bye.xml",
             remote_host: "127.0.0.1",
             remote_port: sipp_port,
             local_port: sipp_port,
@@ -144,7 +159,7 @@ defmodule SippTest.ClientTest do
       # Track responses
       test_pid = self()
 
-      # Make 5 sequential calls
+      # Make 5 sequential calls with proper termination
       for _i <- 1..5 do
         invite_msg = build_invite("127.0.0.1", sipp_port, stack.port)
 
@@ -154,7 +169,22 @@ defmodule SippTest.ClientTest do
           end)
 
         # Wait for 200 OK for this call
-        assert_receive {:uac_result, {:response, %Message{status_code: 200}}}, 5_000
+        assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
+
+        # Extract dialog information and send BYE to properly terminate
+        to_tag = response.to.parameters["tag"]
+        from_tag = invite_msg.from.parameters["tag"]
+        call_id = invite_msg.call_id
+
+        bye_msg = build_bye("127.0.0.1", sipp_port, stack.port, call_id, from_tag, to_tag)
+
+        _bye_uac_id =
+          Client.request(bye_msg, fn result ->
+            send(test_pid, {:bye_result, result})
+          end)
+
+        # Wait for 200 OK for BYE
+        assert_receive {:bye_result, {:response, %Message{status_code: 200}}}, 5_000
 
         # Small delay between calls
         Process.sleep(100)
