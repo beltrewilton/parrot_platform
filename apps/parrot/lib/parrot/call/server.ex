@@ -143,6 +143,52 @@ defmodule Parrot.Call.Server do
     GenServer.call(server, :get_call)
   end
 
+  @doc """
+  Looks up a Call.Server process by its call_id.
+
+  Returns `{:ok, pid}` if found, `{:error, :not_found}` if no process
+  is registered for the given call_id.
+
+  ## Examples
+
+      {:ok, pid} = Parrot.Call.Server.lookup_by_call_id("abc123@host")
+      {:error, :not_found} = Parrot.Call.Server.lookup_by_call_id("unknown")
+  """
+  @spec lookup_by_call_id(String.t()) :: {:ok, pid()} | {:error, :not_found}
+  def lookup_by_call_id(call_id) do
+    if registry_available?() do
+      case Registry.lookup(Parrot.Registry, {:call, call_id}) do
+        [{pid, _}] -> {:ok, pid}
+        [] -> {:error, :not_found}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # ===========================================================================
+  # Registry Helpers
+  # ===========================================================================
+
+  # Check if Parrot.Registry is available
+  defp registry_available? do
+    case Process.whereis(Parrot.Registry) do
+      nil -> false
+      _pid -> true
+    end
+  end
+
+  # Safely register in Parrot.Registry if available
+  defp register_in_registry(nil), do: :ok
+
+  defp register_in_registry(call_id) do
+    if registry_available?() do
+      Registry.register(Parrot.Registry, {:call, call_id}, nil)
+    end
+
+    :ok
+  end
+
   # ===========================================================================
   # GenServer Callbacks
   # ===========================================================================
@@ -170,6 +216,10 @@ defmodule Parrot.Call.Server do
         media_pid: media_pid,
         dialog_id: dialog_id
       )
+
+    # Register in Parrot.Registry for lookup by call_id (T042)
+    # This allows Bridge.Handler.handle_bye/3 to find and notify us
+    register_in_registry(call.call_id)
 
     # Invoke handle_invite/1 with the Call struct
     # Handlers use pipeline operations (answer, play, etc.) on the struct

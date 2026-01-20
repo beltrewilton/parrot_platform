@@ -267,14 +267,28 @@ defmodule Parrot.Bridge.Handler do
   @doc """
   Handles incoming BYE requests.
 
-  Stops the media session and sends 200 OK.
+  Looks up the Call.Server by call_id and dispatches the :hangup event,
+  stops the media session, and sends 200 OK.
   """
   @impl true
   def handle_bye(uas, req_sip_msg, _args) do
     Logger.debug("[Bridge.Handler] Received BYE")
 
+    call_id = req_sip_msg.call_id
+
+    # Dispatch :hangup event to Call.Server (T042)
+    # This notifies the DSL handler that the remote party has hung up
+    case Parrot.Call.Server.lookup_by_call_id(call_id) do
+      {:ok, call_server_pid} ->
+        Logger.debug("[Bridge.Handler] Dispatching :hangup to Call.Server for #{call_id}")
+        Parrot.Call.Server.cast_dispatch(call_server_pid, :hangup)
+
+      {:error, :not_found} ->
+        Logger.debug("[Bridge.Handler] No Call.Server found for #{call_id}")
+    end
+
     # Stop the MediaSession for this call
-    session_id = "call_#{req_sip_msg.call_id}"
+    session_id = "call_#{call_id}"
 
     case ParrotMedia.MediaSessionSupervisor.find_session(session_id) do
       {:ok, media_pid} ->
