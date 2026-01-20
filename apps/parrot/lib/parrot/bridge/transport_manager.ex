@@ -30,7 +30,7 @@ defmodule Parrot.Bridge.TransportManager do
   @type transport_config :: {:udp | :tcp | :tls, keyword()}
   @type t :: %__MODULE__{
           router: module(),
-          sip_handler: ParrotSip.Handler.t(),
+          sip_handler: ParrotSip.Handler.handler(),
           transports: [transport_config()],
           listeners: map()
         }
