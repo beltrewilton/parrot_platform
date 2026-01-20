@@ -249,10 +249,13 @@ defmodule Parrot.Call.ServerTest do
 
   describe "callback dispatch" do
     setup do
+      # Use unique call_id to avoid registry conflicts with async tests (T042)
+      unique_id = System.unique_integer([:positive])
+
       invite_data = %{
         from: "sip:alice@example.com",
         to: "sip:bob@example.com",
-        call_id: "test-call@host"
+        call_id: "test-call-dispatch-#{unique_id}@host"
       }
 
       {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
@@ -802,10 +805,13 @@ defmodule Parrot.Call.ServerTest do
     # messages directly from MediaSession and dispatches them to the appropriate callbacks.
 
     setup do
+      # Use unique call_id to avoid registry conflicts with async tests (T042)
+      unique_id = System.unique_integer([:positive])
+
       invite_data = %{
         from: "sip:alice@example.com",
         to: "sip:bob@example.com",
-        call_id: "test-call@host"
+        call_id: "test-call-media-event-#{unique_id}@host"
       }
 
       {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)

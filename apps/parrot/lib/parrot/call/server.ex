@@ -179,11 +179,21 @@ defmodule Parrot.Call.Server do
   end
 
   # Safely register in Parrot.Registry if available
+  # Uses try/rescue to handle race conditions where the registry may be
+  # shutting down (common in async tests)
   defp register_in_registry(nil), do: :ok
 
   defp register_in_registry(call_id) do
     if registry_available?() do
-      Registry.register(Parrot.Registry, {:call, call_id}, nil)
+      try do
+        Registry.register(Parrot.Registry, {:call, call_id}, nil)
+      rescue
+        # Handle race condition where registry is shutting down
+        ArgumentError -> :ok
+      catch
+        # Handle :noproc error when registry process is terminating
+        :exit, {:noproc, _} -> :ok
+      end
     end
 
     :ok
