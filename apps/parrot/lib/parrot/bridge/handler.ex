@@ -47,6 +47,7 @@ defmodule Parrot.Bridge.Handler do
   Returns `:process_transaction` to have the transaction layer process this message.
   """
   @impl true
+  @spec transp_request(Message.t(), term()) :: :process_transaction | :noreply
   def transp_request(_msg, _args) do
     :process_transaction
   end
@@ -57,6 +58,7 @@ defmodule Parrot.Bridge.Handler do
   Returns `:process_uas` to indicate this should be processed as a UAS transaction.
   """
   @impl true
+  @spec transaction(ParrotSip.Transaction.t(), Message.t(), term()) :: :process_uas | :ok
   def transaction(_trans, _sip_msg, _args) do
     :process_uas
   end
@@ -67,6 +69,7 @@ defmodule Parrot.Bridge.Handler do
   Performs any necessary cleanup.
   """
   @impl true
+  @spec transaction_stop(ParrotSip.Transaction.t(), term(), term()) :: :ok
   def transaction_stop(_trans, _trans_result, _args) do
     :ok
   end
@@ -77,6 +80,7 @@ defmodule Parrot.Bridge.Handler do
   This is called when no method-specific handler (like `handle_invite/3`) is defined.
   """
   @impl true
+  @spec uas_request(ParrotSip.Transaction.Server.t(), Message.t(), term()) :: :ok
   def uas_request(uas, req_sip_msg, _args) do
     method = req_sip_msg.method
     Logger.debug("[Bridge.Handler] Received #{method} request (no specific handler)")
@@ -92,6 +96,7 @@ defmodule Parrot.Bridge.Handler do
   Called when a UAS transaction is cancelled.
   """
   @impl true
+  @spec uas_cancel(ParrotSip.Transaction.Server.id(), term()) :: :ok
   def uas_cancel(_uas_id, _args) do
     Logger.debug("[Bridge.Handler] Transaction cancelled")
     :ok
@@ -103,6 +108,7 @@ defmodule Parrot.Bridge.Handler do
   This signals that the call is established and media can begin.
   """
   @impl true
+  @spec process_ack(Message.t(), term()) :: :ok
   def process_ack(_sip_msg, _args) do
     Logger.debug("[Bridge.Handler] Received ACK")
     # Future: Signal call establishment to Call.Server
@@ -131,6 +137,7 @@ defmodule Parrot.Bridge.Handler do
   This enables standard SIP clients (pjsua, linphone) to connect successfully.
   """
   @impl true
+  @spec handle_invite(ParrotSip.Transaction.Server.t(), Message.t(), map()) :: :ok
   def handle_invite(uas, req_sip_msg, %{router: router} = args) do
     Logger.debug("[Bridge.Handler] Received INVITE")
 
@@ -271,6 +278,7 @@ defmodule Parrot.Bridge.Handler do
   stops the media session, and sends 200 OK.
   """
   @impl true
+  @spec handle_bye(ParrotSip.Transaction.Server.t(), Message.t(), term()) :: :ok
   def handle_bye(uas, req_sip_msg, _args) do
     Logger.debug("[Bridge.Handler] Received BYE")
 
@@ -322,6 +330,7 @@ defmodule Parrot.Bridge.Handler do
   6. Send 200 OK with Contact headers
   """
   @impl true
+  @spec handle_register(ParrotSip.Transaction.Server.t(), Message.t(), map()) :: :ok
   def handle_register(uas, req_sip_msg, %{router: router} = args) do
     Logger.debug("[Bridge.Handler] Received REGISTER")
 
@@ -481,6 +490,7 @@ defmodule Parrot.Bridge.Handler do
   Returns server capabilities.
   """
   @impl true
+  @spec handle_options(ParrotSip.Transaction.Server.t(), Message.t(), term()) :: :ok
   def handle_options(uas, req_sip_msg, _args) do
     Logger.debug("[Bridge.Handler] Received OPTIONS")
 
@@ -494,6 +504,7 @@ defmodule Parrot.Bridge.Handler do
   Handles incoming CANCEL requests.
   """
   @impl true
+  @spec handle_cancel(ParrotSip.Transaction.Server.t(), Message.t(), map()) :: :ok
   def handle_cancel(uas, req_sip_msg, args) do
     Logger.debug("[Bridge.Handler] Received CANCEL")
 
