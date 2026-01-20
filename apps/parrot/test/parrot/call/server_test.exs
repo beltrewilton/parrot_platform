@@ -986,4 +986,114 @@ defmodule Parrot.Call.ServerTest do
       assert call.assigns[:fork_media_connected] == "wss://transcribe.ai/ws"
     end
   end
+
+  # ===========================================================================
+  # T042: Registry Cleanup on Hangup
+  # ===========================================================================
+
+  describe "registry registration (T042)" do
+    setup do
+      # Ensure Parrot.Registry is started for tests
+      case Registry.start_link(keys: :unique, name: Parrot.Registry) do
+        {:ok, _} -> :ok
+        {:error, {:already_started, _}} -> :ok
+      end
+
+      :ok
+    end
+
+    test "registers itself in Parrot.Registry with call_id on start" do
+      call_id = "registry-test-#{System.unique_integer([:positive])}"
+
+      invite_data = %{
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: call_id
+      }
+
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+
+      # Should be able to look up the Call.Server by call_id
+      assert [{^pid, _}] = Registry.lookup(Parrot.Registry, {:call, call_id})
+    end
+
+    test "can look up Call.Server by call_id after start" do
+      call_id = "lookup-test-#{System.unique_integer([:positive])}"
+
+      invite_data = %{
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: call_id
+      }
+
+      {:ok, expected_pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+
+      # Use the lookup function to find the process
+      assert {:ok, pid} = Server.lookup_by_call_id(call_id)
+      assert pid == expected_pid
+    end
+
+    test "lookup_by_call_id returns {:error, :not_found} for unknown call_id" do
+      assert {:error, :not_found} = Server.lookup_by_call_id("nonexistent-call-id")
+    end
+
+    test "unregisters from registry when process terminates" do
+      call_id = "unregister-test-#{System.unique_integer([:positive])}"
+
+      invite_data = %{
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: call_id
+      }
+
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+
+      # Verify it's registered
+      assert [{^pid, _}] = Registry.lookup(Parrot.Registry, {:call, call_id})
+
+      # Stop the process
+      GenServer.stop(pid, :normal)
+
+      # Wait for process to fully terminate
+      Process.sleep(10)
+
+      # Should no longer be registered
+      assert [] = Registry.lookup(Parrot.Registry, {:call, call_id})
+    end
+
+    test "remains registered after hangup event but state is :terminated" do
+      # Hangup event changes state but doesn't stop the process
+      # Unregistration happens when the process actually terminates
+      call_id = "hangup-state-test-#{System.unique_integer([:positive])}"
+
+      invite_data = %{
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: call_id
+      }
+
+      {:ok, pid} = Server.start_link(handler: TestHandler, invite: invite_data)
+
+      # Verify it's registered
+      assert [{^pid, _}] = Registry.lookup(Parrot.Registry, {:call, call_id})
+
+      # Dispatch hangup event
+      Server.dispatch(pid, :hangup)
+
+      # Process should still be alive but state should be :terminated
+      assert Process.alive?(pid)
+      call = Server.get_call(pid)
+      assert call.state == :terminated
+
+      # Should still be registered (process is still alive)
+      assert [{^pid, _}] = Registry.lookup(Parrot.Registry, {:call, call_id})
+
+      # Now stop the process
+      GenServer.stop(pid, :normal)
+      Process.sleep(10)
+
+      # Now should be unregistered
+      assert [] = Registry.lookup(Parrot.Registry, {:call, call_id})
+    end
+  end
 end

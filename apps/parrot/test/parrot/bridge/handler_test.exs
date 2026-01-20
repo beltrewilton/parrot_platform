@@ -1206,4 +1206,144 @@ defmodule Parrot.Bridge.HandlerTest do
       assert {:error, :no_sdp} = Handler.extract_sdp_offer(invite)
     end
   end
+
+  # ===========================================================================
+  # T042: BYE Handler Dispatches to Call.Server
+  # ===========================================================================
+
+  describe "handle_bye dispatches to Call.Server (T042)" do
+    setup do
+      # Ensure Parrot.Registry is started for tests
+      case Registry.start_link(keys: :unique, name: Parrot.Registry) do
+        {:ok, _} -> :ok
+        {:error, {:already_started, _}} -> :ok
+      end
+
+      :ok
+    end
+
+    # Handler that tracks hangup callback via message
+    defmodule HangupTrackingHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      @impl true
+      def handle_hangup(call) do
+        # Send message to test process to verify hangup was dispatched
+        test_pid = call.assigns[:test_pid]
+        if test_pid, do: send(test_pid, {:hangup_dispatched, call.call_id})
+        {:noreply, call}
+      end
+    end
+
+    defmodule HangupTrackingRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.HangupTrackingHandler)
+    end
+
+    test "handle_bye looks up Call.Server by call_id and dispatches :hangup event" do
+      test_pid = self()
+      call_id = "bye-dispatch-test-#{System.unique_integer([:positive])}"
+
+      # Create and start a Call.Server manually
+      invite_data = %{
+        from: "sip:alice@example.com",
+        to: "sip:bob@example.com",
+        call_id: call_id,
+        assigns: %{test_pid: test_pid}
+      }
+
+      {:ok, call_server_pid} =
+        Parrot.Call.Server.start_link(
+          handler: HangupTrackingHandler,
+          invite: invite_data
+        )
+
+      # Verify Call.Server is registered
+      assert {:ok, ^call_server_pid} = Parrot.Call.Server.lookup_by_call_id(call_id)
+
+      # Create a BYE message with the same call_id
+      bye_msg = create_bye_message(call_id)
+
+      # Call handle_bye
+      :ok = Handler.handle_bye(:test_uas, bye_msg, %{router: HangupTrackingRouter})
+
+      # Call.Server should have received the :hangup dispatch
+      assert_receive {:hangup_dispatched, ^call_id}, 500
+    end
+
+    test "handle_bye gracefully handles missing Call.Server" do
+      call_id = "nonexistent-call-#{System.unique_integer([:positive])}"
+
+      # Create a BYE message for a call that doesn't exist
+      bye_msg = create_bye_message(call_id)
+
+      # Should not crash, should log and continue
+      assert :ok = Handler.handle_bye(:test_uas, bye_msg, %{router: HangupTrackingRouter})
+    end
+
+    test "handle_bye still stops MediaSession even if Call.Server not found" do
+      # This ensures we don't regress on the existing behavior
+      call_id = "media-only-test-#{System.unique_integer([:positive])}"
+      bye_msg = create_bye_message(call_id)
+
+      # Just verify handle_bye completes successfully
+      # MediaSession lookup will return :not_found which is handled gracefully
+      assert :ok = Handler.handle_bye(:test_uas, bye_msg, %{router: HangupTrackingRouter})
+    end
+  end
+
+  # Helper to create a BYE SIP message
+  defp create_bye_message(call_id) do
+    %Message{
+      type: :request,
+      method: :bye,
+      request_uri: "sip:100@127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{"branch" => "z9hG4bK-bye-branch"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        display_name: nil,
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "127.0.0.1",
+          port: 5080,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{"tag" => "from-tag-123"}
+      },
+      to: %ParrotSip.Headers.To{
+        display_name: nil,
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "100",
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{"tag" => "to-tag-456"}
+      },
+      call_id: call_id,
+      cseq: %ParrotSip.Headers.CSeq{number: 2, method: :bye},
+      max_forwards: 70,
+      body: nil,
+      source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
 end
