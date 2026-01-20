@@ -47,6 +47,7 @@ defmodule Parrot.Bridge.TransportManager do
   * `:router` - Required. The router module for call routing.
   * `:transports` - Required. List of transport configurations.
   """
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -54,6 +55,7 @@ defmodule Parrot.Bridge.TransportManager do
   @doc """
   Returns the child specification for supervision tree.
   """
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
       id: __MODULE__,
@@ -68,6 +70,7 @@ defmodule Parrot.Bridge.TransportManager do
   # ============================================================================
 
   @impl true
+  @spec init(keyword()) :: {:ok, t()} | {:stop, term()}
   def init(opts) do
     router = Keyword.fetch!(opts, :router)
     transports = Keyword.get(opts, :transports, [])
@@ -94,6 +97,7 @@ defmodule Parrot.Bridge.TransportManager do
   end
 
   @impl true
+  @spec handle_info(term(), t()) :: {:noreply, t()}
   def handle_info({:incoming_packet, %IncomingPacket{} = packet}, state) do
     # Parse and process SIP message
     alias ParrotSip.{Parser, Source, TransactionStatem}
