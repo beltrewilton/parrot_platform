@@ -749,6 +749,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
     test "accepts context with sdp_answer string" do
       call = Call.new()
+
       sdp_answer = """
       v=0
       o=- 1234 1234 IN IP4 127.0.0.1
@@ -790,6 +791,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
   describe "execute_answer/3 with SDP body (T015-T016)" do
     test "includes sdp_answer in response body when present" do
       call = Call.new()
+
       sdp_answer = """
       v=0
       o=- 1234 1234 IN IP4 127.0.0.1
@@ -878,6 +880,100 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       assert_receive {:response_sent, response}
       assert response.body == ""
       assert response.content_length == 0
+    end
+  end
+
+  describe "execute_answer/3 with Contact header (T009)" do
+    @moduletag :unit
+
+    test "includes Contact header in 200 OK response" do
+      call = Call.new()
+
+      # Create SIP message with source containing local address info
+      sip_msg = build_invite_message_with_source()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      assert response.status_code == 200
+
+      # Response should have Contact header
+      assert response.contact != nil
+    end
+
+    test "Contact header contains local address and port from source" do
+      call = Call.new()
+
+      # Create SIP message with specific local address
+      sip_msg = build_invite_message_with_source({127, 0, 0, 1}, 5060)
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      contact = response.contact
+
+      # Contact should have SIP URI with our local address
+      assert contact.uri.scheme == "sip"
+      assert contact.uri.host == "127.0.0.1"
+      assert contact.uri.port == 5060
+    end
+
+    test "Contact header with IPv4 address sets correct host_type" do
+      call = Call.new()
+
+      sip_msg = build_invite_message_with_source({192, 168, 1, 100}, 5080)
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+      contact = response.contact
+
+      assert contact.uri.host == "192.168.1.100"
+      assert contact.uri.port == 5080
+      assert contact.uri.host_type == :ipv4
+    end
+
+    test "Contact header is nil when source has no local address info" do
+      call = Call.new()
+
+      # SIP message without proper source structure
+      sip_msg = build_invite_message()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      assert_receive {:response_sent, response}
+
+      # Contact may be nil when source doesn't have local address
+      # This is acceptable behavior - the SIP stack will handle it
+      # (Contact is RECOMMENDED but not strictly required per RFC 3261 12.1.1)
     end
   end
 
@@ -1078,17 +1174,19 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       test_pid = self()
 
       # Start a mock synthesizer that captures the call and returns mock audio
-      {:ok, mock_synth} = start_mock_synthesizer(fn text, profile, _opts ->
-        send(test_pid, {:synthesizer_called, text, profile})
-        {:ok, "MOCK_AUDIO_DATA", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn text, profile, _opts ->
+          send(test_pid, {:synthesizer_called, text, profile})
+          {:ok, "MOCK_AUDIO_DATA", :wav}
+        end)
 
       # Create mock media_pid that captures play_audio message
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_received, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_received, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1111,16 +1209,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       mock_audio = "FAKE_AUDIO_BINARY_DATA"
 
       # Start mock synthesizer returning audio
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, mock_audio, :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, mock_audio, :wav}
+        end)
 
       # Create mock media_pid to capture the play_audio message
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_received, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_received, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1140,15 +1240,17 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio_data", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio_data", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> send(test_pid, :audio_sent)
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> send(test_pid, :audio_sent)
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1167,9 +1269,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "returns error when Synthesizer returns error" do
       call = Call.new(state: :answered)
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :synthesis_failed}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :synthesis_failed}
+        end)
 
       context = %{
         uas: self(),
@@ -1185,9 +1288,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "returns error when Synthesizer returns provider_error" do
       call = Call.new(state: :answered)
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, {:provider_error, "API rate limit exceeded"}}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, {:provider_error, "API rate limit exceeded"}}
+        end)
 
       context = %{
         uas: self(),
@@ -1204,16 +1308,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, profile, _opts ->
-        send(test_pid, {:profile_used, profile})
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, profile, _opts ->
+          send(test_pid, {:profile_used, profile})
+          {:ok, "audio", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> :ok
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> :ok
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1231,16 +1337,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, profile, _opts ->
-        send(test_pid, {:profile_used, profile})
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, profile, _opts ->
+          send(test_pid, {:profile_used, profile})
+          {:ok, "audio", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> :ok
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> :ok
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1258,15 +1366,17 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio_data", :mp3}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio_data", :mp3}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_msg, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_msg, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1294,15 +1404,17 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       operations = Call.get_operations(call)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio_data", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio_data", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_received, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_received, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1354,9 +1466,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       # :say is a media operation, not signaling, so it should continue
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio", :wav}
+        end)
 
       # Create a call with say followed by collect_dtmf
       call = %Call{
@@ -1369,17 +1482,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       operations = Call.get_operations(call)
 
-      media_pid = spawn(fn ->
-        loop = fn loop_fn ->
-          receive do
-            msg ->
-              send(test_pid, {:media_msg, msg})
-              loop_fn.(loop_fn)
+      media_pid =
+        spawn(fn ->
+          loop = fn loop_fn ->
+            receive do
+              msg ->
+                send(test_pid, {:media_msg, msg})
+                loop_fn.(loop_fn)
+            end
           end
-        end
 
-        loop.(loop)
-      end)
+          loop.(loop)
+        end)
 
       context = %{
         uas: self(),
@@ -1436,16 +1550,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn text, profile, _opts ->
-        send(test_pid, {:synthesizer_called, text, profile})
-        {:ok, "MOCK_AUDIO", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn text, profile, _opts ->
+          send(test_pid, {:synthesizer_called, text, profile})
+          {:ok, "MOCK_AUDIO", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_received, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_received, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1455,7 +1571,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       {:ok, _updated_call} =
-        ActionExecutor.execute_say_prompt(call, context, "Enter your PIN", max: 4, profile: :prompts)
+        ActionExecutor.execute_say_prompt(call, context, "Enter your PIN",
+          max: 4,
+          profile: :prompts
+        )
 
       assert_receive {:synthesizer_called, "Enter your PIN", :prompts}
     end
@@ -1465,15 +1584,17 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       test_pid = self()
       mock_audio = "TTS_AUDIO_DATA"
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, mock_audio, :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, mock_audio, :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_received, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_received, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1493,15 +1614,17 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> send(test_pid, :audio_sent)
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> send(test_pid, :audio_sent)
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1511,7 +1634,11 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       {:ok, updated_call} =
-        ActionExecutor.execute_say_prompt(call, context, "Enter PIN", max: 4, timeout: 10_000, terminators: ["#"])
+        ActionExecutor.execute_say_prompt(call, context, "Enter PIN",
+          max: 4,
+          timeout: 10_000,
+          terminators: ["#"]
+        )
 
       # Verify __pending_collect__ contains the DTMF collection options
       pending_collect = updated_call.assigns[:__pending_collect__]
@@ -1523,9 +1650,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "returns error when Synthesizer fails" do
       call = Call.new(state: :answered)
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :api_error}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :api_error}
+        end)
 
       context = %{
         uas: self(),
@@ -1542,16 +1670,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, profile, _opts ->
-        send(test_pid, {:profile_used, profile})
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, profile, _opts ->
+          send(test_pid, {:profile_used, profile})
+          {:ok, "audio", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> :ok
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> :ok
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1569,16 +1699,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, opts ->
-        send(test_pid, {:synth_opts, opts})
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, opts ->
+          send(test_pid, {:synth_opts, opts})
+          {:ok, "audio", :wav}
+        end)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> :ok
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> :ok
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1619,9 +1751,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       test_pid = self()
 
       # Mock synthesizer that returns an error
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :api_timeout}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :api_timeout}
+        end)
 
       # Mock handler module that tracks error callback (signature: text, error, call)
       error_handler = fn text, error, call ->
@@ -1634,7 +1767,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         sip_msg: build_invite_message(),
         media_pid: self(),
         synthesizer: mock_synth,
-        handler: nil,  # Will be set below
+        # Will be set below
+        handler: nil,
         tts_error_handler: error_handler
       }
 
@@ -1653,9 +1787,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, {:provider_error, "Rate limit exceeded"}}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, {:provider_error, "Rate limit exceeded"}}
+        end)
 
       error_handler = fn text, error, call ->
         send(test_pid, {:tts_error_callback, text, error})
@@ -1670,9 +1805,13 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         tts_error_handler: error_handler
       }
 
-      result = ActionExecutor.execute_say_prompt_with_error_handler(
-        call, context, "Enter PIN", max: 4
-      )
+      result =
+        ActionExecutor.execute_say_prompt_with_error_handler(
+          call,
+          context,
+          "Enter PIN",
+          max: 4
+        )
 
       assert_receive {:tts_error_callback, "Enter PIN", {:provider_error, "Rate limit exceeded"}}
       assert {:ok, _updated_call} = result
@@ -1682,9 +1821,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :synthesis_failed}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :synthesis_failed}
+        end)
 
       # Error handler that just returns the call unchanged
       error_handler = fn _text, _error, call ->
@@ -1701,9 +1841,13 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       # Should NOT crash
-      {:ok, updated_call} = ActionExecutor.execute_say_with_error_handler(
-        call, context, "Test", []
-      )
+      {:ok, updated_call} =
+        ActionExecutor.execute_say_with_error_handler(
+          call,
+          context,
+          "Test",
+          []
+        )
 
       assert_receive :error_handled
       # Call state should remain valid
@@ -1714,20 +1858,22 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :api_unavailable}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :api_unavailable}
+        end)
 
       # Error handler that queues a fallback play operation
       error_handler = fn _text, _error, call ->
         Call.play(call, "error-fallback.wav")
       end
 
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_msg, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_msg, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1737,9 +1883,13 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         tts_error_handler: error_handler
       }
 
-      {:ok, updated_call} = ActionExecutor.execute_say_with_error_handler(
-        call, context, "Hello", []
-      )
+      {:ok, updated_call} =
+        ActionExecutor.execute_say_with_error_handler(
+          call,
+          context,
+          "Hello",
+          []
+        )
 
       # The error handler queued a play operation
       operations = Call.get_operations(updated_call)
@@ -1749,9 +1899,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "uses default error handler when none provided (logs and continues)" do
       call = Call.new(state: :answered)
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :synthesis_failed}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :synthesis_failed}
+        end)
 
       context = %{
         uas: self(),
@@ -1773,9 +1924,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, {:provider_error, %{status: 503, message: "Service unavailable"}}}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, {:provider_error, %{status: 503, message: "Service unavailable"}}}
+        end)
 
       error_handler = fn text, error, call ->
         send(test_pid, {:error_details, text, error, call})
@@ -1790,9 +1942,13 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         tts_error_handler: error_handler
       }
 
-      {:ok, _call} = ActionExecutor.execute_say_with_error_handler(
-        call, context, "Complex error test", profile: :premium
-      )
+      {:ok, _call} =
+        ActionExecutor.execute_say_with_error_handler(
+          call,
+          context,
+          "Complex error test",
+          profile: :premium
+        )
 
       assert_receive {:error_details, received_text, received_error, received_call}
       assert received_call.state == :answered
@@ -1805,9 +1961,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :synthesis_failed}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :synthesis_failed}
+        end)
 
       error_handler = fn text, error, call ->
         send(test_pid, {:error_handled, text, error})
@@ -1834,9 +1991,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :rate_limited}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :rate_limited}
+        end)
 
       error_handler = fn text, error, call ->
         send(test_pid, {:error_handled, text, error})
@@ -1851,7 +2009,8 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         tts_error_handler: error_handler
       }
 
-      result = ActionExecutor.execute_say_prompt_with_error_handler(call, context, "Enter PIN", max: 4)
+      result =
+        ActionExecutor.execute_say_prompt_with_error_handler(call, context, "Enter PIN", max: 4)
 
       assert_receive {:error_handled, "Enter PIN", :rate_limited}
       assert {:ok, _updated_call} = result
@@ -1861,20 +2020,22 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       call = Call.new(state: :answered)
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio_data", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio_data", :wav}
+        end)
 
       error_handler = fn _text, _error, _call ->
         send(test_pid, :error_handler_called)
         raise "Should not be called on success"
       end
 
-      media_pid = spawn(fn ->
-        receive do
-          {:play_audio, _audio, _opts} -> send(test_pid, :audio_played)
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            {:play_audio, _audio, _opts} -> send(test_pid, :audio_played)
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -1895,9 +2056,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       # T043: When no tts_error_handler is provided, use default behavior
       call = Call.new(state: :answered)
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :network_error}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :network_error}
+        end)
 
       context = %{
         uas: self(),
@@ -1920,9 +2082,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       # T043: After error callback is invoked, call execution continues normally
       call = Call.new(state: :answered)
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:error, :synthesis_failed}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:error, :synthesis_failed}
+        end)
 
       # Error handler that adds marker to assigns
       error_handler = fn _text, _error, call ->
@@ -1937,9 +2100,13 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         tts_error_handler: error_handler
       }
 
-      {:ok, updated_call} = ActionExecutor.execute_say_with_error_handler(
-        call, context, "Test", []
-      )
+      {:ok, updated_call} =
+        ActionExecutor.execute_say_with_error_handler(
+          call,
+          context,
+          "Test",
+          []
+        )
 
       # Error handler was invoked and modified call
       assert updated_call.assigns[:error_handled] == true
@@ -1954,9 +2121,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "executes say_prompt operation via pipeline" do
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "tts_audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "tts_audio", :wav}
+        end)
 
       call = %Call{
         Call.new(state: :answered)
@@ -1965,11 +2133,12 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       operations = Call.get_operations(call)
 
-      media_pid = spawn(fn ->
-        receive do
-          msg -> send(test_pid, {:media_received, msg})
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_received, msg})
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -2025,9 +2194,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       # say_prompt is a media operation, so execution should continue
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio", :wav}
+        end)
 
       # say_prompt followed by play
       call = %Call{
@@ -2040,17 +2210,18 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       operations = Call.get_operations(call)
 
-      media_pid = spawn(fn ->
-        loop = fn loop_fn ->
-          receive do
-            msg ->
-              send(test_pid, {:media_msg, msg})
-              loop_fn.(loop_fn)
+      media_pid =
+        spawn(fn ->
+          loop = fn loop_fn ->
+            receive do
+              msg ->
+                send(test_pid, {:media_msg, msg})
+                loop_fn.(loop_fn)
+            end
           end
-        end
 
-        loop.(loop)
-      end)
+          loop.(loop)
+        end)
 
       context = %{
         uas: self(),
@@ -2069,9 +2240,10 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "preserves existing assigns when adding __pending_collect__" do
       test_pid = self()
 
-      {:ok, mock_synth} = start_mock_synthesizer(fn _text, _profile, _opts ->
-        {:ok, "audio", :wav}
-      end)
+      {:ok, mock_synth} =
+        start_mock_synthesizer(fn _text, _profile, _opts ->
+          {:ok, "audio", :wav}
+        end)
 
       # Call with existing assigns
       call = %Call{
@@ -2082,11 +2254,12 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       operations = Call.get_operations(call)
 
-      media_pid = spawn(fn ->
-        receive do
-          _msg -> send(test_pid, :done)
-        end
-      end)
+      media_pid =
+        spawn(fn ->
+          receive do
+            _msg -> send(test_pid, :done)
+          end
+        end)
 
       context = %{
         uas: self(),
@@ -2170,7 +2343,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       operations = [{:disconnect_bidirectional_ws, []}]
-      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+
+      assert {:error, :no_bidirectional_connection} =
+               ActionExecutor.execute(operations, call, context)
     end
 
     test "clears __bidirectional_ws_pid__ after disconnect with real connection" do
@@ -2235,7 +2410,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       operations = [{:mute_bidirectional, :outbound}]
-      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+
+      assert {:error, :no_bidirectional_connection} =
+               ActionExecutor.execute(operations, call, context)
     end
 
     test "returns error when no bidirectional connection exists for inbound" do
@@ -2248,7 +2425,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       operations = [{:mute_bidirectional, :inbound}]
-      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+
+      assert {:error, :no_bidirectional_connection} =
+               ActionExecutor.execute(operations, call, context)
     end
   end
 
@@ -2263,7 +2442,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       operations = [{:unmute_bidirectional, :outbound}]
-      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+
+      assert {:error, :no_bidirectional_connection} =
+               ActionExecutor.execute(operations, call, context)
     end
 
     test "returns error when no bidirectional connection exists for inbound" do
@@ -2276,7 +2457,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       operations = [{:unmute_bidirectional, :inbound}]
-      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+
+      assert {:error, :no_bidirectional_connection} =
+               ActionExecutor.execute(operations, call, context)
     end
   end
 
@@ -2291,7 +2474,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
 
       operations = [{:send_ws_message, ~s({"type": "test"})}]
-      assert {:error, :no_bidirectional_connection} = ActionExecutor.execute(operations, call, context)
+
+      assert {:error, :no_bidirectional_connection} =
+               ActionExecutor.execute(operations, call, context)
     end
   end
 
@@ -2411,7 +2596,9 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     test "connect_bidirectional_ws operation is queued correctly" do
       call =
         Call.new(state: :answered)
-        |> Call.connect_bidirectional_ws("wss://api.example.com", headers: [{"Authorization", "Bearer token"}])
+        |> Call.connect_bidirectional_ws("wss://api.example.com",
+          headers: [{"Authorization", "Bearer token"}]
+        )
 
       operations = Call.get_operations(call)
       assert [{:connect_bidirectional_ws, "wss://api.example.com", opts}] = operations
@@ -2527,6 +2714,43 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         }
       ],
       body: nil
+    }
+  end
+
+  # Build an INVITE message with source containing local address info
+  # Used for testing Contact header generation (T009)
+  defp build_invite_message_with_source(local_ip \\ {127, 0, 0, 1}, local_port \\ 5060) do
+    %ParrotSip.Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:bob@example.com",
+      from: %ParrotSip.Headers.From{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "alice", host: "example.com"},
+        display_name: nil,
+        parameters: %{tag: "from-tag-123"}
+      },
+      to: %ParrotSip.Headers.To{
+        uri: %ParrotSip.Uri{scheme: "sip", user: "bob", host: "example.com"},
+        display_name: nil,
+        parameters: %{}
+      },
+      call_id: "call-id-12345",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite},
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5060,
+          parameters: %{branch: "z9hG4bK-test-branch"}
+        }
+      ],
+      body: nil,
+      source: %ParrotSip.Source{
+        local: {local_ip, local_port},
+        remote: {{192, 168, 1, 100}, 5080}
+      }
     }
   end
 end

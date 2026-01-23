@@ -1211,6 +1211,99 @@ defmodule Parrot.Bridge.HandlerTest do
     end
   end
 
+  describe "setup_media_session/2 (T007)" do
+    @moduletag :unit
+
+    @valid_sdp """
+    v=0
+    o=user1 123 123 IN IP4 192.168.1.100
+    s=Session
+    c=IN IP4 192.168.1.100
+    t=0 0
+    m=audio 5004 RTP/AVP 0
+    a=rtpmap:0 PCMU/8000
+    """
+
+    test "returns :no_sdp when INVITE body is empty" do
+      invite = create_test_invite() |> Map.put(:body, "")
+      assert :no_sdp = Handler.setup_media_session(invite, %{})
+    end
+
+    test "returns :no_sdp when INVITE body is nil (late-offer flow)" do
+      invite = create_test_invite() |> Map.put(:body, nil)
+      assert :no_sdp = Handler.setup_media_session(invite, %{})
+    end
+
+    test "returns {:ok, media_pid, sdp_answer} when SDP negotiation succeeds" do
+      # Create INVITE with valid SDP body
+      invite = create_test_invite() |> Map.put(:body, @valid_sdp)
+
+      # Note: This test depends on MediaSessionSupervisor being available
+      # In TDD red phase, this test may fail if MediaSessionSupervisor not started
+      # or if process_offer returns an error
+      result = Handler.setup_media_session(invite, %{})
+
+      case result do
+        {:ok, media_pid, sdp_answer} ->
+          assert is_pid(media_pid)
+          assert is_binary(sdp_answer)
+          # SDP answer should contain v=0 and m= lines
+          assert String.contains?(sdp_answer, "v=0")
+          # Cleanup
+          send(media_pid, {:stop_media})
+
+        {:error, reason} ->
+          # TDD red phase: This is expected to fail initially
+          flunk(
+            "setup_media_session failed with #{inspect(reason)} - this is expected in TDD red phase until implementation is complete"
+          )
+
+        :no_sdp ->
+          flunk("Expected {:ok, media_pid, sdp_answer} but got :no_sdp")
+      end
+    end
+
+    test "returns {:error, reason} when SDP negotiation fails (forced error for test)" do
+      invite = create_test_invite() |> Map.put(:body, @valid_sdp)
+
+      # Use test injection to force an SDP error
+      args = %{force_sdp_error: true, sdp_error_reason: :codec_mismatch}
+
+      assert {:error, :codec_mismatch} = Handler.setup_media_session(invite, args)
+    end
+
+    test "creates MediaSession with correct session_id based on call_id" do
+      invite = create_test_invite() |> Map.put(:body, @valid_sdp)
+
+      result = Handler.setup_media_session(invite, %{})
+
+      case result do
+        {:ok, media_pid, _sdp_answer} ->
+          # The session should be registered with session_id = "call_<call_id>"
+          expected_session_id = "call_#{invite.call_id}"
+
+          case ParrotMedia.MediaSessionSupervisor.find_session(expected_session_id) do
+            {:ok, found_pid} ->
+              assert found_pid == media_pid
+
+            {:error, :not_found} ->
+              flunk(
+                "MediaSession not registered with expected session_id: #{expected_session_id}"
+              )
+          end
+
+          # Cleanup
+          send(media_pid, {:stop_media})
+
+        {:error, reason} ->
+          flunk("setup_media_session failed: #{inspect(reason)}")
+
+        :no_sdp ->
+          flunk("Expected MediaSession to be created")
+      end
+    end
+  end
+
   # ===========================================================================
   # T042: BYE Handler Dispatches to Call.Server
   # ===========================================================================
@@ -1665,7 +1758,11 @@ defmodule Parrot.Bridge.HandlerTest do
 
       @impl true
       def handle_publish(presentity, presence_state) do
-        send(Application.get_env(:parrot, :test_pid), {:publish_called, presentity, presence_state})
+        send(
+          Application.get_env(:parrot, :test_pid),
+          {:publish_called, presentity, presence_state}
+        )
+
         :ok
       end
     end
