@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAC scenario: PUBLISH presence state
+
+  Flow:
+  1. Send PUBLISH request with presence document (PIDF)
+  2. Receive 200 OK response with SIP-ETag
+
+  RFC References:
+  - RFC 3903: SIP Extension for Event State Publication
+    Section 4: PUBLISH Method
+    Section 4.4: Presence Event Package Considerations
+  - RFC 3863: Presence Information Data Format (PIDF)
+
+  This scenario publishes presence state with:
+  - Event: presence (indicating presence event package)
+  - Content-Type: application/pidf+xml
+  - Body: PIDF document indicating "open" (available) status
+
+  The server should respond with 200 OK containing:
+  - SIP-ETag: Entity tag for conditional operations
+  - Expires: Actual expiration time assigned
+-->
+
+<scenario name="UAC PUBLISH Presence">
+  <!-- Send PUBLISH request with presence document -->
+  <send retrans="500">
+    <![CDATA[
+
+      PUBLISH sip:alice@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:alice@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 PUBLISH
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: presence
+      Expires: 3600
+      Content-Type: application/pidf+xml
+      Content-Length: [len]
+
+      <?xml version="1.0" encoding="UTF-8"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:alice@[remote_ip]">
+        <tuple id="tuple1">
+          <status>
+            <basic>open</basic>
+          </status>
+          <contact priority="1.0">sip:alice@[local_ip]:[local_port]</contact>
+          <note>Available</note>
+        </tuple>
+      </presence>
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK with SIP-ETag -->
+  <recv response="200" crlf="true"/>
+
+</scenario>

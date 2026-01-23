@@ -84,6 +84,10 @@ defmodule ParrotSip.Message do
     :refer_to,
     # String.t() | nil
     :subject,
+    # SIP-ETag header for event state publication (RFC 3903)
+    :sip_etag,
+    # SIP-If-Match header for conditional event state publication (RFC 3903)
+    :sip_if_match,
 
     # Catch-all for unknown/extension headers
     # map() - for headers we don't have parsers for
@@ -123,6 +127,8 @@ defmodule ParrotSip.Message do
           subscription_state: ParrotSip.Headers.SubscriptionState.t() | nil,
           refer_to: ParrotSip.Headers.ReferTo.t() | nil,
           subject: String.t() | nil,
+          sip_etag: String.t() | nil,
+          sip_if_match: String.t() | nil,
           other_headers: map()
         }
 
