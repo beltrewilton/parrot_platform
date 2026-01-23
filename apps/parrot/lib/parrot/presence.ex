@@ -169,11 +169,16 @@ defmodule Parrot.Presence do
     end
   end
 
+  # Default subscription expiry in seconds (RFC 3856 Section 6.4)
+  @default_expires 3600
+
   # Send a NOTIFY message to a single subscriber
   # RFC 3265 Section 3.1.6: NOTIFY requests are sent to refresh subscriptions
   defp send_notify(subscription, presentity, pidf_body) do
     dialog_id = Map.get(subscription, :dialog_id)
     watcher = Map.get(subscription, :watcher)
+    # RFC 6665 Section 4.1.3: Subscription-State SHOULD include expires parameter
+    expires = Map.get(subscription, :expires)
 
     if dialog_id do
       Logger.debug(
@@ -181,7 +186,7 @@ defmodule Parrot.Presence do
       )
 
       # Build NOTIFY message per RFC 3265 Section 3.1.6
-      notify_msg = build_notify_message(presentity, pidf_body)
+      notify_msg = build_notify_message(presentity, pidf_body, expires)
 
       # Send via dialog
       case ParrotSip.DialogStatem.uac_request(dialog_id, notify_msg) do
@@ -196,15 +201,52 @@ defmodule Parrot.Presence do
     end
   end
 
-  # Build a NOTIFY request message
-  # RFC 3265 Section 3.1.6: NOTIFY MUST contain Event and Subscription-State headers
-  defp build_notify_message(presentity, pidf_body) do
+  @doc """
+  Builds a NOTIFY request message for presence notification.
+
+  This function creates a properly formatted SIP NOTIFY message with all
+  required headers per RFC 3265 Section 3.1.6 and RFC 6665 Section 4.1.3.
+
+  ## Arguments
+
+  - `presentity` - The SIP URI of the entity whose presence is being reported
+  - `pidf_body` - The PIDF+XML body containing the presence state
+  - `expires` - Remaining subscription time in seconds (nil defaults to 3600)
+
+  ## Returns
+
+  A `ParrotSip.Message` struct ready to be sent via the dialog.
+
+  ## RFC References
+
+  - RFC 3265 Section 3.1.6: NOTIFY MUST contain Event and Subscription-State headers
+  - RFC 6665 Section 4.1.3: Subscription-State SHOULD include expires parameter
+  - RFC 3856 Section 4: Presence NOTIFY message construction
+
+  ## Examples
+
+      iex> msg = Parrot.Presence.build_notify_message("sip:alice@example.com", "<pidf/>", 3600)
+      iex> msg.method
+      :notify
+      iex> msg.event.event
+      "presence"
+
+  """
+  @spec build_notify_message(String.t(), String.t(), non_neg_integer() | nil) ::
+          ParrotSip.Message.t()
+  def build_notify_message(presentity, pidf_body, expires) do
     alias ParrotSip.Message
     alias ParrotSip.Headers.{Event, SubscriptionState, ContentType}
 
+    # RFC 6665 Section 4.1.3: Use provided expires or default
+    actual_expires = expires || @default_expires
+
     Message.new_request(:notify, presentity)
     |> Map.put(:event, %Event{event: "presence", parameters: %{}})
-    |> Map.put(:subscription_state, %SubscriptionState{state: :active, parameters: %{}})
+    |> Map.put(:subscription_state, %SubscriptionState{
+      state: :active,
+      parameters: %{"expires" => Integer.to_string(actual_expires)}
+    })
     |> Map.put(:content_type, %ContentType{
       type: "application",
       subtype: "pidf+xml",
