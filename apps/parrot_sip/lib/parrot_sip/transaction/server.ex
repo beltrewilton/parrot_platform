@@ -16,7 +16,24 @@ defmodule ParrotSip.Transaction.Server do
 
   # RFC 3261 Section 7.1: Methods must be handled at UAS layer
   # RFC 6086: INFO method for application-level signaling (including DTMF)
-  @allowed_methods [:invite, :ack, :bye, :cancel, :options, :register, :info]
+  # RFC 6665: SUBSCRIBE/NOTIFY for SIP event notifications
+  # RFC 3903: PUBLISH for event state publication
+  # RFC 3428: MESSAGE for instant messaging
+  # RFC 3311: UPDATE for session modification
+  @allowed_methods [
+    :invite,
+    :ack,
+    :bye,
+    :cancel,
+    :options,
+    :register,
+    :info,
+    :subscribe,
+    :notify,
+    :publish,
+    :message,
+    :update
+  ]
 
   @spec process(any(), Message.t(), Handler.handler()) ::
           :ok
