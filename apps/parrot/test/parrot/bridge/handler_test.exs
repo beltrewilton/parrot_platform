@@ -1033,7 +1033,11 @@ defmodule Parrot.Bridge.HandlerTest do
 
       @impl true
       def handle_media_stopped(reason, call) do
-        send(Application.get_env(:parrot, :test_pid), {:media_stopped_called, reason, call.call_id})
+        send(
+          Application.get_env(:parrot, :test_pid),
+          {:media_stopped_called, reason, call.call_id}
+        )
+
         {:noreply, %{call | assigns: Map.put(call.assigns, :media_active, false)}}
       end
     end
@@ -1342,6 +1346,363 @@ defmodule Parrot.Bridge.HandlerTest do
       call_id: call_id,
       cseq: %ParrotSip.Headers.CSeq{number: 2, method: :bye},
       max_forwards: 70,
+      body: nil,
+      source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
+
+  # ===========================================================================
+  # SUBSCRIBE Routing Tests (RFC 3856, RFC 6665)
+  # ===========================================================================
+
+  describe "handle_subscribe/3 routing (RFC 3856 Section 5)" do
+    # PresenceHandler that allows all subscriptions and tracks calls
+    defmodule AllowingPresenceHandler do
+      @moduledoc false
+      use Parrot.PresenceHandler
+
+      @impl true
+      def authorize_subscription(watcher, presentity) do
+        send(Application.get_env(:parrot, :test_pid), {:authorize_called, watcher, presentity})
+        :allow
+      end
+
+      @impl true
+      def store_subscription(subscription) do
+        send(Application.get_env(:parrot, :test_pid), {:store_called, subscription})
+        :ok
+      end
+
+      @impl true
+      def get_presence(_presentity) do
+        %{status: :open, note: "Available"}
+      end
+    end
+
+    # PresenceHandler that denies subscriptions
+    defmodule DenyingPresenceHandler do
+      @moduledoc false
+      use Parrot.PresenceHandler
+
+      @impl true
+      def authorize_subscription(_watcher, _presentity) do
+        :deny
+      end
+    end
+
+    # PresenceHandler that returns pending (for approval flows)
+    defmodule PendingPresenceHandler do
+      @moduledoc false
+      use Parrot.PresenceHandler
+
+      @impl true
+      def authorize_subscription(_watcher, _presentity) do
+        :pending
+      end
+
+      @impl true
+      def store_subscription(subscription) do
+        send(Application.get_env(:parrot, :test_pid), {:store_called, subscription})
+        :ok
+      end
+
+      @impl true
+      def get_presence(_presentity) do
+        %{status: :closed, note: "Pending"}
+      end
+    end
+
+    # PresenceHandler that fails to store subscription
+    defmodule FailingStorePresenceHandler do
+      @moduledoc false
+      use Parrot.PresenceHandler
+
+      @impl true
+      def authorize_subscription(_watcher, _presentity) do
+        :allow
+      end
+
+      @impl true
+      def store_subscription(_subscription) do
+        {:error, :storage_failure}
+      end
+    end
+
+    # Router with presence handler
+    defmodule PresenceRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      presence(Parrot.Bridge.HandlerTest.AllowingPresenceHandler)
+    end
+
+    # Router with denying presence handler
+    defmodule DenyingPresenceRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      presence(Parrot.Bridge.HandlerTest.DenyingPresenceHandler)
+    end
+
+    # Router with pending presence handler
+    defmodule PendingPresenceRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      presence(Parrot.Bridge.HandlerTest.PendingPresenceHandler)
+    end
+
+    # Router with failing store handler
+    defmodule FailingStoreRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      presence(Parrot.Bridge.HandlerTest.FailingStorePresenceHandler)
+    end
+
+    # Router without presence handler
+    defmodule NoPresenceRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+    end
+
+    test "routes SUBSCRIBE to presence handler and returns 200 OK on success" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      # Should receive 200 OK for successful subscription
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+      assert response.reason_phrase == "OK"
+    end
+
+    test "returns 404 when no presence handler configured" do
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: NoPresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 404
+      assert response.reason_phrase == "Not Found"
+    end
+
+    test "calls authorize_subscription with watcher and presentity URIs" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      # Verify authorize_subscription was called with correct arguments
+      assert_receive {:authorize_called, watcher, presentity}, 500
+      assert watcher =~ "bob"
+      assert presentity =~ "alice"
+    end
+
+    test "returns 403 Forbidden when authorization is denied" do
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: DenyingPresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 403
+      assert response.reason_phrase == "Forbidden"
+    end
+
+    test "returns 202 Accepted when authorization is pending" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PendingPresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 202
+      assert response.reason_phrase == "Accepted"
+    end
+
+    test "calls store_subscription with subscription data after authorization" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      # Verify store_subscription was called with correct data
+      assert_receive {:store_called, subscription}, 500
+      assert subscription.watcher =~ "bob"
+      assert subscription.presentity =~ "alice"
+      assert is_binary(subscription.subscription_id)
+      assert is_integer(subscription.expires)
+    end
+
+    test "returns 500 when store_subscription fails" do
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: FailingStoreRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 500
+      assert response.reason_phrase == "Internal Server Error"
+    end
+
+    test "includes Expires header in successful response" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+      # Response should have Expires header matching granted expiration
+      assert response.expires != nil
+      assert is_integer(response.expires)
+    end
+
+    test "extracts expires from Expires header when present" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      # Create SUBSCRIBE with explicit Expires header
+      subscribe_msg = create_test_subscribe() |> Map.put(:expires, 1800)
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:store_called, subscription}, 500
+      assert subscription.expires == 1800
+    end
+
+    test "uses default expires (3600) when Expires header not present" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      # Create SUBSCRIBE without Expires header
+      subscribe_msg = create_test_subscribe() |> Map.put(:expires, nil)
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:store_called, subscription}, 500
+      assert subscription.expires == 3600
+    end
+
+    test "response includes correct headers from request" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      subscribe_msg = create_test_subscribe()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+
+      # Response should have same Call-ID, From, CSeq as request
+      assert response.call_id == subscribe_msg.call_id
+      assert response.from == subscribe_msg.from
+      assert response.cseq == subscribe_msg.cseq
+    end
+  end
+
+  describe "handle_subscribe/3 exports" do
+    test "handle_subscribe/3 is exported" do
+      Code.ensure_loaded!(Handler)
+      assert function_exported?(Handler, :handle_subscribe, 3)
+    end
+  end
+
+  # Helper to create a test SUBSCRIBE message
+  # RFC 3856 Section 5.1: SUBSCRIBE requests for presence
+  defp create_test_subscribe do
+    %Message{
+      type: :request,
+      method: :subscribe,
+      request_uri: "sip:alice@127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{"branch" => "z9hG4bK-subscribe-branch"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        display_name: nil,
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "bob",
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{"tag" => "from-tag-sub"}
+      },
+      to: %ParrotSip.Headers.To{
+        display_name: nil,
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "127.0.0.1",
+          port: 5060,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{}
+      },
+      call_id: "subscribe-call-id-#{System.unique_integer([:positive])}@127.0.0.1",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :subscribe},
+      event: %ParrotSip.Headers.Event{event: "presence", parameters: %{}},
+      max_forwards: 70,
+      expires: 3600,
       body: nil,
       source: %{ip: {127, 0, 0, 1}, port: 5080}
     }

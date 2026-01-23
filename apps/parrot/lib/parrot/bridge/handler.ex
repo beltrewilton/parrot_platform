@@ -514,6 +514,232 @@ defmodule Parrot.Bridge.Handler do
     :ok
   end
 
+  @doc """
+  Handles incoming SUBSCRIBE requests for presence event notification.
+
+  Routes to the presence handler specified in the router.
+  If no presence handler is configured, returns 404 Not Found.
+
+  ## Subscription Flow (RFC 6665, RFC 3856)
+
+  1. Extract watcher (From) and presentity (To/Request-URI) URIs
+  2. Call handler.authorize_subscription/2 for authorization check
+  3. Based on authorization result:
+     - :allow → Store subscription, send 200 OK, trigger initial NOTIFY
+     - :deny → Send 403 Forbidden
+     - :pending → Store subscription, send 202 Accepted (for approval flows)
+  4. Call handler.store_subscription/1 to persist the subscription
+  5. Send appropriate response with Expires header
+
+  ## RFC References
+
+  - RFC 6665 Section 4.2.1: Creating a Subscription
+  - RFC 3856 Section 5: SUBSCRIBE for Presence
+  """
+  @impl true
+  @spec handle_subscribe(ParrotSip.Transaction.t(), Message.t(), map()) :: :ok
+  def handle_subscribe(uas, req_sip_msg, %{router: router} = args) do
+    Logger.debug("[Bridge.Handler] Received SUBSCRIBE")
+
+    case router.__presence_handler__() do
+      nil ->
+        # No presence handler configured
+        Logger.warning("[Bridge.Handler] No presence handler configured")
+        not_found = Message.reply(req_sip_msg, 404, "Not Found")
+        send_response(uas, not_found, args)
+        :ok
+
+      handler_module ->
+        Logger.debug("[Bridge.Handler] Routing SUBSCRIBE to #{inspect(handler_module)}")
+        process_subscription(handler_module, uas, req_sip_msg, args)
+    end
+  end
+
+  # Process the subscription request through the handler callbacks
+  # RFC 6665 Section 4.2.1: Subscription creation
+  defp process_subscription(handler_module, uas, req_sip_msg, args) do
+    # Extract watcher and presentity URIs from SIP message
+    # RFC 3856 Section 5.1: Watcher = From, Presentity = To/Request-URI
+    watcher = extract_watcher_uri(req_sip_msg.from)
+    presentity = extract_presentity_uri(req_sip_msg)
+    expires = extract_subscription_expires(req_sip_msg)
+
+    Logger.debug(
+      "[Bridge.Handler] Subscription: Watcher=#{watcher}, Presentity=#{presentity}, Expires=#{expires}"
+    )
+
+    # RFC 6665 Section 4.2.1: Check authorization
+    case handler_module.authorize_subscription(watcher, presentity) do
+      :allow ->
+        # RFC 6665 Section 4.2.1.1: Authorized subscription
+        handle_allowed_subscription(
+          handler_module,
+          uas,
+          req_sip_msg,
+          args,
+          watcher,
+          presentity,
+          expires
+        )
+
+      :deny ->
+        # RFC 6665 Section 4.2.1.2: Denied subscription
+        Logger.warning(
+          "[Bridge.Handler] Subscription denied for #{watcher} watching #{presentity}"
+        )
+
+        forbidden = Message.reply(req_sip_msg, 403, "Forbidden")
+        send_response(uas, forbidden, args)
+        :ok
+
+      :pending ->
+        # RFC 6665 Section 4.2.1.3: Pending subscription (requires approval)
+        handle_pending_subscription(
+          handler_module,
+          uas,
+          req_sip_msg,
+          args,
+          watcher,
+          presentity,
+          expires
+        )
+    end
+  end
+
+  # Handle an authorized subscription
+  defp handle_allowed_subscription(
+         handler_module,
+         uas,
+         req_sip_msg,
+         args,
+         watcher,
+         presentity,
+         expires
+       ) do
+    # Generate unique subscription ID
+    subscription_id = generate_subscription_id()
+
+    # Build subscription data
+    subscription = %{
+      watcher: watcher,
+      presentity: presentity,
+      dialog_id: req_sip_msg.call_id,
+      expires: expires,
+      subscription_id: subscription_id
+    }
+
+    # Store the subscription
+    case handler_module.store_subscription(subscription) do
+      :ok ->
+        # Build and send 200 OK response with Expires header
+        # RFC 6665 Section 4.2.1: Response MUST contain Expires header
+        response =
+          Message.reply(req_sip_msg, 200, "OK")
+          |> Map.put(:expires, expires)
+
+        send_response(uas, response, args)
+
+        # Trigger initial NOTIFY with current presence state
+        # RFC 3856 Section 5.2: Initial NOTIFY after subscription
+        trigger_initial_notify(handler_module, subscription)
+
+        :ok
+
+      {:error, reason} ->
+        Logger.error("[Bridge.Handler] Failed to store subscription: #{inspect(reason)}")
+        error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+        send_response(uas, error_response, args)
+        :ok
+    end
+  end
+
+  # Handle a pending subscription (requires approval)
+  defp handle_pending_subscription(
+         handler_module,
+         uas,
+         req_sip_msg,
+         args,
+         watcher,
+         presentity,
+         expires
+       ) do
+    # Generate unique subscription ID
+    subscription_id = generate_subscription_id()
+
+    # Build subscription data with pending state
+    subscription = %{
+      watcher: watcher,
+      presentity: presentity,
+      dialog_id: req_sip_msg.call_id,
+      expires: expires,
+      subscription_id: subscription_id,
+      state: :pending
+    }
+
+    # Store the subscription (even in pending state)
+    case handler_module.store_subscription(subscription) do
+      :ok ->
+        # Build and send 202 Accepted response with Expires header
+        # RFC 6665 Section 4.2.1.3: Pending subscriptions return 202
+        response =
+          Message.reply(req_sip_msg, 202, "Accepted")
+          |> Map.put(:expires, expires)
+
+        send_response(uas, response, args)
+        :ok
+
+      {:error, reason} ->
+        Logger.error("[Bridge.Handler] Failed to store pending subscription: #{inspect(reason)}")
+        error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+        send_response(uas, error_response, args)
+        :ok
+    end
+  end
+
+  # Extract watcher URI from From header
+  # RFC 3856 Section 5.1: Watcher is identified in the From header
+  defp extract_watcher_uri(%{uri: %ParrotSip.Uri{} = uri}) do
+    ParrotSip.Uri.to_string(uri)
+  end
+
+  defp extract_watcher_uri(%{uri: uri}) when is_binary(uri), do: uri
+  defp extract_watcher_uri(_), do: "unknown"
+
+  # Extract presentity URI from To header or Request-URI
+  # RFC 3856 Section 5.1: Presentity is identified in the Request-URI or To header
+  defp extract_presentity_uri(%{to: %{uri: %ParrotSip.Uri{} = uri}}) do
+    ParrotSip.Uri.to_string(uri)
+  end
+
+  defp extract_presentity_uri(%{to: %{uri: uri}}) when is_binary(uri), do: uri
+  defp extract_presentity_uri(%{request_uri: uri}) when is_binary(uri), do: uri
+  defp extract_presentity_uri(_), do: "unknown"
+
+  # Extract subscription Expires value from message
+  # RFC 6665 Section 4.2.1: Default is 3600 seconds
+  defp extract_subscription_expires(%{expires: expires}) when is_integer(expires), do: expires
+  defp extract_subscription_expires(_), do: 3600
+
+  # Generate unique subscription ID
+  defp generate_subscription_id do
+    "sub-#{:erlang.unique_integer([:positive])}-#{:crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)}"
+  end
+
+  # Trigger initial NOTIFY to the subscriber with current presence state
+  # RFC 3856 Section 5.2: Notifier sends initial NOTIFY upon subscription
+  defp trigger_initial_notify(handler_module, subscription) do
+    # Get current presence state for the presentity
+    presence_state = handler_module.get_presence(subscription.presentity)
+
+    Logger.debug(
+      "[Bridge.Handler] Triggering initial NOTIFY for #{subscription.watcher} watching #{subscription.presentity}"
+    )
+
+    # Use Parrot.Presence.notify/2 to send the NOTIFY
+    # This is fire-and-forget, actual delivery is asynchronous
+    Parrot.Presence.notify(subscription.presentity, presence_state)
+  end
+
   # ============================================================================
   # SDP Extraction and MediaSession Creation (US1: SDP Negotiation)
   # ============================================================================
