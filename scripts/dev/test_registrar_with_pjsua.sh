@@ -76,10 +76,20 @@ echo "  Server port: $PORT"
 echo "  Log directory: $LOG_DIR"
 echo ""
 
+# Validate script exists before starting
+SCRIPT_FILE="$SCRIPT_DIR/test_registrar_presence.exs"
+if [ ! -f "$SCRIPT_FILE" ]; then
+    echo "Error: Script not found: $SCRIPT_FILE"
+    exit 1
+fi
+
 # Start the server in background with full logging
-SIP_TRACE=true LOG_LEVEL=debug nohup mix run "$SCRIPT_DIR/test_registrar_presence.exs" \
+SIP_TRACE=true LOG_LEVEL=debug nohup mix run "$SCRIPT_FILE" \
     > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
+
+# Set up signal handler immediately to catch signals during startup
+trap "echo ''; echo 'Stopping server...'; kill $SERVER_PID 2>/dev/null; echo 'Server stopped.'; exit 0" INT TERM
 
 # Wait for startup
 echo "Waiting for server startup (3 seconds)..."
@@ -176,8 +186,6 @@ echo ""
 
 # Wait for the server process
 # This allows Ctrl+C to stop both this script and the server
-trap "echo ''; echo 'Stopping server...'; kill $SERVER_PID 2>/dev/null; echo 'Server stopped.'; exit 0" INT TERM
-
 wait $SERVER_PID 2>/dev/null || true
 
 echo ""
