@@ -2,23 +2,200 @@ defmodule Parrot.Examples.Registrar do
   @moduledoc """
   A simple SIP registrar using the Parrot DSL layer.
 
-  Uses `Parrot.RegistrationHandler` behaviour for registration logic and
-  `Parrot.Router` for routing REGISTER requests. Stores registrations
-  in ETS.
+  This example demonstrates how to build a SIP registrar server using the
+  `Parrot.RegistrationHandler` behaviour for registration logic and
+  `Parrot.Router` for request routing. Registrations are stored in ETS.
+
+  ## Architecture Overview
+
+  ```
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                         Parrot.Examples.Registrar                       │
+  │                                                                         │
+  │  ┌─────────────────┐   ┌────────────────┐   ┌─────────────────────────┐│
+  │  │   TableOwner    │   │     Router     │   │        Handler          ││
+  │  │   (GenServer)   │   │  (register/1)  │   │ (RegistrationHandler)   ││
+  │  │                 │   │                │   │                         ││
+  │  │  Owns ETS table │   │ Routes REGISTER│   │ - get_password/1        ││
+  │  │  to prevent GC  │   │ to Handler     │   │ - authenticate/1        ││
+  │  │                 │   │                │   │ - store_binding/3       ││
+  │  │                 │   │                │   │ - get_bindings/1        ││
+  │  │                 │   │                │   │ - handle_reg_expired/2  ││
+  │  └─────────────────┘   └────────────────┘   └─────────────────────────┘│
+  │                                 │                       │              │
+  │                                 ▼                       ▼              │
+  │                        ┌─────────────────┐    ┌─────────────────────┐  │
+  │                        │ Parrot.Router   │    │     ETS Table       │  │
+  │                        │  `register/1`   │    │ :named, :public     │  │
+  │                        │    macro        │    │                     │  │
+  │                        └─────────────────┘    └─────────────────────┘  │
+  └─────────────────────────────────────────────────────────────────────────┘
+  ```
+
+  ## ETS Storage Pattern
+
+  Registrations are stored in an ETS table owned by a dedicated `TableOwner`
+  GenServer. This pattern prevents the table from being garbage collected when
+  the creating process exits.
+
+  **Table Configuration:**
+  - Name: `Parrot.Examples.Registrar` (same as module name)
+  - Type: `:set` (one binding per AOR)
+  - Access: `:public` (readable/writable by any process)
+  - Owned by: `TableOwner` GenServer
+
+  **Schema:**
+  ```elixir
+  {aor, %{contact: contact_uri, expires: seconds, registered_at: unix_timestamp}}
+  ```
+
+  For production, consider:
+  - Using `:bag` for multiple contacts per AOR
+  - Adding TTL tracking with `ExpiryManager`
+  - Persistence to database (Mnesia, Postgres, Redis)
+
+  ## Handler Callbacks
+
+  The `Handler` module implements `Parrot.RegistrationHandler` with these callbacks:
+
+  | Callback | Purpose | This Example |
+  |----------|---------|--------------|
+  | `get_password/1` | Lookup user's password for digest auth | Returns `""` (no auth) |
+  | `authenticate/1` | Validate credentials after digest check | Returns `:ok` (accept all) |
+  | `store_binding/3` | Store or update a registration binding | Inserts into ETS |
+  | `get_bindings/1` | Retrieve current bindings for an AOR | Lookups from ETS |
+  | `handle_registration_expired/2` | Called when registration expires | Deletes from ETS |
+
+  ## Router Configuration
+
+  The `Router` module uses `Parrot.Router` with the `register/1` macro:
+
+  ```elixir
+  defmodule Router do
+    use Parrot.Router
+    register(Parrot.Examples.Registrar.Handler)
+  end
+  ```
+
+  This routes all REGISTER requests to the specified handler. For combined
+  registration and presence, add:
+
+  ```elixir
+  defmodule Router do
+    use Parrot.Router
+    register(MyRegistrationHandler)
+    presence(MyPresenceHandler)
+  end
+  ```
 
   ## Running the Example
 
-      mix run test_registrar.exs
+  ```bash
+  # Using the dev script
+  mix run scripts/dev/test_registrar.exs
 
-  ## Testing
+  # Or start programmatically
+  iex> {:ok, stack} = Parrot.Examples.Registrar.start(port: 5080)
+  ```
 
-      gophone register -username=alice sip:127.0.0.1:15062
+  ## Testing with pjsua
 
-  ## What It Does
+  ```bash
+  pjsua --null-audio --no-tcp --local-port=5090 \\
+    --id="sip:alice@127.0.0.1" \\
+    --registrar="sip:127.0.0.1:15062" \\
+    --realm="*" --username="alice" --password="any"
+  ```
 
-  1. Accepts REGISTER requests (routed through Parrot.Router)
-  2. Stores registrations in memory (ETS)
-  3. Returns 200 OK with Contact headers
+  ## Inspecting Registrations
+
+  ```elixir
+  # List all registrations
+  Parrot.Examples.Registrar.list_registrations()
+
+  # Lookup specific AOR
+  Parrot.Examples.Registrar.lookup("sip:alice@127.0.0.1")
+  ```
+
+  ## Extending for Production
+
+  ### Adding Digest Authentication
+
+  ```elixir
+  defmodule MyHandler do
+    use Parrot.RegistrationHandler
+
+    @impl true
+    def get_password(username) do
+      case MyUserDB.get_password(username) do
+        nil -> :error
+        password -> {:ok, password}
+      end
+    end
+
+    @impl true
+    def authenticate(%{username: username}) do
+      if MyUserDB.is_active?(username), do: :ok, else: :error
+    end
+  end
+  ```
+
+  ### Integrating with Presence
+
+  ```elixir
+  @impl true
+  def store_binding(aor, contact, expires) do
+    # Store the binding
+    :ets.insert(:registrations, {aor, contact, expires})
+
+    # Update presence state
+    if expires > 0 do
+      Parrot.Presence.notify(aor, %{status: :open, note: "Available"})
+    else
+      Parrot.Presence.notify(aor, %{status: :closed, note: "Offline"})
+    end
+
+    :ok
+  end
+  ```
+
+  ### Database Persistence
+
+  ```elixir
+  @impl true
+  def store_binding(aor, contact, expires) do
+    Repo.insert_or_update!(%Registration{
+      aor: aor,
+      contact: contact,
+      expires: expires,
+      expires_at: DateTime.add(DateTime.utc_now(), expires)
+    })
+    :ok
+  end
+  ```
+
+  ## SIP Flow
+
+  ```
+  Client                        Registrar
+    |                               |
+    |------ REGISTER (no auth) ---->|
+    |                               |
+    |<---- 401 Unauthorized --------|  (WWW-Authenticate challenge)
+    |                               |
+    |-- REGISTER (with auth) ------>|
+    |                               |  get_password() -> validate digest
+    |                               |  authenticate() -> accept user
+    |                               |  store_binding() -> save to ETS
+    |<-------- 200 OK --------------|  (Contact: with expires)
+    |                               |
+  ```
+
+  ## RFC References
+
+  - RFC 3261 Section 10: Registrations
+  - RFC 3261 Section 22: Authentication (Digest)
+  - RFC 3665 Section 2: Registration Flows
   """
 
   require Logger

@@ -167,6 +167,70 @@ LOG_LEVEL=info mix run scripts/dev/test_error_handling.exs
 (sleep 2; echo "h"; echo "q") | pjsua --null-audio --no-tcp --local-port=5100 "sip:timeout@127.0.0.1:5080"    # Slow operation
 ```
 
+### Category 6: Registration and Presence Tests
+
+Test SIP REGISTER with digest authentication and presence subscriptions.
+
+**Scripts:**
+- `test_registrar.exs` - Basic registration with digest auth
+- `test_registrar_presence.exs` - Registration + presence integration
+- `test_registrar_with_pjsua.sh` - Orchestration script with logging
+
+**Test Users:**
+| Username | Password |
+|----------|----------|
+| alice | secret123 |
+| bob | secret456 |
+
+**Workflow (using orchestration script):**
+
+```bash
+# Terminal 1: Start server with logging
+./scripts/dev/test_registrar_with_pjsua.sh
+
+# Terminal 2: Register Alice (follow printed commands)
+pjsua --null-audio --no-tcp --local-port=5090 \
+  --log-file=<LOG_DIR>/pjsua_alice.log --log-level=5 \
+  --id="sip:alice@127.0.0.1" --registrar="sip:127.0.0.1:5080" \
+  --realm="*" --username="alice" --password="secret123"
+
+# Terminal 3: Register Bob (for presence testing)
+pjsua --null-audio --no-tcp --local-port=5091 \
+  --log-file=<LOG_DIR>/pjsua_bob.log --log-level=5 \
+  --id="sip:bob@127.0.0.1" --registrar="sip:127.0.0.1:5080" \
+  --realm="*" --username="bob" --password="secret456"
+```
+
+**Expected Registration Flow:**
+1. pjsua sends REGISTER (no credentials)
+2. Server responds 401 Unauthorized with WWW-Authenticate
+3. pjsua sends REGISTER with Authorization header
+4. Server responds 200 OK
+
+**pjsua Registration Commands:**
+- `ru` - Unregister (expires=0)
+- `rr` - Re-register
+- `Lr` - Show registration status
+
+**Presence Testing (in Bob's console):**
+```
+>>> +b sip:alice@127.0.0.1    # Add Alice as buddy
+>>> s                          # Subscribe to presence
+# Alice unregisters: ru
+# Bob receives NOTIFY: Alice offline
+# Alice re-registers: rr
+# Bob receives NOTIFY: Alice available
+```
+
+**Success Verification:**
+```bash
+# Check server logs for registration success
+grep -E "(401|200 OK|REGISTER)" server.log
+
+# Check for presence NOTIFY
+grep -E "(SUBSCRIBE|NOTIFY|presence)" server.log
+```
+
 ---
 
 ## pjsua Commands
@@ -875,6 +939,98 @@ grep -E "(Muting|Unmuting|connect_bidirectional_ws)" server.log
 **Common failures:**
 - WebSocket API functions not defined
 - Mute state not tracked
+
+---
+
+### test_registrar.exs
+
+**Purpose:** Basic SIP registration with digest authentication
+
+**pjsua command:**
+```bash
+pjsua --null-audio --no-tcp --local-port=5090 \
+  --id="sip:alice@127.0.0.1" --registrar="sip:127.0.0.1:5080" \
+  --realm="*" --username="alice" --password="secret123"
+```
+
+**Success grep:**
+```bash
+grep -E "\[DevRegistrar\] (Storing binding|Looking up password)" server.log
+```
+
+**Common failures:**
+- Wrong password results in 403 Forbidden
+- Unknown user results in 403 Forbidden
+
+---
+
+### test_registrar_presence.exs
+
+**Purpose:** Registration with presence state integration
+
+**pjsua commands:**
+```bash
+# Terminal 2 - Alice
+pjsua --null-audio --no-tcp --local-port=5090 \
+  --id="sip:alice@127.0.0.1" --registrar="sip:127.0.0.1:5080" \
+  --realm="*" --username="alice" --password="secret123"
+
+# Terminal 3 - Bob
+pjsua --null-audio --no-tcp --local-port=5091 \
+  --id="sip:bob@127.0.0.1" --registrar="sip:127.0.0.1:5080" \
+  --realm="*" --username="bob" --password="secret456"
+```
+
+**Presence testing (in Bob's console):**
+```
+>>> +b sip:alice@127.0.0.1
+>>> s
+# Wait for NOTIFY
+# In Alice: ru (unregister)
+# Bob receives NOTIFY: offline
+# In Alice: rr (re-register)
+# Bob receives NOTIFY: available
+```
+
+**Success grep:**
+```bash
+grep -E "(Notifying presence|SUBSCRIBE|NOTIFY)" server.log
+```
+
+**Common failures:**
+- Presence not updating on registration change
+- NOTIFY not delivered to subscribers
+
+---
+
+### test_registrar_with_pjsua.sh
+
+**Purpose:** Orchestration script for full registrar testing with logging
+
+**Usage:**
+```bash
+./scripts/dev/test_registrar_with_pjsua.sh [port]
+```
+
+**Features:**
+- Creates timestamped log directory in `logs/`
+- Starts server with `SIP_TRACE=true LOG_LEVEL=debug`
+- Outputs exact pjsua commands with log file paths
+- Handles Ctrl+C gracefully
+
+**Log locations:**
+- Server: `logs/registrar_TIMESTAMP/server.log`
+- Alice: `logs/registrar_TIMESTAMP/pjsua_alice.log`
+- Bob: `logs/registrar_TIMESTAMP/pjsua_bob.log`
+
+**Success verification:**
+```bash
+# Check server started
+grep "Server listening on port" logs/registrar_*/server.log
+
+# Check registration flow
+grep -E "(401|200 OK|REGISTER)" logs/registrar_*/server.log
+```
 
 ---
 
