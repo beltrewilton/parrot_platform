@@ -955,6 +955,8 @@ defmodule ParrotMedia.MediaSession do
 
   # Codec mapping between symbols and RTP payload types
   # Codec mapping - using standard SDP names
+  # Per RFC 3551: PCMU (payload type 0), PCMA (payload type 8)
+  defp codec_info(:pcmu), do: {0, "PCMU/8000", ParrotMedia.AlawPipeline}
   defp codec_info(:pcma), do: {8, "PCMA/8000", ParrotMedia.AlawPipeline}
   defp codec_info(:opus), do: {111, "opus/48000/1", ParrotMedia.OpusPipeline}
 
@@ -1202,7 +1204,11 @@ defmodule ParrotMedia.MediaSession do
 
   defp extract_offered_codecs(audio_media) do
     # Map payload types to codec names
+    # Per RFC 3551: Static payload types for audio
+    #   0 = PCMU (G.711 mu-law)
+    #   8 = PCMA (G.711 A-law)
     static_codec_map = %{
+      0 => :pcmu,
       8 => :pcma
     }
 
@@ -1214,6 +1220,7 @@ defmodule ParrotMedia.MediaSession do
         case String.downcase(rtpmap.encoding) do
           "opus" -> {rtpmap.payload_type, :opus}
           "pcma" -> {rtpmap.payload_type, :pcma}
+          "pcmu" -> {rtpmap.payload_type, :pcmu}
           _ -> nil
         end
       end)

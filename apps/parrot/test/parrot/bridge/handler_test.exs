@@ -1235,8 +1235,13 @@ defmodule Parrot.Bridge.HandlerTest do
     end
 
     test "returns {:ok, media_pid, sdp_answer} when SDP negotiation succeeds" do
-      # Create INVITE with valid SDP body
-      invite = create_test_invite() |> Map.put(:body, @valid_sdp)
+      # Create INVITE with valid SDP body and unique call_id to avoid conflicts with other tests
+      unique_call_id = "sdp-success-#{System.unique_integer([:positive])}@127.0.0.1"
+
+      invite =
+        create_test_invite()
+        |> Map.put(:body, @valid_sdp)
+        |> Map.put(:call_id, unique_call_id)
 
       # Note: This test depends on MediaSessionSupervisor being available
       # In TDD red phase, this test may fail if MediaSessionSupervisor not started
@@ -1273,14 +1278,20 @@ defmodule Parrot.Bridge.HandlerTest do
     end
 
     test "creates MediaSession with correct session_id based on call_id" do
-      invite = create_test_invite() |> Map.put(:body, @valid_sdp)
+      # Use unique call_id to avoid conflicts with other tests
+      unique_call_id = "session-id-test-#{System.unique_integer([:positive])}@127.0.0.1"
+
+      invite =
+        create_test_invite()
+        |> Map.put(:body, @valid_sdp)
+        |> Map.put(:call_id, unique_call_id)
 
       result = Handler.setup_media_session(invite, %{})
 
       case result do
         {:ok, media_pid, _sdp_answer} ->
           # The session should be registered with session_id = "call_<call_id>"
-          expected_session_id = "call_#{invite.call_id}"
+          expected_session_id = "call_#{unique_call_id}"
 
           case ParrotMedia.MediaSessionSupervisor.find_session(expected_session_id) do
             {:ok, found_pid} ->
