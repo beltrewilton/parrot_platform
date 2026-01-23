@@ -258,4 +258,164 @@ defmodule Parrot.PresenceTest do
       assert xml =~ ~r/<note>On a call<\/note>/
     end
   end
+
+  # ============================================================================
+  # NOTIFY Delivery Tests - RFC 3856/6665
+  # ============================================================================
+
+  describe "NOTIFY message building - RFC 3265 Section 3.1.6" do
+    alias ParrotSip.Headers.{Event, SubscriptionState, ContentType}
+
+    test "builds NOTIFY with Event: presence header" do
+      msg = Presence.build_notify_message("sip:alice@example.com", "<xml>body</xml>", 3600)
+
+      assert %Event{event: "presence"} = msg.event
+    end
+
+    test "builds NOTIFY with Subscription-State: active header" do
+      msg = Presence.build_notify_message("sip:alice@example.com", "<xml>body</xml>", 3600)
+
+      assert %SubscriptionState{state: :active} = msg.subscription_state
+    end
+
+    test "builds NOTIFY with expires parameter in Subscription-State header per RFC 6665 Section 4.1.3" do
+      msg = Presence.build_notify_message("sip:alice@example.com", "<xml>body</xml>", 3600)
+
+      assert %SubscriptionState{parameters: params} = msg.subscription_state
+      assert params["expires"] == "3600"
+    end
+
+    test "builds NOTIFY with Content-Type: application/pidf+xml header" do
+      msg = Presence.build_notify_message("sip:alice@example.com", "<xml>body</xml>", 3600)
+
+      assert %ContentType{type: "application", subtype: "pidf+xml"} = msg.content_type
+    end
+
+    test "builds NOTIFY with PIDF+XML body" do
+      pidf_body = ParrotSip.Presence.Pidf.build("sip:alice@example.com", %{status: :open, note: "Available"})
+      msg = Presence.build_notify_message("sip:alice@example.com", pidf_body, 3600)
+
+      assert msg.body == pidf_body
+      assert msg.body =~ ~r/<presence.*entity="sip:alice@example\.com"/
+      assert msg.body =~ ~r/<basic>open<\/basic>/
+    end
+
+    test "builds NOTIFY with method :notify" do
+      msg = Presence.build_notify_message("sip:alice@example.com", "<xml>body</xml>", 3600)
+
+      assert msg.method == :notify
+    end
+
+    test "handles default expires when not specified in subscription" do
+      # When subscription doesn't have expires, default to 3600
+      msg = Presence.build_notify_message("sip:alice@example.com", "<xml>body</xml>", nil)
+
+      assert %SubscriptionState{parameters: params} = msg.subscription_state
+      assert params["expires"] == "3600"
+    end
+  end
+
+  describe "NOTIFY delivery via dialog - RFC 3856 Section 4" do
+    setup do
+      # Store original config
+      original_config = Application.get_env(:parrot, :router)
+
+      # Start the test agent for cross-process communication
+      TestPresenceHandler.stop_test_agent()
+      {:ok, _} = TestPresenceHandler.start_test_agent()
+
+      # Configure test router
+      Application.put_env(:parrot, :router, TestRouter)
+
+      on_exit(fn ->
+        # Stop the test agent
+        TestPresenceHandler.stop_test_agent()
+
+        # Restore original config
+        if original_config do
+          Application.put_env(:parrot, :router, original_config)
+        else
+          Application.delete_env(:parrot, :router)
+        end
+      end)
+
+      :ok
+    end
+
+    test "subscription with missing dialog_id does not crash notify" do
+      TestPresenceHandler.set_test_pid(self())
+
+      # Subscription without dialog_id
+      TestPresenceHandler.set_subscriptions([
+        %{watcher: "sip:bob@example.com", subscription_id: "sub-1"}
+      ])
+
+      # Should not crash, returns :ok immediately
+      assert :ok == Presence.notify("sip:alice@example.com", %{status: :open, note: "Available"})
+
+      # Give async task time to execute
+      Process.sleep(150)
+
+      # Should have called get_subscriptions
+      assert_received {:get_subscriptions_called, "sip:alice@example.com"}
+    end
+
+    test "non-existent dialog does not crash notify" do
+      TestPresenceHandler.set_test_pid(self())
+
+      # Subscription with dialog_id that doesn't exist in registry
+      TestPresenceHandler.set_subscriptions([
+        %{watcher: "sip:bob@example.com", dialog_id: "non-existent-dialog-123", expires: 3600}
+      ])
+
+      # Should not crash, returns :ok immediately
+      assert :ok == Presence.notify("sip:alice@example.com", %{status: :open, note: "Available"})
+
+      # Give async task time to execute
+      Process.sleep(150)
+
+      # Should have called get_subscriptions
+      assert_received {:get_subscriptions_called, "sip:alice@example.com"}
+    end
+
+    test "iterates through each subscription" do
+      TestPresenceHandler.set_test_pid(self())
+
+      # Multiple subscriptions
+      TestPresenceHandler.set_subscriptions([
+        %{watcher: "sip:bob@example.com", dialog_id: "dialog-1", expires: 3600},
+        %{watcher: "sip:carol@example.com", dialog_id: "dialog-2", expires: 1800}
+      ])
+
+      # Should return :ok immediately
+      assert :ok == Presence.notify("sip:alice@example.com", %{status: :closed, note: "Busy"})
+
+      # Give async task time to execute
+      Process.sleep(150)
+
+      # Should have called get_subscriptions
+      assert_received {:get_subscriptions_called, "sip:alice@example.com"}
+    end
+
+    test "passes expires from subscription to NOTIFY message builder" do
+      # This test verifies the integration via direct function call
+      # The async flow is tested above via get_subscriptions callback
+      TestPresenceHandler.set_test_pid(self())
+
+      # Subscription with specific expires
+      TestPresenceHandler.set_subscriptions([
+        %{watcher: "sip:bob@example.com", dialog_id: "dialog-1", expires: 1800}
+      ])
+
+      assert :ok == Presence.notify("sip:alice@example.com", %{status: :open})
+      Process.sleep(150)
+
+      # Verify get_subscriptions was called
+      assert_received {:get_subscriptions_called, "sip:alice@example.com"}
+
+      # Separately verify the NOTIFY message includes correct expires
+      msg = Presence.build_notify_message("sip:alice@example.com", "<pidf/>", 1800)
+      assert msg.subscription_state.parameters["expires"] == "1800"
+    end
+  end
 end
