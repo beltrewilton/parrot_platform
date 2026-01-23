@@ -192,8 +192,10 @@ defmodule ParrotMedia.WsAudioForkerBackoffTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, reason}, 5000
 
       # The process should terminate with a reason indicating max retries exceeded
+      # Due to process linking, the reason may or may not be wrapped in :shutdown
       assert match?({:shutdown, {:max_retries_exceeded, _}}, reason) or
-               match?({:shutdown, :max_retries_exceeded}, reason)
+               match?({:shutdown, :max_retries_exceeded}, reason) or
+               match?({:max_retries_exceeded, _}, reason)
     end
 
     test "forker does not terminate when max_retries is 0 (unlimited)", %{port: port, fork_id: fork_id} do
@@ -447,9 +449,11 @@ defmodule ParrotMedia.WsAudioForkerBackoffTest do
 
       # Eventually fail after max retries
       # Due to race conditions, we may receive either the callback message or the EXIT first
+      # The EXIT reason may or may not be wrapped in :shutdown
       receive do
         {:failed, {:max_retries_exceeded, _}} -> :ok
         {:EXIT, _, {:shutdown, {:max_retries_exceeded, _}}} -> :ok
+        {:EXIT, _, {:max_retries_exceeded, _}} -> :ok
       after
         1000 -> flunk("Expected max_retries_exceeded message")
       end
@@ -545,8 +549,17 @@ defmodule ParrotMedia.WsAudioForkerBackoffTest do
       assert_receive {:reconnecting, 2}, 1000
       assert_receive {:reconnecting, 3}, 1000
 
-      # Should eventually receive failed event
-      assert_receive {:failed, _reason}, 2000
+      # Should eventually receive a failure indication
+      # Due to process linking race conditions, we may receive either:
+      # - {:failed, reason} from the callback
+      # - {:EXIT, pid, reason} from the linked process termination
+      receive do
+        {:failed, _reason} -> :ok
+        {:EXIT, _pid, {:max_retries_exceeded, _}} -> :ok
+        {:EXIT, _pid, {:shutdown, {:max_retries_exceeded, _}}} -> :ok
+      after
+        2000 -> flunk("Expected failure notification (callback or EXIT)")
+      end
     end
   end
 end

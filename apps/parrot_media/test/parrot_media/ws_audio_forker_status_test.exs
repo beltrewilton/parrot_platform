@@ -635,5 +635,71 @@ defmodule ParrotMedia.WsAudioForkerStatusTest do
 
       WsAudioForker.stop(pid)
     end
+
+    test "backpressure_warning callback is invoked when frames are dropped", %{
+      port: port,
+      fork_id: fork_id,
+      url: url
+    } do
+      Process.flag(:trap_exit, true)
+
+      # Define a callback that sends backpressure warnings to the test process
+      defmodule BackpressureCallback do
+        @behaviour ParrotMedia.WsAudioForker.Callback
+
+        @impl true
+        def handle_fork_event({:fork_event, _fork_id, {:backpressure_warning, drops}}, state) do
+          send(state.test_pid, {:backpressure_warning, drops})
+          {:ok, state}
+        end
+
+        def handle_fork_event(_event, state), do: {:ok, state}
+      end
+
+      # Use a very small buffer (2) to easily trigger overflow
+      {:ok, config} =
+        Config.new(
+          fork_id: fork_id,
+          url: url,
+          buffer_size: 2,
+          max_retries: 10,
+          backoff_initial_ms: 200,
+          backoff_max_ms: 500,
+          callback_module: BackpressureCallback,
+          callback_state: %{test_pid: self()}
+        )
+
+      {:ok, pid} = WsAudioForker.start_link(config)
+
+      # Wait for connection
+      Process.sleep(100)
+
+      # Stop server to force disconnect (audio will be buffered)
+      stop_supervised({:mock_ws_server, port})
+      Process.sleep(100)
+
+      # Fill the buffer exactly (2 frames)
+      WsAudioForker.send_audio(pid, <<1>>)
+      WsAudioForker.send_audio(pid, <<2>>)
+      Process.sleep(50)
+
+      # No backpressure warnings yet
+      refute_receive {:backpressure_warning, _}
+
+      # Send one more frame - this should trigger backpressure
+      WsAudioForker.send_audio(pid, <<3>>)
+      Process.sleep(50)
+
+      # Should receive backpressure warning with drop count 1
+      assert_receive {:backpressure_warning, 1}, 1000
+
+      # Send another frame - should trigger another warning with drop count 2
+      WsAudioForker.send_audio(pid, <<4>>)
+      Process.sleep(50)
+
+      assert_receive {:backpressure_warning, 2}, 1000
+
+      WsAudioForker.stop(pid)
+    end
   end
 end
