@@ -162,6 +162,17 @@ defmodule Parrot.TTS.SynthesizerTest do
     {:ok, _} = MockCache.start_link()
     {:ok, _} = MockProvider.start_link()
 
+    # Start Task.Supervisor for TTS provider calls (required by Synthesizer)
+    # Use Process.unlink to prevent test process exit from killing the supervisor
+    case Task.Supervisor.start_link(name: Parrot.TTS.TaskSupervisor) do
+      {:ok, pid} ->
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+    end
+
     # The Synthesizer may already be started by the application supervisor
     # In that case, just use the existing one
     _pid = case Synthesizer.start_link(name: Synthesizer) do
