@@ -63,6 +63,10 @@ defmodule Parrot.TTS.Synthesizer do
   use GenServer
   require Logger
 
+  # Default timeout for TTS synthesis (30 seconds)
+  # Can be overridden via :timeout option in get_audio/3 or application config
+  @default_timeout 30_000
+
   # Client API
 
   @doc """
@@ -128,7 +132,8 @@ defmodule Parrot.TTS.Synthesizer do
     # Resolve profile name to full profile map if needed
     case resolve_profile(profile) do
       {:ok, resolved_profile} ->
-        GenServer.call(__MODULE__, {:get_audio, text, resolved_profile, opts}, :infinity)
+        timeout = Keyword.get(opts, :timeout, @default_timeout)
+        GenServer.call(__MODULE__, {:get_audio, text, resolved_profile, opts}, timeout)
 
       {:error, _reason} = error ->
         error
@@ -238,11 +243,42 @@ defmodule Parrot.TTS.Synthesizer do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
-    # Task process died - clean up in_flight tracking
-    # We could match on ref to remove specific entry, but for simplicity
-    # we'll let the timeout mechanism handle it
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    # Task exited - if it crashed (not :normal), notify waiters with error
+    # Normal exits are already handled via {:provider_result, ...} message
+    case find_in_flight_by_ref(state.in_flight, ref) do
+      nil ->
+        {:noreply, state}
+
+      {cache_key, waiting_froms} when reason != :normal ->
+        Logger.error("TTS provider task crashed: #{inspect(reason)}")
+
+        # Reply to all waiting callers with error
+        Enum.each(waiting_froms, fn from_pid ->
+          GenServer.reply(from_pid, {:error, {:provider_crash, reason}})
+        end)
+
+        updated_in_flight = Map.delete(state.in_flight, cache_key)
+        {:noreply, %{state | in_flight: updated_in_flight}}
+
+      {_cache_key, _waiting_froms} ->
+        # Normal exit - result already handled via {:provider_result, ...}
+        {:noreply, state}
+    end
+  end
+
+  # Task completion message - ignored since we handle results via {:provider_result, ...}
+  @impl true
+  def handle_info({ref, _result}, state) when is_reference(ref) do
+    # Task.async_nolink sends {ref, result} on completion - we ignore it since
+    # our task sends {:provider_result, ...} for actual result handling
     {:noreply, state}
+  end
+
+  defp find_in_flight_by_ref(in_flight, ref) do
+    Enum.find_value(in_flight, fn {cache_key, {waiting_froms, task_ref}} ->
+      if task_ref == ref, do: {cache_key, waiting_froms}
+    end)
   end
 
   # Private functions
@@ -254,40 +290,39 @@ defmodule Parrot.TTS.Synthesizer do
     # Convert profile map to keyword list for provider
     provider_config = profile_to_config(profile)
 
-    # Start async task to call provider
+    # Start supervised task for provider call (async_nolink prevents crash propagation)
     parent = self()
 
-    task_ref = make_ref()
+    task =
+      Task.Supervisor.async_nolink(Parrot.TTS.TaskSupervisor, fn ->
+        result =
+          case provider_module.synthesize(text, provider_config) do
+            {:ok, audio_data, format} ->
+              # Cache the result
+              metadata = %{
+                format: format,
+                cached_at: DateTime.utc_now()
+              }
 
-    spawn_link(fn ->
-      result =
-        case provider_module.synthesize(text, provider_config) do
-          {:ok, audio_data, format} ->
-            # Cache the result
-            metadata = %{
-              format: format,
-              cached_at: DateTime.utc_now()
-            }
+              case cache_module.put(cache_key, audio_data, metadata) do
+                :ok ->
+                  {:ok, audio_data, format}
 
-            case cache_module.put(cache_key, audio_data, metadata) do
-              :ok ->
-                {:ok, audio_data, format}
+                {:error, cache_error} ->
+                  # Log cache error but still return the audio
+                  Logger.warning("Failed to cache audio: #{inspect(cache_error)}")
+                  {:ok, audio_data, format}
+              end
 
-              {:error, cache_error} ->
-                # Log cache error but still return the audio
-                Logger.warning("Failed to cache audio: #{inspect(cache_error)}")
-                {:ok, audio_data, format}
-            end
+            {:error, reason} ->
+              {:error, reason}
+          end
 
-          {:error, reason} ->
-            {:error, reason}
-        end
+        send(parent, {:provider_result, cache_key, result})
+      end)
 
-      send(parent, {:provider_result, cache_key, result})
-    end)
-
-    # Track this request as in-flight
-    updated_in_flight = Map.put(state.in_flight, cache_key, {[from], task_ref})
+    # Track this request as in-flight with the task reference
+    updated_in_flight = Map.put(state.in_flight, cache_key, {[from], task.ref})
     {:noreply, %{state | in_flight: updated_in_flight}}
   end
 

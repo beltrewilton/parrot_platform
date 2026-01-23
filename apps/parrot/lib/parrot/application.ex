@@ -13,6 +13,8 @@ defmodule Parrot.Application do
     children = [
       # TTS Cache (ETS backend) - must start before Synthesizer
       Parrot.TTS.Cache.ETS,
+      # Task supervisor for TTS provider calls (prevents unbounded spawn_link)
+      {Task.Supervisor, name: Parrot.TTS.TaskSupervisor},
       # TTS Synthesizer GenServer
       Parrot.TTS.Synthesizer
     ]
