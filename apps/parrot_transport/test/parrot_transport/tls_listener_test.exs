@@ -18,8 +18,7 @@ defmodule ParrotTransport.TlsListenerTest do
 
       {:ok, pid} = TlsListener.start_link(config, self())
 
-      Process.sleep(50)
-
+      # Socket binding happens synchronously in init, so state is immediately :listening
       assert :listening = :sys.get_state(pid) |> elem(0)
     end
 
@@ -33,8 +32,7 @@ defmodule ParrotTransport.TlsListenerTest do
 
       {:ok, pid} = TlsListener.start_link(config, self())
 
-      Process.sleep(50)
-
+      # get_local_address is a sync call - no sleep needed
       assert {:ok, {_ip, 17100}} = TlsListener.get_local_address(pid)
     end
 
@@ -48,8 +46,7 @@ defmodule ParrotTransport.TlsListenerTest do
 
       {:ok, pid} = TlsListener.start_link(config, self())
 
-      Process.sleep(50)
-
+      # get_local_address is a sync call - no sleep needed
       assert {:ok, {_ip, port}} = TlsListener.get_local_address(pid)
       assert port > 0
     end
@@ -115,6 +112,7 @@ defmodule ParrotTransport.TlsListenerTest do
     end
 
     test "accepts incoming TLS connection", %{port: port} do
+      # ssl.connect with {:active, false} completes the handshake synchronously
       {:ok, client} =
         :ssl.connect({127, 0, 0, 1}, port, [
           :binary,
@@ -122,10 +120,7 @@ defmodule ParrotTransport.TlsListenerTest do
           {:verify, :verify_none}
         ])
 
-      # Give time for connection and SSL handshake
-      Process.sleep(200)
-
-      # Verify we can send/receive
+      # Verify we can send/receive - assert_receive is the sync point
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
 
       :ok = :ssl.send(client, message)
@@ -148,9 +143,7 @@ defmodule ParrotTransport.TlsListenerTest do
           client
         end
 
-      Process.sleep(200)
-
-      # Send from each client
+      # Send from each client - ssl.connect completes handshake, assert_receive is sync point
       for {client, i} <- Enum.with_index(clients, 1) do
         message = "INVITE sip:client#{i} SIP/2.0\r\nContent-Length: 0\r\n\r\n"
         :ok = :ssl.send(client, message)
@@ -173,8 +166,6 @@ defmodule ParrotTransport.TlsListenerTest do
           {:verify, :verify_none}
         ])
 
-      Process.sleep(100)
-
       body = "v=0\r\no=alice 123 456 IN IP4 127.0.0.1\r\n"
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: #{byte_size(body)}\r\n\r\n#{body}"
 
@@ -186,20 +177,19 @@ defmodule ParrotTransport.TlsListenerTest do
     end
 
     test "handles message split across multiple sends", %{port: port} do
+      # Use nodelay to ensure chunks are sent separately
       {:ok, client} =
         :ssl.connect({127, 0, 0, 1}, port, [
           :binary,
           {:active, false},
-          {:verify, :verify_none}
+          {:verify, :verify_none},
+          {:nodelay, true}
         ])
-
-      Process.sleep(100)
 
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
 
-      # Send in chunks
+      # Send in chunks - nodelay ensures they're sent as separate TLS records
       :ok = :ssl.send(client, "INVITE sip:bob SIP/2.0\r\n")
-      Process.sleep(10)
       :ok = :ssl.send(client, "Content-Length: 0\r\n\r\n")
 
       assert_receive {:incoming_packet, %IncomingPacket{data: ^message}}, 1000
@@ -214,8 +204,6 @@ defmodule ParrotTransport.TlsListenerTest do
           {:active, false},
           {:verify, :verify_none}
         ])
-
-      Process.sleep(100)
 
       msg1 = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
       msg2 = "ACK sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
@@ -253,18 +241,16 @@ defmodule ParrotTransport.TlsListenerTest do
           {:verify, :verify_none}
         ])
 
-      Process.sleep(100)
-
-      # Send a message
+      # Send a message - assert_receive confirms connection is established
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
       :ok = :ssl.send(client, message)
       assert_receive {:incoming_packet, %IncomingPacket{}}, 1000
 
       # Close client
       :ssl.close(client)
-      Process.sleep(50)
 
       # Listener should still be alive and accepting new connections
+      # The connect/send/receive sequence below confirms the listener is still operational
       {:ok, client2} =
         :ssl.connect({127, 0, 0, 1}, port, [
           :binary,
@@ -272,7 +258,6 @@ defmodule ParrotTransport.TlsListenerTest do
           {:verify, :verify_none}
         ])
 
-      Process.sleep(100)
       :ok = :ssl.send(client2, message)
       assert_receive {:incoming_packet, %IncomingPacket{}}, 1000
 
@@ -308,10 +293,17 @@ defmodule ParrotTransport.TlsListenerTest do
 
       {:ok, listener} = TlsListener.start_link(config, self())
 
-      Process.sleep(50)
+      {:ok, _} = TlsListener.get_local_address(listener)
 
+      ref = Process.monitor(listener)
       :ok = TlsListener.stop(listener)
-      Process.sleep(50)
+
+      # Wait for listener to fully stop before rebinding to same port
+      receive do
+        {:DOWN, ^ref, :process, ^listener, _reason} -> :ok
+      after
+        1000 -> flunk("listener didn't stop in time")
+      end
 
       # Should be able to bind to same port again
       assert {:ok, _listener2} = TlsListener.start_link(config, self())
@@ -327,9 +319,10 @@ defmodule ParrotTransport.TlsListenerTest do
         keyfile: @key_file
       }
 
-      {:ok, _listener1} = TlsListener.start_link(config, self())
+      {:ok, listener1} = TlsListener.start_link(config, self())
 
-      Process.sleep(50)
+      # Sync call confirms listener is bound
+      {:ok, _} = TlsListener.get_local_address(listener1)
 
       # Second listener should fail
       Process.flag(:trap_exit, true)
