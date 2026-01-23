@@ -232,6 +232,22 @@ Located in `apps/parrot_sip/test/sipp/scenarios/`:
 - `presence/uac_subscribe_notify.xml` - SUBSCRIBE/NOTIFY flow
 - `presence/uac_publish.xml` - PUBLISH presence update
 
+## Bug Tracking Workflow
+
+**IMPORTANT:** During verification and testing, if any bugs are discovered:
+
+1. **DO NOT attempt to fix bugs inline** - this risks losing track of issues
+2. **Create a beads task immediately:** `bd create "Bug: <description>" -t bug -l "bug,registration" -d "<details>"`
+3. **Add as blocker if needed:** `bd dep add <verification-task> <bug-task>`
+4. **Continue testing** other aspects if possible
+5. **Nothing should be lost** - all issues go into beads for tracking
+
+This ensures:
+- Full visibility of all discovered issues
+- Proper prioritization and scheduling
+- No context lost when switching between tasks
+- Clear audit trail of what was found and when
+
 ## Task Summary
 
 1. Create `scripts/dev/test_registrar.exs`
