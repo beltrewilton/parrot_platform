@@ -500,16 +500,11 @@ defmodule ParrotMedia.MOS.Calculator do
     end
   end
 
+  # send/2 never raises - it returns the message even for dead processes.
+  # No try/rescue needed per OTP "let it crash" philosophy.
   defp notify_handlers(handlers, message) do
     Enum.each(handlers, fn handler_pid ->
-      # Use send/2 which won't crash on dead processes
-      try do
-        send(handler_pid, message)
-      rescue
-        _ -> :ok
-      catch
-        _, _ -> :ok
-      end
+      send(handler_pid, message)
     end)
   end
 
