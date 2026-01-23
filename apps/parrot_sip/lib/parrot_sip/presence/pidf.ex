@@ -1,9 +1,9 @@
 defmodule ParrotSip.Presence.Pidf do
   @moduledoc """
-  PIDF (Presence Information Data Format) XML generation.
+  PIDF (Presence Information Data Format) XML generation and parsing.
 
-  This module generates PIDF+XML documents as defined in RFC 3863 for
-  conveying presence information in SIP NOTIFY messages.
+  This module generates and parses PIDF+XML documents as defined in RFC 3863 for
+  conveying presence information in SIP PUBLISH and NOTIFY messages.
 
   ## RFC References
 
@@ -14,6 +14,7 @@ defmodule ParrotSip.Presence.Pidf do
   - RFC 3863 Section 4.1.4: The <status> element
   - RFC 3863 Section 4.1.5: The <note> element
   - RFC 3863 Section 6: Media Type Registration (application/pidf+xml)
+  - RFC 3903: SIP Event State Publication (uses PIDF in PUBLISH body)
 
   ## Example PIDF Document
 
@@ -33,6 +34,9 @@ defmodule ParrotSip.Presence.Pidf do
       # Generate PIDF for closed status
       xml = ParrotSip.Presence.Pidf.build("sip:alice@example.com", %{status: :closed, note: "On a call"})
 
+      # Parse PIDF from PUBLISH body
+      {:ok, presence_state} = ParrotSip.Presence.Pidf.parse(xml_body)
+
   """
 
   @pidf_namespace "urn:ietf:params:xml:ns:pidf"
@@ -50,6 +54,78 @@ defmodule ParrotSip.Presence.Pidf do
   """
   @spec content_type() :: String.t()
   def content_type, do: "application/pidf+xml"
+
+  @doc """
+  Parses a PIDF+XML document and extracts the presence state.
+
+  This function is used to extract presence information from PUBLISH request
+  bodies per RFC 3903.
+
+  ## Parameters
+
+  - `xml_string` - A string containing the PIDF+XML document
+
+  ## Returns
+
+  - `{:ok, presence_state}` - Where presence_state is a map with:
+    - `:status` - Either `:open` (available) or `:closed` (unavailable)
+    - `:note` - Optional human-readable description (nil if not present)
+  - `{:error, reason}` - If the XML is malformed or missing required elements
+
+  ## Examples
+
+      iex> xml = ~s(<?xml version="1.0"?><presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:alice@example.com"><tuple id="t1"><status><basic>open</basic></status><note>Available</note></tuple></presence>)
+      iex> ParrotSip.Presence.Pidf.parse(xml)
+      {:ok, %{status: :open, note: "Available"}}
+
+      iex> ParrotSip.Presence.Pidf.parse("<invalid>")
+      {:error, :invalid_pidf}
+
+  ## RFC References
+
+  - RFC 3863 Section 4.1.4: <status><basic> must be "open" or "closed"
+  - RFC 3863 Section 4.1.5: <note> element is optional
+  - RFC 3903 Section 4.4: PUBLISH body contains PIDF document
+
+  """
+  @spec parse(String.t()) :: {:ok, map()} | {:error, atom()}
+  def parse(xml_string) when is_binary(xml_string) do
+    # Use regex to extract status and note from PIDF XML
+    # This is a simple parser - for production, consider using a proper XML parser
+    with {:ok, status} <- extract_basic_status(xml_string) do
+      note = extract_note(xml_string)
+      presence_state = build_presence_state(status, note)
+      {:ok, presence_state}
+    end
+  end
+
+  def parse(_), do: {:error, :invalid_pidf}
+
+  # Extract <basic> status value from PIDF XML
+  # RFC 3863 Section 4.1.4: basic status is "open" or "closed"
+  defp extract_basic_status(xml) do
+    # Match <basic>open</basic> or <basic>closed</basic>
+    case Regex.run(~r/<basic>\s*(open|closed)\s*<\/basic>/i, xml) do
+      [_, "open"] -> {:ok, :open}
+      [_, "closed"] -> {:ok, :closed}
+      [_, status] when status in ["Open", "OPEN"] -> {:ok, :open}
+      [_, status] when status in ["Closed", "CLOSED"] -> {:ok, :closed}
+      _ -> {:error, :invalid_pidf}
+    end
+  end
+
+  # Extract <note> element content from PIDF XML
+  # RFC 3863 Section 4.1.5: note is optional
+  defp extract_note(xml) do
+    case Regex.run(~r/<note>([^<]*)<\/note>/i, xml) do
+      [_, note] -> String.trim(note)
+      _ -> nil
+    end
+  end
+
+  # Build the presence state map
+  defp build_presence_state(status, nil), do: %{status: status}
+  defp build_presence_state(status, note), do: %{status: status, note: note}
 
   @doc """
   Builds a PIDF+XML document for the given presentity and presence state.

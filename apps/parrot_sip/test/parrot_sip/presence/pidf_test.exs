@@ -97,4 +97,124 @@ defmodule ParrotSip.Presence.PidfTest do
       assert Pidf.content_type() == "application/pidf+xml"
     end
   end
+
+  describe "parse/1" do
+    @sample_pidf_open """
+    <?xml version="1.0"?>
+    <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:alice@example.com">
+      <tuple id="t1">
+        <status><basic>open</basic></status>
+        <note>Available</note>
+      </tuple>
+    </presence>
+    """
+
+    @sample_pidf_closed """
+    <?xml version="1.0"?>
+    <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:bob@example.com">
+      <tuple id="t2">
+        <status><basic>closed</basic></status>
+        <note>On a call</note>
+      </tuple>
+    </presence>
+    """
+
+    @sample_pidf_no_note """
+    <?xml version="1.0"?>
+    <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:carol@example.com">
+      <tuple id="t3">
+        <status><basic>open</basic></status>
+      </tuple>
+    </presence>
+    """
+
+    test "parses PIDF with open status and note" do
+      assert {:ok, presence_state} = Pidf.parse(@sample_pidf_open)
+      assert presence_state.status == :open
+      assert presence_state.note == "Available"
+    end
+
+    test "parses PIDF with closed status and note" do
+      assert {:ok, presence_state} = Pidf.parse(@sample_pidf_closed)
+      assert presence_state.status == :closed
+      assert presence_state.note == "On a call"
+    end
+
+    test "parses PIDF without note element" do
+      assert {:ok, presence_state} = Pidf.parse(@sample_pidf_no_note)
+      assert presence_state.status == :open
+      assert presence_state[:note] == nil
+    end
+
+    test "handles case-insensitive status values" do
+      pidf_upper = """
+      <?xml version="1.0"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:user@example.com">
+        <tuple id="t1"><status><basic>OPEN</basic></status></tuple>
+      </presence>
+      """
+
+      assert {:ok, presence_state} = Pidf.parse(pidf_upper)
+      assert presence_state.status == :open
+    end
+
+    test "returns error for missing basic element" do
+      invalid = """
+      <?xml version="1.0"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:user@example.com">
+        <tuple id="t1"><status></status></tuple>
+      </presence>
+      """
+
+      assert {:error, :invalid_pidf} = Pidf.parse(invalid)
+    end
+
+    test "returns error for invalid status value" do
+      invalid = """
+      <?xml version="1.0"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:user@example.com">
+        <tuple id="t1"><status><basic>busy</basic></status></tuple>
+      </presence>
+      """
+
+      assert {:error, :invalid_pidf} = Pidf.parse(invalid)
+    end
+
+    test "returns error for non-string input" do
+      assert {:error, :invalid_pidf} = Pidf.parse(nil)
+      assert {:error, :invalid_pidf} = Pidf.parse(123)
+      assert {:error, :invalid_pidf} = Pidf.parse(%{})
+    end
+
+    test "returns error for malformed XML" do
+      assert {:error, :invalid_pidf} = Pidf.parse("<invalid xml>")
+      assert {:error, :invalid_pidf} = Pidf.parse("not xml at all")
+    end
+
+    test "handles whitespace in note" do
+      pidf = """
+      <?xml version="1.0"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:user@example.com">
+        <tuple id="t1">
+          <status><basic>open</basic></status>
+          <note>  Available for calls  </note>
+        </tuple>
+      </presence>
+      """
+
+      assert {:ok, presence_state} = Pidf.parse(pidf)
+      assert presence_state.note == "Available for calls"
+    end
+
+    test "roundtrip: build then parse" do
+      presentity = "sip:alice@example.com"
+      original = %{status: :closed, note: "In a meeting"}
+
+      xml = Pidf.build(presentity, original)
+      {:ok, parsed} = Pidf.parse(xml)
+
+      assert parsed.status == original.status
+      assert parsed.note == original.note
+    end
+  end
 end

@@ -1653,6 +1653,322 @@ defmodule Parrot.Bridge.HandlerTest do
     end
   end
 
+  # ===========================================================================
+  # PUBLISH Routing Tests (RFC 3903 - SIP Event State Publication)
+  # ===========================================================================
+
+  describe "handle_publish/3 routing (RFC 3903)" do
+    # PresenceHandler that tracks handle_publish calls
+    defmodule PublishTrackingHandler do
+      @moduledoc false
+      use Parrot.PresenceHandler
+
+      @impl true
+      def handle_publish(presentity, presence_state) do
+        send(Application.get_env(:parrot, :test_pid), {:publish_called, presentity, presence_state})
+        :ok
+      end
+    end
+
+    # PresenceHandler that fails to update presence
+    defmodule FailingPublishHandler do
+      @moduledoc false
+      use Parrot.PresenceHandler
+
+      @impl true
+      def handle_publish(_presentity, _presence_state) do
+        {:error, :storage_failure}
+      end
+    end
+
+    # Router with publish tracking handler
+    defmodule PublishRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      presence(Parrot.Bridge.HandlerTest.PublishTrackingHandler)
+    end
+
+    # Router with failing publish handler
+    defmodule FailingPublishRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.CatchAllHandler)
+      presence(Parrot.Bridge.HandlerTest.FailingPublishHandler)
+    end
+
+    test "routes PUBLISH to presence handler and returns 200 OK on success" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      publish_msg = create_test_publish()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      # Should receive 200 OK for successful publication
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+      assert response.reason_phrase == "OK"
+    end
+
+    test "returns 404 when no presence handler configured" do
+      test_pid = self()
+      publish_msg = create_test_publish()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      # NoPresenceRouter is defined in the SUBSCRIBE tests describe block
+      args = %{router: Parrot.Bridge.HandlerTest.NoPresenceRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 404
+      assert response.reason_phrase == "Not Found"
+    end
+
+    test "extracts presentity from To header URI" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      publish_msg = create_test_publish()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      # Verify handle_publish was called with correct presentity
+      assert_receive {:publish_called, presentity, _presence_state}, 500
+      assert presentity =~ "alice"
+    end
+
+    test "extracts presence state from PIDF+XML body" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      # Create PUBLISH with PIDF body indicating open status
+      publish_msg = create_test_publish_with_pidf(:open, "Available")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      # Verify presence state was extracted correctly
+      assert_receive {:publish_called, _presentity, presence_state}, 500
+      assert presence_state.status == :open
+      assert presence_state.note == "Available"
+    end
+
+    test "handles closed status in PIDF body" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      publish_msg = create_test_publish_with_pidf(:closed, "On a call")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      assert_receive {:publish_called, _presentity, presence_state}, 500
+      assert presence_state.status == :closed
+      assert presence_state.note == "On a call"
+    end
+
+    test "returns 500 when handler.handle_publish fails" do
+      test_pid = self()
+      publish_msg = create_test_publish()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: FailingPublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 500
+      assert response.reason_phrase == "Internal Server Error"
+    end
+
+    test "triggers NOTIFY to subscribers after successful publish" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      publish_msg = create_test_publish_with_pidf(:open, "Available")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      # Verify successful response
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+
+      # Note: Actual NOTIFY triggering is tested in Parrot.Presence tests
+      # Here we just verify the handler was called correctly
+      assert_receive {:publish_called, _presentity, _presence_state}, 500
+    end
+
+    test "response includes correct headers from request" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      publish_msg = create_test_publish()
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+
+      # Response should have same Call-ID, From, CSeq as request
+      assert response.call_id == publish_msg.call_id
+      assert response.from == publish_msg.from
+      assert response.cseq == publish_msg.cseq
+    end
+
+    test "returns 400 Bad Request when PIDF body is malformed" do
+      test_pid = self()
+      # Create PUBLISH with malformed body
+      publish_msg = create_test_publish() |> Map.put(:body, "<invalid xml>")
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 400
+      assert response.reason_phrase == "Bad Request"
+    end
+
+    test "handles PIDF without note element" do
+      Application.put_env(:parrot, :test_pid, self())
+      test_pid = self()
+      # Create PUBLISH with PIDF body without note
+      pidf_body = """
+      <?xml version="1.0"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:alice@127.0.0.1">
+        <tuple id="t1">
+          <status><basic>open</basic></status>
+        </tuple>
+      </presence>
+      """
+
+      publish_msg = create_test_publish() |> Map.put(:body, pidf_body)
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: PublishRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_publish(uas, publish_msg, args)
+
+      assert_receive {:publish_called, _presentity, presence_state}, 500
+      assert presence_state.status == :open
+      # Note should be nil or absent
+      assert presence_state[:note] == nil
+    end
+  end
+
+  describe "handle_publish/3 exports" do
+    test "handle_publish/3 is exported" do
+      Code.ensure_loaded!(Handler)
+      assert function_exported?(Handler, :handle_publish, 3)
+    end
+  end
+
+  # Helper to create a test PUBLISH message
+  # RFC 3903: SIP Event State Publication
+  defp create_test_publish do
+    pidf_body = """
+    <?xml version="1.0"?>
+    <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:alice@127.0.0.1">
+      <tuple id="t1">
+        <status><basic>open</basic></status>
+        <note>Available</note>
+      </tuple>
+    </presence>
+    """
+
+    %Message{
+      type: :request,
+      method: :publish,
+      request_uri: "sip:alice@127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{"branch" => "z9hG4bK-publish-branch"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        display_name: nil,
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{"tag" => "from-tag-pub"}
+      },
+      to: %ParrotSip.Headers.To{
+        display_name: nil,
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "127.0.0.1",
+          port: 5060,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{}
+      },
+      call_id: "publish-call-id-#{System.unique_integer([:positive])}@127.0.0.1",
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :publish},
+      event: %ParrotSip.Headers.Event{event: "presence", parameters: %{}},
+      content_type: %ParrotSip.Headers.ContentType{
+        type: "application",
+        subtype: "pidf+xml",
+        parameters: %{}
+      },
+      max_forwards: 70,
+      body: pidf_body,
+      source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
+
+  # Helper to create a PUBLISH message with specific PIDF content
+  defp create_test_publish_with_pidf(status, note) when status in [:open, :closed] do
+    status_str = Atom.to_string(status)
+
+    pidf_body = """
+    <?xml version="1.0"?>
+    <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:alice@127.0.0.1">
+      <tuple id="t1">
+        <status><basic>#{status_str}</basic></status>
+        <note>#{note}</note>
+      </tuple>
+    </presence>
+    """
+
+    create_test_publish() |> Map.put(:body, pidf_body)
+  end
+
   # Helper to create a test SUBSCRIBE message
   # RFC 3856 Section 5.1: SUBSCRIBE requests for presence
   defp create_test_subscribe do
