@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAC scenario: REGISTER with expires=0 (unregister)
+
+  Flow:
+  1. Send REGISTER to register contact
+  2. Receive 200 OK
+  3. Send REGISTER with Expires: 0 to unregister
+  4. Receive 200 OK confirming unregistration
+
+  RFC References:
+  - RFC 3261 Section 10.2.2: Removing Bindings
+    "Registrations are soft state and expire unless refreshed, but can
+     also be explicitly removed.  A client can attempt to influence the
+     expiration interval selected by the registrar as described in
+     Section 10.2.1.  A UA requests the immediate removal of a binding
+     by specifying an expiration interval of "0" for that contact
+     address in a REGISTER request."
+
+  This scenario tests:
+  - Initial registration
+  - Explicit unregistration using Expires: 0
+-->
+
+<scenario name="UAC REGISTER Unregister">
+  <!-- Step 1: Initial REGISTER -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[remote_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:alice@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:alice@[local_ip]:[local_port]>;expires=3600
+      Max-Forwards: 70
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK for initial registration -->
+  <recv response="200" crlf="true"/>
+
+  <!-- Short pause before unregistering -->
+  <pause milliseconds="100"/>
+
+  <!-- Step 2: REGISTER with Expires: 0 to unregister -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[remote_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:alice@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:alice@[local_ip]:[local_port]>;expires=0
+      Max-Forwards: 70
+      Expires: 0
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK confirming unregistration -->
+  <recv response="200" crlf="true"/>
+
+</scenario>
