@@ -286,7 +286,10 @@ defmodule ParrotMedia.WsAudioForker do
         {:ok, state}
 
       {:error, reason} ->
-        Logger.error("WsAudioForker #{config.fork_id}: Failed to start connection: #{inspect(reason)}")
+        Logger.error(
+          "WsAudioForker #{config.fork_id}: Failed to start connection: #{inspect(reason)}"
+        )
+
         {:stop, reason}
     end
   end
@@ -355,7 +358,9 @@ defmodule ParrotMedia.WsAudioForker do
   end
 
   def handle_info({:connection_event, {:disconnected, reason}}, state) do
-    Logger.warning("WsAudioForker #{state.config.fork_id}: Disconnected, reason: #{inspect(reason)}")
+    Logger.warning(
+      "WsAudioForker #{state.config.fork_id}: Disconnected, reason: #{inspect(reason)}"
+    )
 
     new_state = %{state | connection_state: :disconnected}
 
@@ -377,7 +382,9 @@ defmodule ParrotMedia.WsAudioForker do
   end
 
   def handle_info({:connection_event, {:failed, reason}}, state) do
-    Logger.error("WsAudioForker #{state.config.fork_id}: Connection failed permanently: #{inspect(reason)}")
+    Logger.error(
+      "WsAudioForker #{state.config.fork_id}: Connection failed permanently: #{inspect(reason)}"
+    )
 
     # Notify callback if configured
     notify_callback(state.config, {:fork_event, state.config.fork_id, {:failed, reason}})
@@ -420,7 +427,9 @@ defmodule ParrotMedia.WsAudioForker do
   end
 
   def handle_info({:DOWN, _ref, :process, conn_pid, reason}, %{conn_pid: conn_pid} = state) do
-    Logger.warning("WsAudioForker #{state.config.fork_id}: Connection process died: #{inspect(reason)}")
+    Logger.warning(
+      "WsAudioForker #{state.config.fork_id}: Connection process died: #{inspect(reason)}"
+    )
 
     # The connection process died - this may or may not restart depending on Fresh's behavior
     # For now, we treat this as a disconnect
@@ -511,8 +520,21 @@ defmodule ParrotMedia.WsAudioForker do
       # Buffer full - drop oldest frame
       {{:value, _dropped}, new_buffer} = :queue.out(state.buffer)
       new_buffer = :queue.in(entry, new_buffer)
+      new_drops = state.frames_dropped + 1
 
-      %{state | buffer: new_buffer, frames_dropped: state.frames_dropped + 1}
+      # Log backpressure warning
+      Logger.warning(
+        "WsAudioForker #{state.config.fork_id}: Dropped frame due to backpressure (total: #{new_drops})"
+      )
+
+      # Notify callback about backpressure (only on first drop or periodically)
+      # We notify every time to let the callback decide how to handle it
+      notify_callback(
+        state.config,
+        {:fork_event, state.config.fork_id, {:backpressure_warning, new_drops}}
+      )
+
+      %{state | buffer: new_buffer, frames_dropped: new_drops}
     else
       # Add to buffer
       new_buffer = :queue.in(entry, state.buffer)
