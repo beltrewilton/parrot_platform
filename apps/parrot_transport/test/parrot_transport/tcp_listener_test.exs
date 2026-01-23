@@ -9,8 +9,7 @@ defmodule ParrotTransport.TcpListenerTest do
       config = %ListenerConfig{transport: :tcp, port: 0}
       {:ok, pid} = TcpListener.start_link(config, self())
 
-      Process.sleep(50)
-
+      # Socket binding happens synchronously in init, so state is immediately :listening
       assert :listening = :sys.get_state(pid) |> elem(0)
     end
 
@@ -18,8 +17,7 @@ defmodule ParrotTransport.TcpListenerTest do
       config = %ListenerConfig{transport: :tcp, port: 16100}
       {:ok, pid} = TcpListener.start_link(config, self())
 
-      Process.sleep(50)
-
+      # get_local_address is a sync call - no sleep needed
       assert {:ok, {_ip, 16100}} = TcpListener.get_local_address(pid)
     end
 
@@ -27,8 +25,7 @@ defmodule ParrotTransport.TcpListenerTest do
       config = %ListenerConfig{transport: :tcp, port: 0}
       {:ok, pid} = TcpListener.start_link(config, self())
 
-      Process.sleep(50)
-
+      # get_local_address is a sync call - no sleep needed
       assert {:ok, {_ip, port}} = TcpListener.get_local_address(pid)
       assert port > 0
     end
@@ -46,10 +43,7 @@ defmodule ParrotTransport.TcpListenerTest do
     test "accepts incoming TCP connection", %{port: port} do
       {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, {:active, false}])
 
-      # Give time for connection to be accepted
-      Process.sleep(100)
-
-      # Verify we can send/receive
+      # Send message - the assert_receive below is the synchronization point
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
       :ok = :gen_tcp.send(client, message)
 
@@ -65,9 +59,7 @@ defmodule ParrotTransport.TcpListenerTest do
           client
         end
 
-      Process.sleep(100)
-
-      # Send from each client
+      # Send from each client - no sleep needed, assert_receive is the sync point
       for {client, i} <- Enum.with_index(clients, 1) do
         message = "INVITE sip:client#{i} SIP/2.0\r\nContent-Length: 0\r\n\r\n"
         :ok = :gen_tcp.send(client, message)
@@ -96,13 +88,13 @@ defmodule ParrotTransport.TcpListenerTest do
     end
 
     test "handles message split across multiple sends", %{port: port} do
-      {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, {:active, false}])
+      # Disable Nagle's algorithm to ensure chunks are sent separately
+      {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, {:active, false}, {:nodelay, true}])
 
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
 
-      # Send in chunks
+      # Send in chunks - nodelay ensures they're sent as separate TCP segments
       :ok = :gen_tcp.send(client, "INVITE sip:bob SIP/2.0\r\n")
-      Process.sleep(10)
       :ok = :gen_tcp.send(client, "Content-Length: 0\r\n\r\n")
 
       assert_receive {:incoming_packet, %IncomingPacket{data: ^message}}, 1000
@@ -137,18 +129,17 @@ defmodule ParrotTransport.TcpListenerTest do
 
     test "handles client disconnect gracefully", %{port: port} do
       {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, {:active, false}])
-      Process.sleep(50)
 
-      # Send a message
+      # Send a message - assert_receive is the sync point for connection being ready
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
       :ok = :gen_tcp.send(client, message)
       assert_receive {:incoming_packet, %IncomingPacket{}}, 1000
 
       # Close client
       :gen_tcp.close(client)
-      Process.sleep(50)
 
       # Listener should still be alive and accepting new connections
+      # The connect/send/receive sequence below confirms the listener is still operational
       {:ok, client2} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, {:active, false}])
       :ok = :gen_tcp.send(client2, message)
       assert_receive {:incoming_packet, %IncomingPacket{}}, 1000
@@ -173,10 +164,17 @@ defmodule ParrotTransport.TcpListenerTest do
       config = %ListenerConfig{transport: :tcp, port: 16200}
       {:ok, listener} = TcpListener.start_link(config, self())
 
-      Process.sleep(50)
+      {:ok, _} = TcpListener.get_local_address(listener)
 
+      ref = Process.monitor(listener)
       :ok = TcpListener.stop(listener)
-      Process.sleep(50)
+
+      # Wait for listener to fully stop before rebinding to same port
+      receive do
+        {:DOWN, ^ref, :process, ^listener, _reason} -> :ok
+      after
+        1000 -> flunk("listener didn't stop in time")
+      end
 
       # Should be able to bind to same port again
       assert {:ok, _listener2} = TcpListener.start_link(config, self())
@@ -186,9 +184,10 @@ defmodule ParrotTransport.TcpListenerTest do
   describe "error handling" do
     test "fails when port is already in use" do
       config = %ListenerConfig{transport: :tcp, port: 16300}
-      {:ok, _listener1} = TcpListener.start_link(config, self())
+      {:ok, listener1} = TcpListener.start_link(config, self())
 
-      Process.sleep(50)
+      # Sync call confirms listener is bound
+      {:ok, _} = TcpListener.get_local_address(listener1)
 
       # Second listener should fail - catch the exit
       Process.flag(:trap_exit, true)

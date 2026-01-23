@@ -9,9 +9,7 @@ defmodule ParrotTransport.UdpListenerTest do
       config = %ListenerConfig{transport: :udp, port: 0}
       {:ok, pid} = UdpListener.start_link(config)
 
-      # Give time to reach :bound state
-      Process.sleep(50)
-
+      # Socket binding happens synchronously in init, so state is immediately :bound
       assert :bound = :sys.get_state(pid) |> elem(0)
     end
 
@@ -19,8 +17,7 @@ defmodule ParrotTransport.UdpListenerTest do
       config = %ListenerConfig{transport: :udp, port: 15100}
       {:ok, pid} = UdpListener.start_link(config)
 
-      Process.sleep(50)
-
+      # get_local_address is a sync call - no sleep needed
       assert {:ok, {_ip, 15100}} = UdpListener.get_local_address(pid)
     end
 
@@ -28,8 +25,7 @@ defmodule ParrotTransport.UdpListenerTest do
       config = %ListenerConfig{transport: :udp, port: 0}
       {:ok, pid} = UdpListener.start_link(config)
 
-      Process.sleep(50)
-
+      # get_local_address is a sync call - no sleep needed
       assert {:ok, {_ip, port}} = UdpListener.get_local_address(pid)
       assert port > 0
     end
@@ -40,8 +36,7 @@ defmodule ParrotTransport.UdpListenerTest do
       config = %ListenerConfig{transport: :udp, port: 0}
       {:ok, listener} = UdpListener.start_link(config)
 
-      Process.sleep(50)
-
+      # Socket binding is sync in init - get_local_address confirms ready state
       {:ok, {_ip, port}} = UdpListener.get_local_address(listener)
 
       %{listener: listener, port: port}
@@ -85,7 +80,13 @@ defmodule ParrotTransport.UdpListenerTest do
 
     test "removes dead handlers automatically", %{listener: listener, port: port} do
       dead_handler = spawn(fn -> :ok end)
-      Process.sleep(10)
+      # Wait for spawned process to exit (it just returns :ok)
+      ref = Process.monitor(dead_handler)
+      receive do
+        {:DOWN, ^ref, :process, ^dead_handler, :normal} -> :ok
+      after
+        100 -> flunk("dead_handler didn't exit in time")
+      end
 
       :ok = UdpListener.register_handler(listener, dead_handler)
       :ok = UdpListener.register_handler(listener, self())
@@ -107,7 +108,8 @@ defmodule ParrotTransport.UdpListenerTest do
     setup do
       config = %ListenerConfig{transport: :udp, port: 0}
       {:ok, listener} = UdpListener.start_link(config)
-      Process.sleep(50)
+      # get_local_address is sync call to confirm listener is ready
+      {:ok, _} = UdpListener.get_local_address(listener)
       %{listener: listener}
     end
 
@@ -138,10 +140,17 @@ defmodule ParrotTransport.UdpListenerTest do
       config = %ListenerConfig{transport: :udp, port: 15300}
 
       {:ok, listener1} = UdpListener.start_link(config)
-      Process.sleep(50)
+      {:ok, _} = UdpListener.get_local_address(listener1)
+
+      ref = Process.monitor(listener1)
       :ok = UdpListener.stop(listener1)
 
-      Process.sleep(100)
+      # Wait for listener to fully stop before rebinding to same port
+      receive do
+        {:DOWN, ^ref, :process, ^listener1, _reason} -> :ok
+      after
+        1000 -> flunk("listener1 didn't stop in time")
+      end
 
       assert {:ok, _listener2} = UdpListener.start_link(config)
     end
