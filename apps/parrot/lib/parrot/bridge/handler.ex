@@ -740,6 +740,102 @@ defmodule Parrot.Bridge.Handler do
     Parrot.Presence.notify(subscription.presentity, presence_state)
   end
 
+  @doc """
+  Handles incoming PUBLISH requests for presence state publication.
+
+  Routes to the presence handler specified in the router.
+  If no presence handler is configured, returns 404 Not Found.
+
+  ## Publication Flow (RFC 3903)
+
+  1. Extract presentity URI from To header or Request-URI
+  2. Parse PIDF+XML body to extract presence state
+  3. Call handler.handle_publish/2 to store the presence state
+  4. Send 200 OK response
+  5. Trigger NOTIFY to all subscribers via Parrot.Presence.notify/2
+
+  ## RFC References
+
+  - RFC 3903 Section 4: PUBLISH Request Processing
+  - RFC 3903 Section 4.4: PUBLISH Body (PIDF+XML)
+  - RFC 3863: Presence Information Data Format (PIDF)
+  """
+  @impl true
+  @spec handle_publish(ParrotSip.Transaction.t(), Message.t(), map()) :: :ok
+  def handle_publish(uas, req_sip_msg, %{router: router} = args) do
+    Logger.debug("[Bridge.Handler] Received PUBLISH")
+
+    case router.__presence_handler__() do
+      nil ->
+        # No presence handler configured
+        Logger.warning("[Bridge.Handler] No presence handler configured")
+        not_found = Message.reply(req_sip_msg, 404, "Not Found")
+        send_response(uas, not_found, args)
+        :ok
+
+      handler_module ->
+        Logger.debug("[Bridge.Handler] Routing PUBLISH to #{inspect(handler_module)}")
+        process_publication(handler_module, uas, req_sip_msg, args)
+    end
+  end
+
+  # Process the publication request through the handler callbacks
+  # RFC 3903 Section 4: PUBLISH request processing
+  defp process_publication(handler_module, uas, req_sip_msg, args) do
+    # Extract presentity URI from To header
+    # RFC 3903 Section 4.1: Request-URI identifies the resource being published
+    presentity = extract_presentity_uri(req_sip_msg)
+
+    Logger.debug("[Bridge.Handler] Publication: Presentity=#{presentity}")
+
+    # Parse PIDF+XML body to extract presence state
+    # RFC 3903 Section 4.4: PUBLISH body contains the event state document
+    case parse_pidf_body(req_sip_msg.body) do
+      {:ok, presence_state} ->
+        Logger.debug(
+          "[Bridge.Handler] Parsed presence state: #{inspect(presence_state)}"
+        )
+
+        # Call handler to store the presence state
+        # RFC 3903 Section 4.4: ESC stores the event state
+        case handler_module.handle_publish(presentity, presence_state) do
+          :ok ->
+            # Build and send 200 OK response
+            # RFC 3903 Section 4.6: 200 OK indicates successful publication
+            response = Message.reply(req_sip_msg, 200, "OK")
+            send_response(uas, response, args)
+
+            # Trigger NOTIFY to all subscribers
+            # RFC 3903 Section 4.4: ESC sends NOTIFY to subscribers after state change
+            Parrot.Presence.notify(presentity, presence_state)
+
+            :ok
+
+          {:error, reason} ->
+            Logger.error("[Bridge.Handler] Failed to handle publication: #{inspect(reason)}")
+            error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+            send_response(uas, error_response, args)
+            :ok
+        end
+
+      {:error, :invalid_pidf} ->
+        # RFC 3903 Section 4.4: Invalid body results in 400 Bad Request
+        Logger.warning("[Bridge.Handler] Invalid PIDF body in PUBLISH request")
+        bad_request = Message.reply(req_sip_msg, 400, "Bad Request")
+        send_response(uas, bad_request, args)
+        :ok
+    end
+  end
+
+  # Parse PIDF+XML body from PUBLISH request
+  # RFC 3863: Presence Information Data Format
+  defp parse_pidf_body(nil), do: {:error, :invalid_pidf}
+  defp parse_pidf_body(""), do: {:error, :invalid_pidf}
+
+  defp parse_pidf_body(body) when is_binary(body) do
+    ParrotSip.Presence.Pidf.parse(body)
+  end
+
   # ============================================================================
   # SDP Extraction and MediaSession Creation (US1: SDP Negotiation)
   # ============================================================================
