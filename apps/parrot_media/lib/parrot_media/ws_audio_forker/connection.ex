@@ -79,7 +79,9 @@ defmodule ParrotMedia.WsAudioForker.Connection do
   @doc false
   @impl Fresh
   def handle_in({:text, data}, state) do
-    Logger.debug("WsAudioForker.Connection #{state.fork_id}: Received text message, #{byte_size(data)} bytes")
+    Logger.debug(
+      "WsAudioForker.Connection #{state.fork_id}: Received text message, #{byte_size(data)} bytes"
+    )
 
     # Forward message to parent
     send(state.parent, {:connection_event, {:ws_message, data}})
@@ -88,7 +90,9 @@ defmodule ParrotMedia.WsAudioForker.Connection do
   end
 
   def handle_in({:binary, data}, state) do
-    Logger.debug("WsAudioForker.Connection #{state.fork_id}: Received binary message, #{byte_size(data)} bytes")
+    Logger.debug(
+      "WsAudioForker.Connection #{state.fork_id}: Received binary message, #{byte_size(data)} bytes"
+    )
 
     # Forward message to parent
     send(state.parent, {:connection_event, {:ws_message, data}})
@@ -147,7 +151,11 @@ defmodule ParrotMedia.WsAudioForker.Connection do
         "WsAudioForker.Connection #{state.fork_id}: Max retries (#{max_retries}) exceeded, stopping"
       )
 
-      send(state.parent, {:connection_event, {:max_retries_exceeded, new_state.reconnect_attempt}})
+      send(
+        state.parent,
+        {:connection_event, {:max_retries_exceeded, new_state.reconnect_attempt}}
+      )
+
       {:close, {:max_retries_exceeded, new_state.reconnect_attempt}}
     else
       send(state.parent, {:connection_event, {:reconnecting, new_state.reconnect_attempt}})
@@ -200,7 +208,9 @@ defmodule ParrotMedia.WsAudioForker.Connection do
   @doc false
   @impl Fresh
   def handle_terminate(reason, state) do
-    Logger.debug("WsAudioForker.Connection #{state.fork_id}: Terminating, reason: #{inspect(reason)}")
+    Logger.debug(
+      "WsAudioForker.Connection #{state.fork_id}: Terminating, reason: #{inspect(reason)}"
+    )
 
     # Notify parent if this is an unexpected termination
     case reason do
