@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAC scenario: REGISTER with multiple Contact headers
+
+  Flow:
+  1. Send REGISTER with multiple Contact headers
+  2. Receive 200 OK with all contacts echoed back
+
+  RFC References:
+  - RFC 3261 Section 10.2.1.2: Contact List
+    "A REGISTER request MAY contain a Contact header field with zero or
+     more values containing address bindings."
+  - RFC 3261 Section 10.3 Step 6:
+    "The registrar returns a 200 (OK) response.  The response MUST
+     contain Contact header field values enumerating all current
+     bindings."
+
+  This scenario tests:
+  - Registering multiple contacts for the same AoR in a single REGISTER
+  - Each contact has different port (simulating multiple devices)
+-->
+
+<scenario name="UAC REGISTER Multi-Contact">
+  <!-- Send REGISTER with multiple Contact headers -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[remote_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:alice@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:alice@[local_ip]:5060>;expires=3600
+      Contact: <sip:alice@[local_ip]:5061>;expires=3600
+      Contact: <sip:alice@[local_ip]:5062>;expires=1800
+      Max-Forwards: 70
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK -->
+  <recv response="200" crlf="true"/>
+
+</scenario>

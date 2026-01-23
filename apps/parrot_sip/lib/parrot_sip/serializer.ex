@@ -427,6 +427,17 @@ defmodule ParrotSip.Serializer do
     headers =
       if message.subject, do: [format_header("subject", message.subject) | headers], else: headers
 
+    # RFC 3903 Event State Publication headers
+    headers =
+      if message.sip_etag,
+        do: [format_header("sip-etag", message.sip_etag) | headers],
+        else: headers
+
+    headers =
+      if message.sip_if_match,
+        do: [format_header("sip-if-match", message.sip_if_match) | headers],
+        else: headers
+
     # Other headers from the catch-all map
     headers = build_other_headers(message.other_headers, headers)
 
@@ -683,6 +694,12 @@ defmodule ParrotSip.Serializer do
 
       "subject" ->
         not is_nil(message.subject)
+
+      "sip-etag" ->
+        not is_nil(message.sip_etag)
+
+      "sip-if-match" ->
+        not is_nil(message.sip_if_match)
 
       # For other headers, check in other_headers
       _ ->

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAC scenario: SUBSCRIBE for presence events
+
+  Flow:
+  1. Send SUBSCRIBE request for presence event package
+  2. Receive 200 OK response
+
+  RFC References:
+  - RFC 3856: A Presence Event Package for SIP
+  - RFC 6665: SIP-Specific Event Notification
+    Section 4.1.1: Initial SUBSCRIBE Transaction Processing
+
+  Note: This is a simplified scenario that only tests the SUBSCRIBE transaction.
+  A full presence scenario would also receive NOTIFY messages from the server
+  after the subscription is established.
+
+  Event Package: presence
+  Accept: application/pidf+xml (Presence Information Data Format)
+-->
+
+<scenario name="UAC SUBSCRIBE Presence">
+  <!-- Send SUBSCRIBE request for presence -->
+  <send retrans="500">
+    <![CDATA[
+
+      SUBSCRIBE sip:bob@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:bob@[remote_ip]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: presence
+      Accept: application/pidf+xml
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK for SUBSCRIBE -->
+  <recv response="200" crlf="true"/>
+
+</scenario>
