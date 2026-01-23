@@ -177,7 +177,7 @@ defmodule ParrotTransport.TlsListenerTest do
     end
 
     test "handles message split across multiple sends", %{port: port} do
-      # Use nodelay to ensure chunks are sent separately
+      # Use nodelay to help ensure chunks are sent separately
       {:ok, client} =
         :ssl.connect({127, 0, 0, 1}, port, [
           :binary,
@@ -188,8 +188,10 @@ defmodule ParrotTransport.TlsListenerTest do
 
       message = "INVITE sip:bob SIP/2.0\r\nContent-Length: 0\r\n\r\n"
 
-      # Send in chunks - nodelay ensures they're sent as separate TLS records
+      # Send in chunks - small delay ensures server receives them as separate segments
+      # This is intentional for testing TLS fragmentation handling
       :ok = :ssl.send(client, "INVITE sip:bob SIP/2.0\r\n")
+      Process.sleep(10)
       :ok = :ssl.send(client, "Content-Length: 0\r\n\r\n")
 
       assert_receive {:incoming_packet, %IncomingPacket{data: ^message}}, 1000
