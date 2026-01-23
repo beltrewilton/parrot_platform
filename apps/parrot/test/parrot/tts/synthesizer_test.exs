@@ -162,6 +162,12 @@ defmodule Parrot.TTS.SynthesizerTest do
     {:ok, _} = MockCache.start_link()
     {:ok, _} = MockProvider.start_link()
 
+    # Start the TaskSupervisor if not already running
+    case Task.Supervisor.start_link(name: Parrot.TTS.TaskSupervisor) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
     # The Synthesizer may already be started by the application supervisor
     # In that case, just use the existing one
     _pid = case Synthesizer.start_link(name: Synthesizer) do
@@ -170,7 +176,7 @@ defmodule Parrot.TTS.SynthesizerTest do
     end
 
     on_exit(fn ->
-      # Don't stop the Synthesizer - it may be app-supervised
+      # Don't stop the Synthesizer or TaskSupervisor - they may be app-supervised
       # Just stop our mock processes
       try do
         MockCache.stop()
@@ -872,6 +878,209 @@ defmodule Parrot.TTS.SynthesizerTest do
       result = Synthesizer.get_audio("Hello", "invalid-string-profile")
 
       assert {:error, :invalid_profile} = result
+    end
+  end
+
+  describe "process safety - provider timeout" do
+    # Provider that sleeps longer than timeout
+    defmodule SlowProvider do
+      @behaviour Parrot.TTS.Provider
+
+      @impl true
+      def synthesize(_text, _config) do
+        # Sleep longer than the default provider timeout (30s)
+        # In tests we'll use a shorter timeout
+        Process.sleep(60_000)
+        {:ok, "audio", :mp3}
+      end
+
+      @impl true
+      def list_voices(_credentials), do: {:ok, []}
+
+      @impl true
+      def validate_config(_config), do: :ok
+    end
+
+    test "returns timeout error when provider takes too long" do
+      MockCache.clear()
+
+      slow_profile = %{
+        provider: SlowProvider,
+        cache: MockCache,
+        voice: "test",
+        model: "test",
+        format: :mp3
+      }
+
+      # Configure a short timeout for testing (100ms)
+      # The synthesizer should return an error, not hang forever
+      result = Synthesizer.get_audio("Slow text", slow_profile, timeout: 100)
+
+      assert {:error, :provider_timeout} = result
+    end
+
+    test "synthesizer process survives provider timeout" do
+      MockCache.clear()
+
+      slow_profile = %{
+        provider: SlowProvider,
+        cache: MockCache,
+        voice: "test",
+        model: "test",
+        format: :mp3
+      }
+
+      # First request times out
+      assert {:error, :provider_timeout} = Synthesizer.get_audio("Slow", slow_profile, timeout: 100)
+
+      # Synthesizer should still be alive and working
+      assert Process.alive?(Process.whereis(Synthesizer))
+
+      # Subsequent requests with fast provider should work
+      assert {:ok, _audio, _format} = Synthesizer.get_audio("Fast text", @test_profile, [])
+    end
+  end
+
+  describe "process safety - provider crash" do
+    # Provider that crashes
+    defmodule CrashingProvider do
+      @behaviour Parrot.TTS.Provider
+
+      @impl true
+      def synthesize(_text, _config) do
+        raise "Provider crashed!"
+      end
+
+      @impl true
+      def list_voices(_credentials), do: {:ok, []}
+
+      @impl true
+      def validate_config(_config), do: :ok
+    end
+
+    test "returns error when provider crashes" do
+      MockCache.clear()
+
+      crash_profile = %{
+        provider: CrashingProvider,
+        cache: MockCache,
+        voice: "test",
+        model: "test",
+        format: :mp3
+      }
+
+      result = Synthesizer.get_audio("Crash text", crash_profile, [])
+
+      assert {:error, :provider_crashed} = result
+    end
+
+    test "synthesizer process survives provider crash" do
+      MockCache.clear()
+
+      crash_profile = %{
+        provider: CrashingProvider,
+        cache: MockCache,
+        voice: "test",
+        model: "test",
+        format: :mp3
+      }
+
+      # First request crashes the provider
+      assert {:error, :provider_crashed} = Synthesizer.get_audio("Crash", crash_profile, [])
+
+      # Synthesizer should still be alive
+      assert Process.alive?(Process.whereis(Synthesizer))
+
+      # Subsequent requests with working provider should succeed
+      assert {:ok, _audio, _format} = Synthesizer.get_audio("Works", @test_profile, [])
+    end
+
+    test "all concurrent waiters receive error when provider crashes" do
+      MockCache.clear()
+
+      # Provider that waits a bit then crashes (to allow concurrent requests to queue)
+      defmodule DelayedCrashProvider do
+        @behaviour Parrot.TTS.Provider
+
+        @impl true
+        def synthesize(_text, _config) do
+          Process.sleep(100)
+          raise "Delayed crash!"
+        end
+
+        @impl true
+        def list_voices(_credentials), do: {:ok, []}
+
+        @impl true
+        def validate_config(_config), do: :ok
+      end
+
+      crash_profile = %{
+        provider: DelayedCrashProvider,
+        cache: MockCache,
+        voice: "test",
+        model: "test",
+        format: :mp3
+      }
+
+      text = "Concurrent crash text"
+
+      # Start multiple concurrent requests
+      task1 = Task.async(fn -> Synthesizer.get_audio(text, crash_profile, []) end)
+      task2 = Task.async(fn -> Synthesizer.get_audio(text, crash_profile, []) end)
+      task3 = Task.async(fn -> Synthesizer.get_audio(text, crash_profile, []) end)
+
+      # All should receive the error
+      assert {:error, :provider_crashed} = Task.await(task1, 5000)
+      assert {:error, :provider_crashed} = Task.await(task2, 5000)
+      assert {:error, :provider_crashed} = Task.await(task3, 5000)
+
+      # Synthesizer should still be alive
+      assert Process.alive?(Process.whereis(Synthesizer))
+    end
+  end
+
+  describe "process safety - in-flight cleanup" do
+    # Re-define SlowProvider locally to avoid scoping issues
+    defmodule SlowProviderForCleanup do
+      @behaviour Parrot.TTS.Provider
+
+      @impl true
+      def synthesize(_text, _config) do
+        Process.sleep(60_000)
+        {:ok, "audio", :mp3}
+      end
+
+      @impl true
+      def list_voices(_credentials), do: {:ok, []}
+
+      @impl true
+      def validate_config(_config), do: :ok
+    end
+
+    test "in-flight tracking is cleaned up after provider timeout" do
+      MockCache.clear()
+
+      slow_profile = %{
+        provider: SlowProviderForCleanup,
+        cache: MockCache,
+        voice: "test",
+        model: "test",
+        format: :mp3
+      }
+
+      # Request that will timeout
+      assert {:error, :provider_timeout} = Synthesizer.get_audio("Cleanup test", slow_profile, timeout: 100)
+
+      # Give a moment for cleanup
+      Process.sleep(50)
+
+      # New request for same text should trigger new provider call (not wait for old in-flight)
+      # Using the working provider
+      assert {:ok, _audio, _format} = Synthesizer.get_audio("Cleanup test", @test_profile, [])
+
+      # Provider should have been called (not waiting on stale in-flight)
+      assert MockProvider.get_call_count() >= 1
     end
   end
 

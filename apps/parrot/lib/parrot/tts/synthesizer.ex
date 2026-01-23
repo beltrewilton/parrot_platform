@@ -58,10 +58,29 @@ defmodule Parrot.TTS.Synthesizer do
   - `:model` - Model name for synthesis
   - `:format` - Audio format (`:wav`, `:mp3`, `:opus`, etc.)
   - Additional provider-specific options (e.g., `:api_key`)
+
+  ## Process Safety
+
+  Provider calls are supervised by `Parrot.TTS.TaskSupervisor` with configurable timeouts:
+  - Default provider timeout: 30 seconds
+  - Default caller timeout: 35 seconds
+
+  If a provider crashes or times out:
+  - The Synthesizer process remains alive and functional
+  - Callers receive `{:error, :provider_timeout}` or `{:error, :provider_crashed}`
+  - In-flight tracking is cleaned up automatically
+
+  Pass `timeout: milliseconds` in opts to override the default timeout.
   """
 
   use GenServer
   require Logger
+
+  # Default timeouts for provider calls (in milliseconds)
+  # Provider timeout: how long to wait for the external API
+  @default_provider_timeout 30_000
+  # Caller timeout: how long get_audio/3 blocks (slightly longer than provider timeout)
+  @default_caller_timeout 35_000
 
   # Client API
 
@@ -100,13 +119,16 @@ defmodule Parrot.TTS.Synthesizer do
   - `text` - Text to synthesize (binary string)
   - `profile` - Either a profile name atom (e.g., `:default`, `:premium`) which will be
     resolved via `Parrot.TTS.Config.get_profile/1`, or a full profile map (see module doc)
-  - `opts` - Additional options (keyword list, currently unused)
+  - `opts` - Additional options:
+    - `:timeout` - Provider call timeout in milliseconds (default: 35000)
 
   ## Returns
 
   - `{:ok, audio_data, format}` - Success with binary audio data and format atom
   - `{:ok, audio_data, metadata}` - Success with binary audio data and metadata map (on cache hit)
-  - `{:error, reason}` - Failure with error reason
+  - `{:error, :provider_timeout}` - Provider call timed out
+  - `{:error, :provider_crashed}` - Provider raised an exception
+  - `{:error, reason}` - Other failure with error reason
 
   ## Examples
 
@@ -128,7 +150,15 @@ defmodule Parrot.TTS.Synthesizer do
     # Resolve profile name to full profile map if needed
     case resolve_profile(profile) do
       {:ok, resolved_profile} ->
-        GenServer.call(__MODULE__, {:get_audio, text, resolved_profile, opts}, :infinity)
+        caller_timeout = Keyword.get(opts, :timeout, @default_caller_timeout)
+
+        try do
+          GenServer.call(__MODULE__, {:get_audio, text, resolved_profile, opts}, caller_timeout)
+        catch
+          :exit, {:timeout, _} ->
+            # GenServer.call timed out - convert to provider timeout error
+            {:error, :provider_timeout}
+        end
 
       {:error, _reason} = error ->
         error
@@ -238,57 +268,124 @@ defmodule Parrot.TTS.Synthesizer do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
-    # Task process died - clean up in_flight tracking
-    # We could match on ref to remove specific entry, but for simplicity
-    # we'll let the timeout mechanism handle it
-    {:noreply, state}
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    # Task process died - find which cache_key this belongs to and notify waiters
+    case find_in_flight_by_ref(state.in_flight, ref) do
+      nil ->
+        # Task already handled (timeout or result received first)
+        {:noreply, state}
+
+      {cache_key, {waiting_froms, ^ref}} ->
+        # Task crashed - notify all waiters with error
+        error =
+          case reason do
+            :normal -> nil  # Normal exit means result was sent, ignore
+            :killed -> {:error, :provider_timeout}
+            _ -> {:error, :provider_crashed}
+          end
+
+        if error do
+          Logger.warning("Provider task failed for cache_key #{cache_key}: #{inspect(reason)}")
+
+          Enum.each(waiting_froms, fn from_pid ->
+            GenServer.reply(from_pid, error)
+          end)
+        end
+
+        # Remove from in_flight
+        updated_in_flight = Map.delete(state.in_flight, cache_key)
+        {:noreply, %{state | in_flight: updated_in_flight}}
+    end
+  end
+
+  @impl true
+  def handle_info({:provider_timeout, cache_key, expected_ref}, state) do
+    # Timeout fired - check if this request is still in-flight with same ref
+    case Map.get(state.in_flight, cache_key) do
+      {waiting_froms, ^expected_ref} ->
+        # Still waiting - reply with timeout error
+        Logger.warning("Provider timeout for cache_key: #{cache_key}")
+
+        Enum.each(waiting_froms, fn from_pid ->
+          GenServer.reply(from_pid, {:error, :provider_timeout})
+        end)
+
+        # Remove from in_flight (task will be killed by supervisor or finish later)
+        updated_in_flight = Map.delete(state.in_flight, cache_key)
+        {:noreply, %{state | in_flight: updated_in_flight}}
+
+      _ ->
+        # Request completed before timeout, or ref doesn't match (stale timeout)
+        {:noreply, state}
+    end
   end
 
   # Private functions
 
-  defp handle_cache_miss(text, profile, _opts, cache_key, from, state) do
+  defp handle_cache_miss(text, profile, opts, cache_key, from, state) do
     provider_module = Map.fetch!(profile, :provider)
     cache_module = Map.fetch!(profile, :cache)
 
     # Convert profile map to keyword list for provider
     provider_config = profile_to_config(profile)
 
-    # Start async task to call provider
+    # Get timeout from opts (for testing) or use default
+    provider_timeout = Keyword.get(opts, :timeout, @default_provider_timeout)
+
+    # Start a supervised task using start_child (fire-and-forget with monitoring)
     parent = self()
 
-    task_ref = make_ref()
-
-    spawn_link(fn ->
-      result =
-        case provider_module.synthesize(text, provider_config) do
-          {:ok, audio_data, format} ->
-            # Cache the result
-            metadata = %{
-              format: format,
-              cached_at: DateTime.utc_now()
-            }
-
-            case cache_module.put(cache_key, audio_data, metadata) do
-              :ok ->
-                {:ok, audio_data, format}
-
-              {:error, cache_error} ->
-                # Log cache error but still return the audio
-                Logger.warning("Failed to cache audio: #{inspect(cache_error)}")
-                {:ok, audio_data, format}
-            end
-
-          {:error, reason} ->
-            {:error, reason}
+    {:ok, task_pid} =
+      Task.Supervisor.start_child(
+        Parrot.TTS.TaskSupervisor,
+        fn ->
+          result = safe_synthesize(provider_module, text, provider_config, cache_module, cache_key)
+          send(parent, {:provider_result, cache_key, result})
         end
+      )
 
-      send(parent, {:provider_result, cache_key, result})
-    end)
+    # Monitor the task to detect crashes
+    task_ref = Process.monitor(task_pid)
 
-    # Track this request as in-flight
+    # Schedule a timeout message
+    Process.send_after(self(), {:provider_timeout, cache_key, task_ref}, provider_timeout)
+
+    # Track this request as in-flight with the task ref for cleanup
     updated_in_flight = Map.put(state.in_flight, cache_key, {[from], task_ref})
     {:noreply, %{state | in_flight: updated_in_flight}}
+  end
+
+  # Safe wrapper for provider synthesis that catches exceptions
+  defp safe_synthesize(provider_module, text, provider_config, cache_module, cache_key) do
+    case provider_module.synthesize(text, provider_config) do
+      {:ok, audio_data, format} ->
+        # Cache the result
+        metadata = %{
+          format: format,
+          cached_at: DateTime.utc_now()
+        }
+
+        case cache_module.put(cache_key, audio_data, metadata) do
+          :ok ->
+            {:ok, audio_data, format}
+
+          {:error, cache_error} ->
+            # Log cache error but still return the audio
+            Logger.warning("Failed to cache audio: #{inspect(cache_error)}")
+            {:ok, audio_data, format}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    e ->
+      Logger.error("Provider crashed: #{Exception.message(e)}")
+      {:error, :provider_crashed}
+  catch
+    :exit, reason ->
+      Logger.error("Provider exited: #{inspect(reason)}")
+      {:error, :provider_crashed}
   end
 
   defp profile_to_config(profile) do
@@ -302,6 +399,14 @@ defmodule Parrot.TTS.Synthesizer do
     ]
     |> Enum.filter(fn {_k, v} -> v != nil end)
     |> Kernel.++(Map.to_list(Map.drop(profile, [:provider, :cache, :voice, :model, :format])))
+  end
+
+  # Find in-flight entry by task ref
+  defp find_in_flight_by_ref(in_flight, ref) do
+    Enum.find_value(in_flight, fn
+      {cache_key, {_froms, ^ref} = value} -> {cache_key, value}
+      _ -> nil
+    end)
   end
 
   @doc """
