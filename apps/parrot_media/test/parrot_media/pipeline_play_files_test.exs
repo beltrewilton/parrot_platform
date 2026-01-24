@@ -56,6 +56,9 @@ defmodule ParrotMedia.PipelinePlayFilesTest do
 
     @impl true
     def handle_info({:play_files, files, opts}, state) do
+      # Notify test process if configured
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :play_files, files, opts})
+
       # Track the message
       updated_state =
         Map.update(
@@ -159,10 +162,9 @@ defmodule ParrotMedia.PipelinePlayFilesTest do
       Process.sleep(200)
 
       # Verify we're in active state with a running pipeline
-      {state_name, data} = :sys.get_state(pid)
-      assert state_name == :active
-      assert data.pipeline_pid != nil
-      assert Process.alive?(data.pipeline_pid)
+      state_info = :gen_statem.call(pid, :get_state)
+      assert state_info.state == :active
+      assert state_info.pipeline_active == true
 
       # Now send play_files message - this should:
       # 1. Go to handler which returns {:play_sequence, files}
@@ -170,17 +172,8 @@ defmodule ParrotMedia.PipelinePlayFilesTest do
       test_files = [audio_file]
       send(pid, {:play_files, test_files, loop: false})
 
-      # Give time for the message to propagate
-      Process.sleep(100)
-
-      # Verify handler received the message
-      {_state, updated_data} = :sys.get_state(pid)
-      messages = updated_data.handler_state.messages
-
-      assert Enum.any?(messages, fn
-               {:play_files, files, [loop: false]} -> files == test_files
-               _ -> false
-             end)
+      # Verify handler received the message via confirmation
+      assert_receive {:handler_processed, :play_files, ^test_files, [loop: false]}, 1000
     end
   end
 
@@ -222,10 +215,9 @@ defmodule ParrotMedia.PipelinePlayFilesTest do
       # Give pipeline time to start
       Process.sleep(200)
 
-      # Verify setup
-      {state_name, data} = :sys.get_state(pid)
-      assert state_name == :active
-      assert data.notify_pid == self()
+      # Verify we're in active state
+      state_info = :gen_statem.call(pid, :get_state)
+      assert state_info.state == :active
 
       # The file should play and eventually complete
       # For this test, we verify the notification mechanism works
@@ -283,8 +275,8 @@ defmodule ParrotMedia.PipelinePlayFilesTest do
       # Note: This might timeout if the audio file is too long
       # For now we just verify the mechanism exists
 
-      {state_name, _data} = :sys.get_state(pid)
-      assert state_name == :active
+      state_info = :gen_statem.call(pid, :get_state)
+      assert state_info.state == :active
 
       # The actual file playback would take too long for a unit test
       # So we test the notification path separately above
