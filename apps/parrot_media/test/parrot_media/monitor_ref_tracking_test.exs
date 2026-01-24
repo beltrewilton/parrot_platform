@@ -48,7 +48,7 @@ defmodule ParrotMedia.MonitorRefTrackingTest do
   end
 
   describe "Monitor reference tracking" do
-    test "pipeline_monitor is nil before starting media" do
+    test "pipeline is not active before starting media" do
       session_id = "test_session_#{:rand.uniform(100_000)}"
 
       {:ok, session} =
@@ -73,9 +73,9 @@ defmodule ParrotMedia.MonitorRefTrackingTest do
 
       {:ok, _answer} = MediaSession.process_offer(session, sdp_offer)
 
-      # Before starting media, pipeline_monitor should be nil
-      {_state, data_before} = :sys.get_state(session)
-      assert data_before.pipeline_monitor == nil
+      # Before starting media, pipeline should not be active
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.pipeline_active == false
 
       MediaSession.terminate_session(session)
       Process.sleep(100)
