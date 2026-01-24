@@ -8,13 +8,14 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   - Using E-Model to compute scores
   - Detecting threshold crossings
   - Notifying registered handlers
+
+  These tests verify BEHAVIOR through public APIs, not internal state.
   """
   use ExUnit.Case, async: true
 
   alias ParrotMedia.MOS.Calculator
   alias ParrotMedia.MOS.CallSummary
   alias ParrotMedia.MOS.Config
-  alias ParrotMedia.MOS.Interval
   alias ParrotMedia.MOS.Score
   alias ParrotMedia.MOS.Threshold
 
@@ -81,41 +82,115 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
 
-    test "defaults to :g711 codec", ctx do
+    test "uses G.711 codec by default and produces expected MOS range", ctx do
       {:ok, pid} = start_calculator(ctx, codec: nil)
-      state = GenServer.call(pid, :get_state)
-      assert state.codec == :g711
+
+      # Add good metrics to get a score
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(150)
+
+      # G.711 with good metrics should produce MOS >= 4.0
+      score = Calculator.current_score(pid)
+      assert %Score{} = score
+      assert score.value >= 4.0
+
       Calculator.stop(pid)
     end
 
-    test "accepts custom codec", ctx do
-      {:ok, pid} = start_calculator(ctx, codec: :opus)
-      state = GenServer.call(pid, :get_state)
-      assert state.codec == :opus
-      Calculator.stop(pid)
+    test "Opus codec produces different MOS due to higher equipment impairment", ctx do
+      # Start two calculators with different codecs
+      {:ok, g711_pid} = start_calculator(ctx, codec: :g711, session_id: "#{ctx.session_id}-g711")
+      {:ok, opus_pid} = start_calculator(ctx, codec: :opus, session_id: "#{ctx.session_id}-opus")
+
+      # Add identical metrics to both
+      for _ <- 1..5 do
+        Calculator.add_metrics(g711_pid, good_metrics())
+        Calculator.add_metrics(opus_pid, good_metrics())
+      end
+
+      Process.sleep(150)
+
+      g711_score = Calculator.current_score(g711_pid)
+      opus_score = Calculator.current_score(opus_pid)
+
+      # Both should have scores
+      assert %Score{} = g711_score
+      assert %Score{} = opus_score
+
+      # Opus has higher equipment impairment factor (Ie), so MOS is typically lower
+      # This tests that codec configuration actually affects the E-Model calculation
+      assert opus_score.value != g711_score.value
+
+      Calculator.stop(g711_pid)
+      Calculator.stop(opus_pid)
     end
 
-    test "accepts call_id option", ctx do
-      {:ok, pid} = start_calculator(ctx, call_id: "call-123")
-      state = GenServer.call(pid, :get_state)
-      assert state.call_id == "call-123"
+    test "call_id is included in telemetry metadata", ctx do
+      test_pid = self()
+      handler_id = "test-handler-#{ctx.session_id}"
+
+      :telemetry.attach(
+        handler_id,
+        [:parrot_media, :mos, :call_summary],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:telemetry_metadata, metadata})
+        end,
+        nil
+      )
+
+      {:ok, pid} =
+        start_calculator(ctx,
+          call_id: "call-123",
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
       Calculator.stop(pid)
+
+      assert_receive {:telemetry_metadata, metadata}, 500
+      assert metadata.call_id == "call-123"
+
+      :telemetry.detach(handler_id)
     end
 
-    test "accepts direction option", ctx do
-      {:ok, pid} = start_calculator(ctx, direction: :inbound)
-      state = GenServer.call(pid, :get_state)
-      assert state.direction == :inbound
-      Calculator.stop(pid)
+    test "direction option affects one-way audio detection in summary", ctx do
+      {:ok, pid} =
+        start_calculator(ctx,
+          direction: :inbound,
+          config: Config.new(interval_ms: 50, min_packets_per_interval: 5)
+        )
+
+      # Add only inbound-direction metrics
+      for _ <- 1..10 do
+        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
+      end
+
+      Process.sleep(100)
+
+      summary = Calculator.stop(pid)
+
+      # One-way audio detected via summary status
+      assert %CallSummary{} = summary
+      assert summary.status == :one_way_audio
     end
 
-    test "accepts config override", ctx do
-      custom_config = Config.new(interval_ms: 10_000, min_packets_per_interval: 20)
-      {:ok, pid} = start_calculator(ctx, config: custom_config)
-      state = GenServer.call(pid, :get_state)
-      assert state.config.interval_ms == 10_000
-      assert state.config.min_packets_per_interval == 20
-      Calculator.stop(pid)
+    test "config min_packets_per_interval affects whether scores are calculated", ctx do
+      # High threshold that won't be met
+      high_threshold_config = Config.new(interval_ms: 50, min_packets_per_interval: 1000)
+      {:ok, pid} = start_calculator(ctx, config: high_threshold_config)
+
+      # Add some metrics (way below threshold)
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+      Process.sleep(100)
+
+      # No scores should be calculated because min packets not met
+      assert Calculator.current_score(pid) == nil
+
+      summary = Calculator.stop(pid)
+      assert summary.intervals_calculated == 0
+      assert summary.status == :insufficient_data
     end
   end
 
@@ -126,7 +201,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       refute Process.alive?(pid)
     end
 
-    test "generates summary on stop", ctx do
+    test "returns CallSummary when metrics were added", ctx do
       {:ok, pid} = start_calculator(ctx)
 
       # Add some metrics
@@ -150,90 +225,69 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   end
 
   # ===========================================================================
-  # State Machine Tests
+  # State Machine Behavior Tests
   # ===========================================================================
 
-  describe "initial state" do
-    test "starts in :awaiting_media status", ctx do
+  describe "initial state behavior" do
+    test "returns :ok on stop when no metrics received", ctx do
       {:ok, pid} = start_calculator(ctx)
-      state = GenServer.call(pid, :get_state)
 
-      assert state.status == :awaiting_media
+      # Stop immediately without adding metrics
+      result = Calculator.stop(pid)
+
+      # Awaiting media state returns :ok
+      assert result == :ok
+    end
+
+    test "current_score returns nil before any intervals complete", ctx do
+      {:ok, pid} = start_calculator(ctx)
+
+      # No intervals completed yet
+      assert Calculator.current_score(pid) == nil
+
       Calculator.stop(pid)
     end
 
-    test "has nil current_interval initially", ctx do
+    test "call_summary shows insufficient_data before intervals complete", ctx do
       {:ok, pid} = start_calculator(ctx)
-      state = GenServer.call(pid, :get_state)
 
-      assert state.current_interval == nil
-      Calculator.stop(pid)
-    end
+      summary = Calculator.call_summary(pid)
+      assert summary.status == :insufficient_data
+      assert summary.intervals_calculated == 0
 
-    test "has empty scores list initially", ctx do
-      {:ok, pid} = start_calculator(ctx)
-      state = GenServer.call(pid, :get_state)
-
-      assert state.scores == []
-      Calculator.stop(pid)
-    end
-
-    test "has nil last_mos initially", ctx do
-      {:ok, pid} = start_calculator(ctx)
-      state = GenServer.call(pid, :get_state)
-
-      assert state.last_mos == nil
-      Calculator.stop(pid)
-    end
-
-    test "sets start_time on init", ctx do
-      {:ok, pid} = start_calculator(ctx)
-      state = GenServer.call(pid, :get_state)
-
-      assert %DateTime{} = state.start_time
       Calculator.stop(pid)
     end
   end
 
-  describe "state transitions" do
-    test "transitions from :awaiting_media to :active on first metrics", ctx do
+  describe "state transition behavior" do
+    test "after metrics added, stop returns CallSummary instead of :ok", ctx do
       {:ok, pid} = start_calculator(ctx)
 
-      # Initially awaiting media
-      assert GenServer.call(pid, :get_state).status == :awaiting_media
-
-      # Add metrics
+      # Add metrics to transition to active
       Calculator.add_metrics(pid, good_metrics())
 
-      # Should transition to active
-      state = GenServer.call(pid, :get_state)
-      assert state.status == :active
-      assert state.media_started_at != nil
+      # Now stop returns summary, not :ok
+      result = Calculator.stop(pid)
 
-      Calculator.stop(pid)
+      assert %CallSummary{} = result
+      assert result.session_id == ctx.session_id
     end
 
-    test "creates current_interval on transition to :active", ctx do
+    test "current_score returns value after interval completes", ctx do
       {:ok, pid} = start_calculator(ctx)
 
-      Calculator.add_metrics(pid, good_metrics())
+      # Add sufficient metrics
+      for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
 
-      state = GenServer.call(pid, :get_state)
-      assert %Interval{} = state.current_interval
+      # Wait for interval to complete
+      Process.sleep(150)
+
+      # Now should have a score
+      score = Calculator.current_score(pid)
+      assert %Score{} = score
+      assert score.value >= 1.0
 
       Calculator.stop(pid)
-    end
-
-    test "transitions to :terminated on stop", ctx do
-      {:ok, pid} = start_calculator(ctx)
-      Calculator.add_metrics(pid, good_metrics())
-
-      # Use GenServer.call to check terminate behavior
-      # stop/1 returns summary after termination
-      _summary = Calculator.stop(pid)
-
-      # Process should be dead (terminated)
-      refute Process.alive?(pid)
     end
   end
 
@@ -250,15 +304,21 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
 
-    test "accumulates metrics in current interval", ctx do
+    test "accumulated metrics produce correct score", ctx do
       {:ok, pid} = start_calculator(ctx)
 
+      # Add metrics in multiple calls (25+25 = 50 packets)
       Calculator.add_metrics(pid, %{packets_received: 25, packets_expected: 25, jitter_ms: 10.0})
-      Calculator.add_metrics(pid, %{packets_received: 25, packets_expected: 25, jitter_ms: 20.0})
+      Calculator.add_metrics(pid, %{packets_received: 25, packets_expected: 25, jitter_ms: 10.0})
 
-      state = GenServer.call(pid, :get_state)
-      assert state.current_interval.packets_received == 50
-      assert state.current_interval.packets_expected == 50
+      # Wait for interval
+      Process.sleep(150)
+
+      # Should have calculated a score from accumulated metrics
+      score = Calculator.current_score(pid)
+      assert %Score{} = score
+      # 50 received / 50 expected = 0% loss, should be high MOS
+      assert score.value >= 4.0
 
       Calculator.stop(pid)
     end
@@ -272,10 +332,10 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
 
-    test "is asynchronous (cast)", ctx do
+    test "is synchronous and returns :ok", ctx do
       {:ok, pid} = start_calculator(ctx)
 
-      # add_metrics should return immediately
+      # add_metrics returns :ok immediately
       result = Calculator.add_metrics(pid, good_metrics())
       assert result == :ok
 
@@ -288,7 +348,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   # ===========================================================================
 
   describe "interval completion" do
-    test "completes interval on timer tick", ctx do
+    test "completes interval on timer tick and calculates score", ctx do
       {:ok, pid} = start_calculator(ctx)
 
       # Add sufficient metrics
@@ -301,18 +361,17 @@ defmodule ParrotMedia.MOS.CalculatorTest do
         })
       end
 
-      # Wait for interval to complete (100ms interval + some buffer)
+      # Wait for interval to complete (100ms interval + buffer)
       Process.sleep(150)
 
-      state = GenServer.call(pid, :get_state)
-
-      # Should have at least one score calculated
-      assert length(state.scores) >= 1
+      # Should have at least one score
+      score = Calculator.current_score(pid)
+      assert %Score{} = score
 
       Calculator.stop(pid)
     end
 
-    test "calculates MOS score on interval completion", ctx do
+    test "good metrics yield high MOS score", ctx do
       {:ok, pid} = start_calculator(ctx)
 
       # Add good metrics
@@ -323,40 +382,34 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       # Wait for interval completion
       Process.sleep(150)
 
-      state = GenServer.call(pid, :get_state)
-      [score | _] = state.scores
-
-      # Good metrics should yield good MOS
+      score = Calculator.current_score(pid)
       assert %Score{} = score
+      # Good metrics should yield MOS >= 4.0
       assert score.value >= 4.0
 
       Calculator.stop(pid)
     end
 
-    test "starts new interval after completion", ctx do
+    test "poor metrics yield lower MOS score", ctx do
       {:ok, pid} = start_calculator(ctx)
 
+      # Add poor metrics (high jitter, loss, delay)
       for _ <- 1..5 do
-        Calculator.add_metrics(pid, good_metrics())
+        Calculator.add_metrics(pid, poor_metrics())
       end
 
-      # Wait for first interval
+      # Wait for interval completion
       Process.sleep(150)
 
-      state_after_first = GenServer.call(pid, :get_state)
-      first_interval = state_after_first.current_interval
-
-      # Add more metrics
-      Calculator.add_metrics(pid, good_metrics())
-
-      # The current interval should have fresh start time
-      state = GenServer.call(pid, :get_state)
-      assert state.current_interval.start_time >= first_interval.start_time
+      score = Calculator.current_score(pid)
+      assert %Score{} = score
+      # Poor metrics should yield lower MOS
+      assert score.value < 4.0
 
       Calculator.stop(pid)
     end
 
-    test "handles insufficient data in interval", ctx do
+    test "handles insufficient data in interval gracefully", ctx do
       {:ok, pid} =
         start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 100))
 
@@ -366,30 +419,31 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       # Wait for interval
       Process.sleep(100)
 
-      state = GenServer.call(pid, :get_state)
+      # No score should be calculated
+      assert Calculator.current_score(pid) == nil
 
-      # Should not have added a score (insufficient data)
-      assert state.scores == []
+      summary = Calculator.stop(pid)
+      assert summary.status == :insufficient_data
 
-      Calculator.stop(pid)
+      # But packet counts should still be tracked
+      assert summary.total_packets > 0
     end
 
-    test "updates last_mos on interval completion", ctx do
-      {:ok, pid} = start_calculator(ctx)
+    test "multiple intervals produce multiple scores with statistics", ctx do
+      {:ok, pid} =
+        start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
 
-      for _ <- 1..5 do
-        Calculator.add_metrics(pid, good_metrics())
+      # Complete multiple intervals
+      for _ <- 1..3 do
+        for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
+        Process.sleep(80)
       end
 
-      # Initially nil
-      assert GenServer.call(pid, :get_state).last_mos == nil
+      summary = Calculator.call_summary(pid)
 
-      # Wait for interval
-      Process.sleep(150)
-
-      state = GenServer.call(pid, :get_state)
-      assert state.last_mos != nil
-      assert is_float(state.last_mos)
+      assert summary.intervals_calculated >= 2
+      assert summary.avg_mos >= 4.0
+      assert summary.min_mos <= summary.max_mos
 
       Calculator.stop(pid)
     end
@@ -400,7 +454,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   # ===========================================================================
 
   describe "threshold crossing detection" do
-    test "detects falling threshold crossing", ctx do
+    test "detects falling threshold crossing in summary events", ctx do
       thresholds = [
         %Threshold{name: :good, value: 3.5, hysteresis: 0.1, direction: :both}
       ]
@@ -423,12 +477,12 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
       Process.sleep(100)
 
-      state = GenServer.call(pid, :get_state)
+      summary = Calculator.call_summary(pid)
 
       # Should have detected quality degradation
       falling_events =
-        Enum.filter(state.quality_events, fn event ->
-          event.event_type == :threshold_crossed and event.direction == :falling
+        Enum.filter(summary.quality_events, fn event ->
+          event.type == :threshold_crossed and event.direction == :falling
         end)
 
       assert length(falling_events) >= 1
@@ -436,7 +490,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
 
-    test "detects rising threshold crossing", ctx do
+    test "detects rising threshold crossing in summary events", ctx do
       thresholds = [
         %Threshold{name: :good, value: 3.5, hysteresis: 0.1, direction: :both}
       ]
@@ -459,12 +513,12 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
       Process.sleep(100)
 
-      state = GenServer.call(pid, :get_state)
+      summary = Calculator.call_summary(pid)
 
       # Should have detected quality improvement
       rising_events =
-        Enum.filter(state.quality_events, fn event ->
-          event.event_type == :threshold_crossed and event.direction == :rising
+        Enum.filter(summary.quality_events, fn event ->
+          event.type == :threshold_crossed and event.direction == :rising
         end)
 
       assert length(rising_events) >= 1
@@ -499,15 +553,15 @@ defmodule ParrotMedia.MOS.CalculatorTest do
         Process.sleep(100)
       end
 
-      state = GenServer.call(pid, :get_state)
+      summary = Calculator.call_summary(pid)
 
       # Should not have excessive threshold events due to hysteresis
-      assert length(state.quality_events) <= 1
+      assert length(summary.quality_events) <= 1
 
       Calculator.stop(pid)
     end
 
-    test "records quality events with correct structure", ctx do
+    test "quality events have correct structure", ctx do
       thresholds = [
         %Threshold{name: :good, value: 3.5, hysteresis: 0.1, direction: :both}
       ]
@@ -516,22 +570,22 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
       {:ok, pid} = start_calculator(ctx, config: config)
 
-      # Good then poor
+      # Good then poor to trigger event
       for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
       Process.sleep(100)
 
       for _ <- 1..5, do: Calculator.add_metrics(pid, poor_metrics())
       Process.sleep(100)
 
-      state = GenServer.call(pid, :get_state)
+      summary = Calculator.call_summary(pid)
 
-      if length(state.quality_events) > 0 do
-        [event | _] = state.quality_events
+      if length(summary.quality_events) > 0 do
+        [event | _] = summary.quality_events
 
         assert Map.has_key?(event, :timestamp)
-        assert Map.has_key?(event, :event_type)
-        assert Map.has_key?(event, :mos_score)
-        assert Map.has_key?(event, :threshold_name)
+        assert Map.has_key?(event, :type)
+        assert Map.has_key?(event, :mos)
+        assert Map.has_key?(event, :threshold)
         assert Map.has_key?(event, :direction)
       end
 
@@ -544,19 +598,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   # ===========================================================================
 
   describe "register_handler/2" do
-    test "registers a process as handler", ctx do
-      {:ok, pid} = start_calculator(ctx)
-
-      handler_pid = self()
-      assert :ok = Calculator.register_handler(pid, handler_pid)
-
-      state = GenServer.call(pid, :get_state)
-      assert handler_pid in state.handlers
-
-      Calculator.stop(pid)
-    end
-
-    test "notifies handler on score calculation", ctx do
+    test "registers a process and notifies on score calculation", ctx do
       {:ok, pid} = start_calculator(ctx)
 
       Calculator.register_handler(pid, self())
@@ -600,7 +642,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
 
-    test "notifies handler on summary generation", ctx do
+    test "notifies handler on summary generation at stop", ctx do
       {:ok, pid} = start_calculator(ctx)
 
       Calculator.register_handler(pid, self())
@@ -643,7 +685,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
     test "handler errors don't crash calculator", ctx do
       {:ok, pid} = start_calculator(ctx)
 
-      # Register a dead process as handler (will cause send failure)
+      # Register a dead process as handler (will cause send to go nowhere)
       dead_handler =
         spawn(fn ->
           :ok
@@ -772,7 +814,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
       # Use via tuple for query
       via = {:via, Registry, {ParrotMedia.MOS.Registry, ctx.session_id}}
-      score = GenServer.call(via, :current_score)
+      score = Calculator.current_score(via)
       # No intervals completed yet
       assert score == nil
 
@@ -797,7 +839,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
 
       summary = Calculator.stop(pid)
 
-      # Should return a CallSummary struct, not a plain map
+      # Should return a CallSummary struct
       assert %CallSummary{} = summary
       assert summary.session_id == ctx.session_id
       assert summary.status == :complete
@@ -1075,21 +1117,16 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       Calculator.stop(pid)
     end
 
-    test "handles codec change via config", ctx do
+    test "Opus codec produces valid MOS scores", ctx do
       {:ok, pid} = start_calculator(ctx, codec: :opus)
 
       for _ <- 1..5, do: Calculator.add_metrics(pid, good_metrics())
       Process.sleep(150)
 
-      state = GenServer.call(pid, :get_state)
-      assert state.codec == :opus
-
-      # Score should be calculated with Opus parameters
-      if length(state.scores) > 0 do
-        [score | _] = state.scores
-        # Opus has higher Ie, so score might be slightly lower
-        assert score.value >= 1.0
-      end
+      score = Calculator.current_score(pid)
+      assert %Score{} = score
+      # Opus with good metrics should still produce valid MOS
+      assert score.value >= 1.0 and score.value <= 5.0
 
       Calculator.stop(pid)
     end
@@ -1100,56 +1137,6 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   # ===========================================================================
 
   describe "one-way audio detection" do
-    test "tracks inbound packet count separately", ctx do
-      {:ok, pid} = start_calculator(ctx)
-
-      # Add metrics with inbound direction
-      for _ <- 1..5 do
-        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
-      end
-
-      state = GenServer.call(pid, :get_state)
-      assert state.inbound_packets > 0
-      assert state.outbound_packets == 0
-
-      Calculator.stop(pid)
-    end
-
-    test "tracks outbound packet count separately", ctx do
-      {:ok, pid} = start_calculator(ctx)
-
-      # Add metrics with outbound direction
-      for _ <- 1..5 do
-        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :outbound))
-      end
-
-      state = GenServer.call(pid, :get_state)
-      assert state.outbound_packets > 0
-      assert state.inbound_packets == 0
-
-      Calculator.stop(pid)
-    end
-
-    test "tracks bidirectional packets correctly", ctx do
-      {:ok, pid} = start_calculator(ctx)
-
-      # Add inbound metrics
-      for _ <- 1..5 do
-        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :inbound))
-      end
-
-      # Add outbound metrics
-      for _ <- 1..5 do
-        Calculator.add_metrics(pid, Map.put(good_metrics(), :direction, :outbound))
-      end
-
-      state = GenServer.call(pid, :get_state)
-      assert state.inbound_packets > 0
-      assert state.outbound_packets > 0
-
-      Calculator.stop(pid)
-    end
-
     test "detects one-way audio when only inbound packets received", ctx do
       {:ok, pid} =
         start_calculator(ctx, config: Config.new(interval_ms: 50, min_packets_per_interval: 5))
@@ -1231,7 +1218,6 @@ defmodule ParrotMedia.MOS.CalculatorTest do
       summary = Calculator.stop(pid)
 
       # Without direction info, we assume bidirectional (backward compatibility)
-      # The status should be :complete since we got scores
       assert %CallSummary{} = summary
       assert summary.status == :complete
     end
@@ -1258,7 +1244,7 @@ defmodule ParrotMedia.MOS.CalculatorTest do
   end
 
   describe "no RTP packets edge case" do
-    test "returns :insufficient_data when calculator stopped with no metrics", ctx do
+    test "returns :ok when calculator stopped with no metrics", ctx do
       {:ok, pid} = start_calculator(ctx)
 
       # No metrics added, stop immediately
