@@ -37,8 +37,8 @@ defmodule ParrotMedia.MediaSessionHoldResumeTest do
       :ok = MediaSession.pause_media(session)
 
       # Get state to verify we're in paused state
-      state_info = :sys.get_state(session)
-      assert elem(state_info, 0) == :paused
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.state == :paused
     end
 
     test "resume_media transitions back to active state" do
@@ -70,8 +70,8 @@ defmodule ParrotMedia.MediaSessionHoldResumeTest do
       :ok = MediaSession.resume_media(session)
 
       # Get state to verify we're back in active state
-      state_info = :sys.get_state(session)
-      assert elem(state_info, 0) == :active
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.state == :active
     end
 
     test "generates SDP with correct direction attribute" do
