@@ -1,4 +1,11 @@
 defmodule ParrotSip.Dialog.Supervisor do
+  @moduledoc """
+  DynamicSupervisor for SIP dialog state machines.
+
+  Manages DialogStatem processes that track the lifecycle of SIP dialogs (call legs).
+  Uses conservative restart limits to surface bugs rather than mask them.
+  """
+
   use DynamicSupervisor
 
   def start_link(args) do

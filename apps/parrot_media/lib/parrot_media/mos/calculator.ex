@@ -138,7 +138,7 @@ defmodule ParrotMedia.MOS.Calculator do
   @doc """
   Adds metrics from the Observer to the current calculation interval.
 
-  This is an asynchronous operation (cast) to avoid blocking the Observer.
+  This is a synchronous operation (call) to ensure metrics are acknowledged.
 
   ## Parameters
 
@@ -155,7 +155,7 @@ defmodule ParrotMedia.MOS.Calculator do
   """
   @spec add_metrics(pid(), map()) :: :ok
   def add_metrics(pid, metrics) when is_map(metrics) do
-    GenServer.cast(pid, {:add_metrics, metrics})
+    GenServer.call(pid, {:add_metrics, metrics})
   end
 
   @doc """
@@ -282,8 +282,7 @@ defmodule ParrotMedia.MOS.Calculator do
     {:reply, summary, state}
   end
 
-  @impl true
-  def handle_cast({:add_metrics, metrics}, %{status: :awaiting_media} = state) do
+  def handle_call({:add_metrics, metrics}, _from, %{status: :awaiting_media} = state) do
     # Transition to :active state on first metrics
     interval = Interval.new() |> Interval.add_metrics(metrics)
 
@@ -303,10 +302,10 @@ defmodule ParrotMedia.MOS.Calculator do
         outbound_packets: state.outbound_packets + outbound_delta
     }
 
-    {:noreply, new_state}
+    {:reply, :ok, new_state}
   end
 
-  def handle_cast({:add_metrics, metrics}, %{status: :active} = state) do
+  def handle_call({:add_metrics, metrics}, _from, %{status: :active} = state) do
     # Accumulate metrics in current interval
     updated_interval = Interval.add_metrics(state.current_interval, metrics)
 
@@ -320,12 +319,12 @@ defmodule ParrotMedia.MOS.Calculator do
         outbound_packets: state.outbound_packets + outbound_delta
     }
 
-    {:noreply, new_state}
+    {:reply, :ok, new_state}
   end
 
-  def handle_cast({:add_metrics, _metrics}, state) do
+  def handle_call({:add_metrics, _metrics}, _from, state) do
     # Ignore metrics in other states
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
   @impl true

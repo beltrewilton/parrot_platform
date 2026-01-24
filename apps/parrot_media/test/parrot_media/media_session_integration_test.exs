@@ -1,5 +1,6 @@
 defmodule ParrotMedia.MediaSessionIntegrationTest do
   use ExUnit.Case, async: false
+  @moduletag :slow
 
   alias ParrotMedia.MediaSession
 

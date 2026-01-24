@@ -4,6 +4,7 @@ defmodule ParrotMedia.AudioChunkerIntegrationTest do
   OPUS and PCMA codecs in the PortAudioPipeline context.
   """
   use ExUnit.Case, async: true
+  @moduletag :slow
 
   alias ParrotMedia.AudioChunker
   alias Membrane.{Buffer, RawAudio, G711}

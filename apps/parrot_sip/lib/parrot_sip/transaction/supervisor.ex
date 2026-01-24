@@ -1,4 +1,11 @@
 defmodule ParrotSip.Transaction.Supervisor do
+  @moduledoc """
+  DynamicSupervisor for SIP transaction state machines.
+
+  Manages TransactionStatem processes that implement RFC 3261 transaction state machines.
+  Transaction processes terminate normally as part of their lifecycle.
+  """
+
   use DynamicSupervisor
 
   def start_link(args) do

@@ -19,6 +19,7 @@ defmodule ParrotMedia.DTMFRTPIntegrationTest do
   This test provides reliable DTMF detection verification without those limitations.
   """
   use ExUnit.Case, async: false
+  @moduletag :slow
 
   require Logger
 

@@ -14,6 +14,7 @@ defmodule ParrotMedia.WsAudioForkerIntegrationTest do
   """
 
   use ExUnit.Case, async: false
+  @moduletag :slow
 
   alias ParrotMedia.WsAudioForker
   alias ParrotMedia.WsAudioForker.Config

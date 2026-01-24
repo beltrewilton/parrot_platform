@@ -1,5 +1,6 @@
 defmodule ParrotMedia.MediaSessionHandlerIntegrationTest do
   use ExUnit.Case
+  @moduletag :slow
 
   alias ParrotMedia.MediaSession
 
