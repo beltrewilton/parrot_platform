@@ -48,12 +48,22 @@ defmodule ParrotMedia.ForkIntegrationTest do
           destination_port: Keyword.fetch!(opts, :port)
         )
 
+      # Send confirmation to test process if configured
+      if test_pid = state[:test_pid] do
+        send(test_pid, {:fork_added, fork_config})
+      end
+
       {[{:fork_media, fork_config}],
        Map.update(state, :forks, [fork_config], &[fork_config | &1])}
     end
 
     @impl true
     def handle_info({:stop_fork, fork_id}, state) do
+      # Send confirmation to test process if configured
+      if test_pid = state[:test_pid] do
+        send(test_pid, {:fork_removed, fork_id})
+      end
+
       {[{:stop_fork, fork_id}],
        Map.update(state, :forks, [], &Enum.reject(&1, fn f -> f.id == fork_id end))}
     end
@@ -74,19 +84,14 @@ defmodule ParrotMedia.ForkIntegrationTest do
           dialog_id: "dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: ForkTestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send fork_media message
       send(session, {:fork_media, "192.168.1.100", port: 5000, fork_id: "my_fork"})
 
-      # Allow processing time
-      Process.sleep(100)
-
-      # Verify handler state was updated
-      {_state_name, data} = :sys.get_state(session)
-      assert length(data.handler_state.forks) == 1
-      [fork] = data.handler_state.forks
+      # Verify handler processed the fork via confirmation message
+      assert_receive {:fork_added, fork}, 1000
       assert fork.id == "my_fork"
       assert fork.destination_port == 5000
 
@@ -103,6 +108,7 @@ defmodule ParrotMedia.ForkIntegrationTest do
           role: :uas,
           media_handler: ForkTestHandler,
           handler_args: %{
+            test_pid: self(),
             forks: [
               %ForkConfig{
                 id: "existing_fork",
@@ -118,12 +124,8 @@ defmodule ParrotMedia.ForkIntegrationTest do
       # Send stop_fork message
       send(session, {:stop_fork, "existing_fork"})
 
-      # Allow processing time
-      Process.sleep(100)
-
-      # Verify fork was removed from handler state
-      {_state_name, data} = :sys.get_state(session)
-      assert data.handler_state.forks == []
+      # Verify fork was removed via confirmation message
+      assert_receive {:fork_removed, "existing_fork"}, 1000
 
       GenServer.stop(session)
     end
