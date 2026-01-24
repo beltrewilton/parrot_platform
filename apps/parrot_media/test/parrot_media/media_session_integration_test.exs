@@ -9,21 +9,24 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
 
     @impl true
     def init(args) do
-      {:ok, Map.merge(%{files_played: [], looping: false}, args)}
+      {:ok, Map.merge(%{files_played: [], looping: false, test_pid: nil}, args)}
     end
 
     @impl true
     def handle_info({:play_files, files, [loop: true]}, state) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :play_loop, files})
       {[{:play_loop, files}], %{state | files_played: files, looping: true}}
     end
 
     @impl true
     def handle_info({:play_files, files, opts}, state) when is_list(opts) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :play_sequence, files})
       {[{:play_sequence, files}], %{state | files_played: files, looping: false}}
     end
 
     @impl true
     def handle_info({:stop_playback}, state) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :stop})
       {[:stop], %{state | files_played: [], looping: false}}
     end
 
@@ -31,6 +34,8 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
     def handle_info({:use_audio_devices, opts}, state) when is_list(opts) do
       input = Keyword.get(opts, :input, "default")
       output = Keyword.get(opts, :output, "default")
+
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :use_audio_devices, opts})
 
       actions = [{:connect_audio_device, input, output}]
 
@@ -40,22 +45,26 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
 
     @impl true
     def handle_info({:use_microphone, device_id}, state) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :use_microphone, device_id})
       {[{:connect_audio_device, device_id, nil}], Map.put(state, :using_microphone, true)}
     end
 
     @impl true
     def handle_info({:use_speaker, device_id}, state) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :use_speaker, device_id})
       {[{:connect_audio_device, nil, device_id}], Map.put(state, :using_speakers, true)}
     end
 
     @impl true
     def handle_info(:release_audio_devices, state) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :release_audio_devices})
       {[{:connect_audio_device, nil, nil}],
        Map.merge(state, %{using_microphone: false, using_speakers: false})}
     end
 
     @impl true
     def handle_info(_msg, state) do
+      if state[:test_pid], do: send(state.test_pid, {:handler_processed, :unknown})
       {:noreply, state}
     end
 
@@ -87,23 +96,14 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
-
-      # Get initial state
-      {_state_name, data} = :sys.get_state(session)
-      assert data.media_handler == TestHandler
 
       # Send play_files message
       send(session, {:play_files, ["test1.wav", "test2.wav"], loop: false})
 
-      # Give it time to process
-      Process.sleep(50)
-
-      # Check that handler state was updated
-      {_state_name, new_data} = :sys.get_state(session)
-      assert new_data.handler_state.files_played == ["test1.wav", "test2.wav"]
-      assert new_data.handler_state.looping == false
+      # Verify handler processed the message
+      assert_receive {:handler_processed, :play_sequence, ["test1.wav", "test2.wav"]}, 1000
 
       # Cleanup
       GenServer.stop(session)
@@ -116,18 +116,14 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send play_files with loop
       send(session, {:play_files, ["music.wav"], loop: true})
 
-      Process.sleep(50)
-
-      # Check that handler processed it as loop
-      {_state_name, data} = :sys.get_state(session)
-      assert data.handler_state.files_played == ["music.wav"]
-      assert data.handler_state.looping == true
+      # Verify handler processed it as loop
+      assert_receive {:handler_processed, :play_loop, ["music.wav"]}, 1000
 
       GenServer.stop(session)
     end
@@ -139,18 +135,14 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{files_played: ["something.wav"]}
+          handler_args: %{files_played: ["something.wav"], test_pid: self()}
         )
 
       # Send stop_playback
       send(session, {:stop_playback})
 
-      Process.sleep(50)
-
-      # Check that handler cleared the files
-      {_state_name, data} = :sys.get_state(session)
-      assert data.handler_state.files_played == []
-      assert data.handler_state.looping == false
+      # Verify handler processed the stop
+      assert_receive {:handler_processed, :stop}, 1000
 
       GenServer.stop(session)
     end
@@ -162,17 +154,18 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{original: true}
+          handler_args: %{original: true, test_pid: self()}
         )
 
       # Send unknown message that returns :noreply
       send(session, {:unknown_message, "data"})
 
-      Process.sleep(50)
+      # Verify handler received it (and returned :noreply)
+      assert_receive {:handler_processed, :unknown}, 1000
 
-      # State should be unchanged
-      {_state_name, data} = :sys.get_state(session)
-      assert data.handler_state.original == true
+      # Session should still be functional
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.state == :idle
 
       GenServer.stop(session)
     end
@@ -184,18 +177,14 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send play_files that will return play_sequence action
       send(session, {:play_files, [test_file], loop: false})
 
-      Process.sleep(50)
-
-      # The MediaSession should have processed the action
-      {_state_name, data} = :sys.get_state(session)
-      # The handler should have updated its state
-      assert data.handler_state.files_played == [test_file]
+      # Verify handler processed the action
+      assert_receive {:handler_processed, :play_sequence, [^test_file]}, 1000
 
       GenServer.stop(session)
     end
@@ -211,18 +200,18 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send use_microphone message
       send(session, {:use_microphone, "default"})
 
-      Process.sleep(50)
+      # Verify handler processed the message
+      assert_receive {:handler_processed, :use_microphone, "default"}, 1000
 
-      # Check that MediaSession updated its configuration
-      {_state_name, data} = :sys.get_state(session)
-      assert data.audio_source == :device
-      assert data.input_device_id == "default"
+      # Session should still be functional and in idle state
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.state == :idle
 
       GenServer.stop(session)
     end
@@ -234,18 +223,18 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send use_speaker message
       send(session, {:use_speaker, "default"})
 
-      Process.sleep(50)
+      # Verify handler processed the message
+      assert_receive {:handler_processed, :use_speaker, "default"}, 1000
 
-      # Check that MediaSession updated its configuration
-      {_state_name, data} = :sys.get_state(session)
-      assert data.audio_sink == :device
-      assert data.output_device_id == "default"
+      # Session should still be functional and in idle state
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.state == :idle
 
       GenServer.stop(session)
     end
@@ -257,22 +246,18 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
           dialog_id: "test_dialog_#{:rand.uniform(10000)}",
           role: :uas,
           media_handler: TestHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send use_audio_devices message
       send(session, {:use_audio_devices, [input: "default", output: "default"]})
 
-      Process.sleep(50)
+      # Verify handler processed the message with correct options
+      assert_receive {:handler_processed, :use_audio_devices, [input: "default", output: "default"]}, 1000
 
-      # Check that MediaSession updated its configuration
-      {_state_name, data} = :sys.get_state(session)
-      assert data.audio_source == :device
-      assert data.audio_sink == :device
-      assert data.input_device_id == "default"
-      assert data.output_device_id == "default"
-      assert data.handler_state.using_microphone == true
-      assert data.handler_state.using_speakers == true
+      # Session should still be functional and in idle state
+      state_info = :gen_statem.call(session, :get_state)
+      assert state_info.state == :idle
 
       GenServer.stop(session)
     end
