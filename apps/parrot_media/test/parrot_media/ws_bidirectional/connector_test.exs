@@ -35,10 +35,12 @@ defmodule ParrotMedia.WsBidirectional.ConnectorTest do
   @registry_cleanup_wait 100
 
   # Helper to get the conn_pid from connector state for testing
-  # Uses :sys.get_state which is the standard OTP way to inspect process state
+  # Uses the public Connector.conn_pid/1 API
   defp get_conn_pid(connector_pid) do
-    state = :sys.get_state(connector_pid)
-    state.conn_pid
+    case Connector.conn_pid(connector_pid) do
+      {:ok, conn_pid} -> conn_pid
+      {:error, :not_connected} -> nil
+    end
   end
 
   setup do

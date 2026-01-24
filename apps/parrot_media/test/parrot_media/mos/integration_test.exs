@@ -200,6 +200,19 @@ defmodule ParrotMedia.MOS.IntegrationTest do
     end
 
     test "Calculator tracks codec from MediaSession", ctx do
+      # Set up telemetry handler to capture codec
+      test_pid = self()
+      handler_id = "test-codec-handler-#{ctx.session_id}"
+
+      :telemetry.attach(
+        handler_id,
+        [:parrot_media, :mos, :call_summary],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:telemetry_codec, metadata.codec})
+        end,
+        nil
+      )
+
       # Start media session
       {:ok, session} =
         MediaSession.start_link(
@@ -219,10 +232,21 @@ defmodule ParrotMedia.MOS.IntegrationTest do
       # Allow time for Calculator to start
       Process.sleep(50)
 
-      # Verify Calculator has correct codec
+      # Verify Calculator was started
       [{calc_pid, _}] = Registry.lookup(ParrotMedia.MOS.Registry, ctx.session_id)
-      state = :sys.get_state(calc_pid)
-      assert state.codec == :g711
+      assert Process.alive?(calc_pid)
+
+      # Send some metrics so we can verify codec via telemetry on stop
+      Calculator.add_metrics(calc_pid, %{packets_received: 10, packets_expected: 10, jitter_ms: 5.0})
+      Process.sleep(100)
+
+      # Stop Calculator to trigger telemetry
+      Calculator.stop(calc_pid)
+
+      # Verify codec was tracked correctly (defaults to :g711)
+      assert_receive {:telemetry_codec, :g711}, 500
+
+      :telemetry.detach(handler_id)
 
       # Cleanup
       MediaSession.terminate_session(session)

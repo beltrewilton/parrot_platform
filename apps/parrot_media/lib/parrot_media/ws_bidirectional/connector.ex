@@ -366,6 +366,38 @@ defmodule ParrotMedia.WsBidirectional.Connector do
     end
   end
 
+  @doc """
+  Get the underlying WebSocket connection process PID.
+
+  This is primarily useful for testing and debugging to inspect
+  the connection or simulate connection events.
+
+  ## Parameters
+
+  - `connection_ref` - PID or connection_id string
+
+  ## Returns
+
+  - `{:ok, conn_pid}` - Connection PID if connected
+  - `{:error, :not_connected}` - Not currently connected
+  - `{:error, :not_found}` - Connector not found
+  """
+  @spec conn_pid(connection_ref()) :: {:ok, pid()} | {:error, :not_connected | :not_found}
+  def conn_pid(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      GenServer.call(pid, :conn_pid)
+    else
+      {:error, :not_found}
+    end
+  end
+
+  def conn_pid(connection_id) when is_binary(connection_id) do
+    case whereis(connection_id) do
+      {:ok, pid} -> conn_pid(pid)
+      {:error, :not_found} -> {:error, :not_found}
+    end
+  end
+
   # ============================================================================
   # GenServer Callbacks
   # ============================================================================
@@ -428,6 +460,15 @@ defmodule ParrotMedia.WsBidirectional.Connector do
 
       {:error, {:already_registered, pid}} ->
         {:stop, {:already_registered, pid}}
+    end
+  end
+
+  @impl true
+  def handle_call(:conn_pid, _from, state) do
+    if state.conn_pid do
+      {:reply, {:ok, state.conn_pid}, state}
+    else
+      {:reply, {:error, :not_connected}, state}
     end
   end
 
