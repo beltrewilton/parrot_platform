@@ -25,6 +25,12 @@ defmodule Parrot.DSL.MediaHandler do
 
   require Logger
 
+  # Codecs we have pipelines for in ParrotMedia
+  # - :pcmu (G.711 mu-law) -> AlawPipeline (TODO: should be UlawPipeline)
+  # - :pcma (G.711 A-law)  -> AlawPipeline
+  # - :opus                -> OpusPipeline
+  @supported_codecs [:pcmu, :pcma, :opus]
+
   # ===========================================================================
   # Required Callbacks
   # ===========================================================================
@@ -42,11 +48,19 @@ defmodule Parrot.DSL.MediaHandler do
   end
 
   @impl true
-  def handle_codec_negotiation(offered_codecs, _supported_codecs, state) do
-    # Accept the first offered codec that we support
-    Logger.debug("[DSL.MediaHandler] Codec negotiation: offered=#{inspect(offered_codecs)}")
-    selected = List.first(offered_codecs)
-    {:ok, selected, state}
+  def handle_codec_negotiation(offered_codecs, _session_config, state) do
+    # Find first offered codec that we actually support (have pipelines for)
+    Logger.debug("[DSL.MediaHandler] Codec negotiation: offered=#{inspect(offered_codecs)}, supported=#{inspect(@supported_codecs)}")
+
+    case Enum.find(offered_codecs, &(&1 in @supported_codecs)) do
+      nil ->
+        Logger.warning("[DSL.MediaHandler] No common codec: offered=#{inspect(offered_codecs)}")
+        {:error, :no_common_codec, state}
+
+      codec ->
+        Logger.debug("[DSL.MediaHandler] Selected codec: #{inspect(codec)}")
+        {:ok, codec, state}
+    end
   end
 
   @impl true

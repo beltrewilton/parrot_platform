@@ -143,28 +143,20 @@ defmodule Parrot.Sipp.DSL.SdpErrorTest do
   describe "US3: SDP Negotiation Failure Handling" do
     @describetag :sipp
 
-    # NOTE: These tests are in TDD "red" phase.
+    # Tests for FR-012: System MUST automatically send 488 Not Acceptable Here
+    # when SDP negotiation fails due to no common codec.
     #
-    # Current behavior: The Parrot.DSL.MediaHandler.handle_codec_negotiation/3
-    # accepts ANY offered codec (ignores supported_codecs), so opus is accepted
-    # and returns 200 OK instead of 488 Not Acceptable Here.
-    #
-    # Required fix: DSL.MediaHandler must check offered codecs against
-    # supported_codecs and return {:error, :no_common_codec} when no match.
-    # This fix belongs to Phase 8 (US3 Implementation - T032-T037).
-    #
-    # The tests below document the expected behavior (FR-012) and will
-    # pass once the implementation is complete.
+    # The DSL.MediaHandler.handle_codec_negotiation/3 checks offered codecs
+    # against @supported_codecs (pcmu, pcma, opus) and returns
+    # {:error, :no_common_codec} when no match is found.
 
     @tag :sipp
-    @tag :pending_implementation
     @tag timeout: 15_000
     test "INVITE with unsupported codec receives 488 Not Acceptable Here (T031, FR-012)", %{
       port: port
     } do
-      # TDD Red Phase: Test documents expected behavior (FR-012)
-      # Currently fails because DSL.MediaHandler accepts any codec
-      # Will pass when T032-T037 (Phase 8) are implemented
+      # Test FR-012: When caller offers only G.729 (which we don't support),
+      # the system should reject with 488 Not Acceptable Here.
       # Give the stack time to fully start
       Process.sleep(100)
 
@@ -188,19 +180,17 @@ defmodule Parrot.Sipp.DSL.SdpErrorTest do
         )
 
       # If SIPp completes successfully, it means:
-      # 1. INVITE with unsupported codec (opus) was sent
+      # 1. INVITE with unsupported codec (G.729) was sent
       # 2. 488 Not Acceptable Here was received
       # 3. ACK was sent to complete the transaction
       assert result == :ok
     end
 
     @tag :sipp
-    @tag :pending_implementation
     @tag timeout: 30_000
     test "multiple calls with codec mismatch all receive 488 (T031)", %{port: port} do
-      # TDD Red Phase: Test documents expected behavior (FR-012)
-      # Currently fails because DSL.MediaHandler accepts any codec
-      # Will pass when T032-T037 (Phase 8) are implemented
+      # Test that multiple consecutive calls with unsupported codecs
+      # all receive proper 488 rejection (no state leakage between calls).
       # Give the stack time to fully start
       Process.sleep(100)
 

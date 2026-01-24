@@ -7,7 +7,7 @@
   This scenario tests SDP negotiation failure handling.
 
   Flow:
-  1. Send INVITE with an unsupported codec (opus only, payload type 111)
+  1. Send INVITE with an unsupported codec (G.729 only, payload type 18)
   2. Receive 100 Trying (optional)
   3. Receive 488 Not Acceptable Here (codec mismatch rejection)
 
@@ -19,10 +19,13 @@
   Test Requirement:
   - T031: SIPp integration test for codec mismatch rejection
   - FR-012: System MUST automatically send 488 Not Acceptable Here when SDP negotiation fails
+
+  Note: We use G.729 (PT 18) because Parrot only supports PCMU, PCMA, and Opus.
+  G.729 requires a licensed codec which we don't have.
 -->
 
 <scenario name="UAC INVITE with Unsupported Codec">
-  <!-- Send INVITE with unsupported codec (opus only - not in our supported codec list) -->
+  <!-- Send INVITE with unsupported codec (G.729 only - we don't have a G.729 pipeline) -->
   <send retrans="500">
     <![CDATA[
 
@@ -43,9 +46,9 @@
       s=SIPp Codec Mismatch Test
       c=IN IP4 [local_ip]
       t=0 0
-      m=audio [media_port] RTP/AVP 111
-      a=rtpmap:111 opus/48000/2
-      a=fmtp:111 minptime=10;useinbandfec=1
+      m=audio [media_port] RTP/AVP 18
+      a=rtpmap:18 G729/8000
+      a=fmtp:18 annexb=no
       a=sendrecv
 
     ]]>
