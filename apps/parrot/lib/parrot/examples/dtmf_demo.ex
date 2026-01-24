@@ -20,13 +20,16 @@ defmodule Parrot.Examples.DTMFDemo do
       # Start with the convenience function
       {:ok, stack} = Parrot.Examples.DTMFDemo.start(port: 15062)
 
-  ## Testing
+  ## Testing with pjsua
 
       # Basic call - should hear welcome, press 1 for PIN entry
-      gophone dial sip:dtmf-demo@127.0.0.1:15062
+      pjsua --null-audio sip:dtmf-demo@127.0.0.1:15062
 
-      # With DTMF for menu selection
-      gophone dial -dtmf=1 -dtmf_delay=3s sip:dtmf-demo@127.0.0.1:15062
+      # Once connected, use pjsua commands:
+      # - Press digits on the dial pad to send DTMF
+      # - Press 'h' to hang up
+
+      # Alternative: Use linphone, Opal, or any standard SIP softphone
 
   ## IVR Flow
 
