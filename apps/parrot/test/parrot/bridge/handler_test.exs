@@ -1184,8 +1184,8 @@ defmodule Parrot.Bridge.HandlerTest do
     s=Session
     c=IN IP4 127.0.0.1
     t=0 0
-    m=audio 5004 RTP/AVP 0
-    a=rtpmap:0 PCMU/8000
+    m=audio 5004 RTP/AVP 8
+    a=rtpmap:8 PCMA/8000
     """
 
     test "returns {:ok, sdp_string} when body contains valid SDP" do
@@ -1220,8 +1220,8 @@ defmodule Parrot.Bridge.HandlerTest do
     s=Session
     c=IN IP4 192.168.1.100
     t=0 0
-    m=audio 5004 RTP/AVP 0
-    a=rtpmap:0 PCMU/8000
+    m=audio 5004 RTP/AVP 8
+    a=rtpmap:8 PCMA/8000
     """
 
     test "returns :no_sdp when INVITE body is empty" do
@@ -1343,8 +1343,8 @@ defmodule Parrot.Bridge.HandlerTest do
     s=Session
     c=IN IP4 192.168.1.100
     t=0 0
-    m=audio 5004 RTP/AVP 0
-    a=rtpmap:0 PCMU/8000
+    m=audio 5004 RTP/AVP 8
+    a=rtpmap:8 PCMA/8000
     """
 
     test "setup_media_session returns media_pid when SDP is present" do

@@ -440,7 +440,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
           role: :uac,
           media_handler: <%= @module %>.MediaHandler,
           handler_args: %{},
-          supported_codecs: [:pcma, :pcmu],
+          supported_codecs: [:pcma],
           audio_source: :device,
           audio_sink: :device,
           input_device_id: state.input_device_id,
@@ -454,7 +454,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uac do
         #   role: :uac,
         #   media_handler: <%= @module %>.MediaHandler,
         #   handler_args: %{},
-        #   supported_codecs: [:pcma, :pcmu],
+        #   supported_codecs: [:pcma],
         #   audio_file: state.audio_file
         # )
 

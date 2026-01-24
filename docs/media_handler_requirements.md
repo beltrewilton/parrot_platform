@@ -15,7 +15,7 @@ This document outlines the requirements for implementing a callback-based media 
 ## Initial Implementation Scope
 
 The first implementation will focus on core functionality:
-- **Codec Support**: G.711 (PCMU/PCMA) and Opus only
+- **Codec Support**: G.711 A-law (PCMA) and Opus only (PCMU not supported)
 - **RTP Statistics**: Packet loss, jitter, and quality monitoring
 - **Basic Media Control**: Play, stop, pause, resume
 

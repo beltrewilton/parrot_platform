@@ -171,7 +171,7 @@ defmodule Parrot.Call do
 
   ## Examples
 
-      call |> answer(codecs: [:pcmu, :pcma])
+      call |> answer(codecs: [:pcma])
 
   """
   @spec answer(t(), keyword()) :: t()

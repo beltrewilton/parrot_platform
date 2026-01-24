@@ -99,7 +99,7 @@ defmodule SippTest.MediaTestHandler do
       audio_source: config[:audio_source] || :silence,
       audio_sink: config[:audio_sink] || :none,
       audio_file: config[:audio_file],
-      supported_codecs: config[:supported_codecs] || [:pcmu, :pcma]
+      supported_codecs: config[:supported_codecs] || [:pcma]
     ]
 
     case MediaSession.start_link(media_opts) do
@@ -351,7 +351,7 @@ defmodule SippTest.MediaTestHandler do
     * `:audio_source` - Audio source: :file | :device | :silence (default: :silence)
     * `:audio_sink` - Audio sink: :none | :device | :file (default: :none)
     * `:audio_file` - Path to audio file when audio_source is :file
-    * `:supported_codecs` - List of supported codecs (default: [:pcmu, :pcma])
+    * `:supported_codecs` - List of supported codecs (default: [:pcma])
 
   ## Returns
 

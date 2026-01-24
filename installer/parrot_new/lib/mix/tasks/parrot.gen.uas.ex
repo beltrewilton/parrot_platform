@@ -478,7 +478,7 @@ defmodule Mix.Tasks.Parrot.Gen.Uas do
           role: :uas,
           media_handler: <%= @module %>.MediaHandler,
           handler_args: %{entity_id: entity.id},
-          supported_codecs: [:pcma, :pcmu],
+          supported_codecs: [:pcma],
           audio_file: state.audio_file
         )
 

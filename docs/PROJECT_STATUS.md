@@ -172,7 +172,7 @@ Enable outbound calling:
 ```elixir
 Parrot.Sip.UAC.call("sip:user@example.com", %{
   media: true,
-  codecs: [:pcmu, :pcma]
+  codecs: [:pcma]
 })
 ```
 

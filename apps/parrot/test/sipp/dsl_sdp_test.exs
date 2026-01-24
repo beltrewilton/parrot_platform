@@ -8,7 +8,7 @@ defmodule Parrot.Sipp.DSL.SdpNegotiationTest do
   ## Test Scenarios
 
   1. Basic SDP negotiation - INVITE with SDP offer, 200 OK with SDP answer
-  2. Codec negotiation - Verify supported codecs (PCMU, PCMA) are negotiated
+  2. Codec negotiation - Verify supported codecs (PCMA, Opus) are negotiated
 
   ## Running Tests
 

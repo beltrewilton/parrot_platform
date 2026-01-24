@@ -184,9 +184,9 @@ defmodule MyApp.MediaHandler do
   
   @impl true
   def handle_codec_negotiation(offered, supported, state) do
-    # Choose preferred codec from offered/supported lists
+    # Choose preferred codec from offered/supported lists (PCMU not supported)
     cond do
-      :pcmu in offered and :pcmu in supported -> {:ok, :pcmu, state}
+      :opus in offered and :opus in supported -> {:ok, :opus, state}
       :pcma in offered and :pcma in supported -> {:ok, :pcma, state}
       true -> {:error, :no_common_codec, state}
     end

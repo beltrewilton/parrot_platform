@@ -20,8 +20,9 @@
   - T031: SIPp integration test for codec mismatch rejection
   - FR-012: System MUST automatically send 488 Not Acceptable Here when SDP negotiation fails
 
-  Note: We use G.729 (PT 18) because Parrot only supports PCMU, PCMA, and Opus.
+  Note: We use G.729 (PT 18) because Parrot only supports PCMA and Opus.
   G.729 requires a licensed codec which we don't have.
+  (PCMU is not supported - membrane_g711_plugin only has A-law encoder)
 -->
 
 <scenario name="UAC INVITE with Unsupported Codec">

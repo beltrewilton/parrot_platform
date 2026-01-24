@@ -8,8 +8,10 @@ defmodule ParrotMedia.Sdp do
   ## Supported Codecs
 
   - `:pcma` - G.711 A-law (payload type 8)
-  - `:pcmu` - G.711 μ-law (payload type 0)
   - `:opus` - Opus (payload type 111)
+
+  Note: PCMU (G.711 μ-law, payload type 0) is recognized in SDP parsing but NOT
+  supported for encoding/decoding due to membrane_g711_plugin limitations.
 
   ## Examples
 

@@ -190,9 +190,8 @@ defmodule ParrotExampleUac.Client do
     s=ParrotExampleUac
     c=IN IP4 127.0.0.1
     t=0 0
-    m=audio #{local_port} RTP/AVP 8 0
+    m=audio #{local_port} RTP/AVP 8
     a=rtpmap:8 PCMA/8000
-    a=rtpmap:0 PCMU/8000
     a=sendrecv
     """
   end
@@ -206,7 +205,7 @@ defmodule ParrotExampleUac.Client do
       role: :uac,
       media_handler: ParrotExampleUac.MediaHandler,
       handler_args: %{entity_id: call_info.entity.id},
-      supported_codecs: [:pcma, :pcmu],
+      supported_codecs: [:pcma],
       audio_file: state.audio_file
     )
 

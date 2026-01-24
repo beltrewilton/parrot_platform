@@ -913,7 +913,7 @@ defmodule Parrot.Bridge.Handler do
           handler_args: %{call_id: sip_msg.call_id},
           audio_source: :silence,
           audio_sink: :none,
-          supported_codecs: [:pcmu, :pcma]
+          supported_codecs: [:pcma]
         ]
 
         Logger.debug("[Bridge.Handler] Creating MediaSession for call #{sip_msg.call_id}")

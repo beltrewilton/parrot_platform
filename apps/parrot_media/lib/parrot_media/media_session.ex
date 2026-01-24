@@ -954,9 +954,8 @@ defmodule ParrotMedia.MediaSession do
   # Private helpers
 
   # Codec mapping between symbols and RTP payload types
-  # Codec mapping - using standard SDP names
-  # Per RFC 3551: PCMU (payload type 0), PCMA (payload type 8)
-  defp codec_info(:pcmu), do: {0, "PCMU/8000", ParrotMedia.AlawPipeline}
+  # Per RFC 3551: PCMA (payload type 8), Opus (dynamic, typically 111)
+  # Note: PCMU (G.711 μ-law, PT 0) is NOT supported - membrane_g711_plugin only has A-law
   defp codec_info(:pcma), do: {8, "PCMA/8000", ParrotMedia.AlawPipeline}
   defp codec_info(:opus), do: {111, "opus/48000/1", ParrotMedia.OpusPipeline}
 

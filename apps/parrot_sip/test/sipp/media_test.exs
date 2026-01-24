@@ -25,7 +25,7 @@ defmodule SippTest.MediaTest do
           test_pid: self(),
           audio_source: :silence,
           audio_sink: :none,
-          supported_codecs: [:pcmu, :pcma]
+          supported_codecs: [:pcma]
         )
 
       # Start SIP stack

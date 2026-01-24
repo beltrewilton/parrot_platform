@@ -85,15 +85,14 @@ This is where you can influence codec selection. Return your preferred codec fro
 ```elixir
 @impl Parrot.MediaHandler
 def handle_codec_negotiation(offered_codecs, supported_codecs, state) do
-  # Prefer Opus, then PCMU, then PCMA
+  # Prefer Opus, then PCMA (PCMU not supported)
   codec = cond do
     :opus in offered_codecs and :opus in supported_codecs -> :opus
-    :pcmu in offered_codecs and :pcmu in supported_codecs -> :pcmu
     :pcma in offered_codecs and :pcma in supported_codecs -> :pcma
-    true -> hd(offered_codecs) # Fallback to first offered
+    true -> nil
   end
-  
-  {:ok, codec, state}
+
+  if codec, do: {:ok, codec, state}, else: {:error, :no_common_codec, state}
 end
 ```
 

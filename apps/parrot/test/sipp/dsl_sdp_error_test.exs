@@ -147,7 +147,7 @@ defmodule Parrot.Sipp.DSL.SdpErrorTest do
     # when SDP negotiation fails due to no common codec.
     #
     # The DSL.MediaHandler.handle_codec_negotiation/3 checks offered codecs
-    # against @supported_codecs (pcmu, pcma, opus) and returns
+    # against @supported_codecs (pcma, opus) and returns
     # {:error, :no_common_codec} when no match is found.
 
     @tag :sipp

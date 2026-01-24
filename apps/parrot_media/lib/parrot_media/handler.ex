@@ -321,12 +321,10 @@ defmodule ParrotMedia.Handler do
 
       @impl true
       def handle_codec_negotiation(offered, supported, state) do
-        # Prefer Opus > G.711μ > G.711A
+        # Prefer Opus > G.711A (PCMU not supported)
         cond do
           :opus in offered and :opus in supported ->
             {:ok, :opus, state}
-          :pcmu in offered and :pcmu in supported ->
-            {:ok, :pcmu, state}
           :pcma in offered and :pcma in supported ->
             {:ok, :pcma, state}
           true ->

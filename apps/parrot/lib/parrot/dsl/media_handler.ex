@@ -25,11 +25,11 @@ defmodule Parrot.DSL.MediaHandler do
 
   require Logger
 
-  # Codecs we have pipelines for in ParrotMedia
-  # - :pcmu (G.711 mu-law) -> AlawPipeline (TODO: should be UlawPipeline)
+  # Codecs we have proper pipeline support for in ParrotMedia
   # - :pcma (G.711 A-law)  -> AlawPipeline
   # - :opus                -> OpusPipeline
-  @supported_codecs [:pcmu, :pcma, :opus]
+  # Note: PCMU (G.711 μ-law) is NOT supported - we don't have a μ-law encoder
+  @supported_codecs [:pcma, :opus]
 
   # ===========================================================================
   # Required Callbacks
