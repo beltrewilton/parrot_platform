@@ -16,17 +16,23 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
   require Logger
 
   # Test handler that implements required callbacks
+  # Sends confirmation messages to test_pid when provided in handler_args
   defmodule NotificationTestHandler do
     @behaviour ParrotMedia.Handler
 
     @impl true
     def init(args) do
-      {:ok, Map.put(args, :messages_received, [])}
+      {:ok, Map.merge(%{messages_received: [], test_pid: nil}, args)}
     end
 
     @impl true
     def handle_info({:play_files, files, opts}, state) do
       Logger.info("NotificationTestHandler: play_files #{inspect(files)}")
+
+      # Send confirmation to test process if configured
+      if state[:test_pid] do
+        send(state.test_pid, {:handler_processed, :play_files, files, opts})
+      end
 
       action =
         if Keyword.get(opts, :loop, false), do: {:play_loop, files}, else: {:play_sequence, files}
@@ -35,14 +41,26 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
     end
 
     @impl true
-    def handle_info({:start_record, path, _opts}, state) do
+    def handle_info({:start_record, path, opts}, state) do
       Logger.info("NotificationTestHandler: start_record #{inspect(path)}")
+
+      # Send confirmation to test process if configured
+      if state[:test_pid] do
+        send(state.test_pid, {:handler_processed, :start_record, path, opts})
+      end
+
       {[{:record, path}], state}
     end
 
     @impl true
     def handle_info({:collect_dtmf, opts}, state) do
       Logger.info("NotificationTestHandler: collect_dtmf #{inspect(opts)}")
+
+      # Send confirmation to test process if configured
+      if state[:test_pid] do
+        send(state.test_pid, {:handler_processed, :collect_dtmf, opts})
+      end
+
       {:noreply, Map.put(state, :collecting_dtmf, opts)}
     end
 
@@ -87,9 +105,9 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
 
       assert Process.alive?(pid)
 
-      # Verify notify_pid is stored in data
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.notify_pid == self()
+      # Verify notify_pid works by testing notification delivery
+      send(pid, {:pipeline_event, :play_complete, "test.wav"})
+      assert_receive {:media_event, ^session_id, {:play_complete, "test.wav"}}, 1000
 
       MediaSession.terminate_session(pid)
     end
@@ -106,8 +124,12 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
           handler_args: %{}
         )
 
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.notify_pid == nil
+      assert Process.alive?(pid)
+
+      # Verify no notifications are sent when notify_pid is nil
+      send(pid, {:pipeline_event, :play_complete, "test.wav"})
+      Process.sleep(100)
+      refute_receive {:media_event, _, _}
 
       MediaSession.terminate_session(pid)
     end
@@ -127,16 +149,19 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
           # No notify_pid initially
         )
 
-      # Verify notify_pid starts as nil
-      {_state_name, data_before} = :sys.get_state(pid)
-      assert data_before.notify_pid == nil
+      assert Process.alive?(pid)
+
+      # Verify no notifications before set_notify_pid
+      send(pid, {:pipeline_event, :play_complete, "before.wav"})
+      Process.sleep(50)
+      refute_receive {:media_event, _, _}
 
       # Set notify_pid using the new function
       :ok = MediaSession.set_notify_pid(session_id, self())
 
-      # Verify notify_pid is now set
-      {_state_name, data_after} = :sys.get_state(pid)
-      assert data_after.notify_pid == self()
+      # Verify notifications work after set_notify_pid
+      send(pid, {:pipeline_event, :play_complete, "after.wav"})
+      assert_receive {:media_event, ^session_id, {:play_complete, "after.wav"}}, 1000
 
       MediaSession.terminate_session(pid)
     end
@@ -192,16 +217,16 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
 
       {:ok, _answer} = MediaSession.process_offer(pid, sdp_offer)
 
-      # Verify we're now in ready state
+      # Verify we're now in ready state via public API
       state_info = :gen_statem.call(pid, :get_state)
       assert state_info.state == :ready
 
       # Set notify_pid in ready state
       :ok = MediaSession.set_notify_pid(session_id, self())
 
-      # Verify it worked
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.notify_pid == self()
+      # Verify set_notify_pid works by testing notification delivery
+      send(pid, {:pipeline_event, :play_complete, "ready-test.wav"})
+      assert_receive {:media_event, ^session_id, {:play_complete, "ready-test.wav"}}, 1000
 
       MediaSession.terminate_session(pid)
     end
@@ -391,7 +416,7 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
   end
 
   describe "play_files message handling" do
-    test "handles play_files message and updates state" do
+    test "handles play_files message and forwards to handler" do
       session_id = "play-files-#{:rand.uniform(10000)}"
 
       {:ok, pid} =
@@ -400,25 +425,24 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: NotificationTestHandler,
-          handler_args: %{},
+          handler_args: %{test_pid: self()},
           notify_pid: self()
         )
 
       # Send play_files message
-      send(pid, {:play_files, ["file1.wav", "file2.wav"], loop: false})
-      Process.sleep(100)
+      files = ["file1.wav", "file2.wav"]
+      opts = [loop: false]
+      send(pid, {:play_files, files, opts})
 
-      # Check state was updated
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.audio_file == "file1.wav"
-      assert data.audio_source == :file
+      # Verify handler received the message with correct files and options
+      assert_receive {:handler_processed, :play_files, ^files, ^opts}, 1000
 
       MediaSession.terminate_session(pid)
     end
   end
 
   describe "start_record message handling" do
-    test "handles start_record message" do
+    test "handles start_record message and forwards to handler" do
       session_id = "start-record-#{:rand.uniform(10000)}"
 
       {:ok, pid} =
@@ -427,24 +451,24 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: NotificationTestHandler,
-          handler_args: %{},
+          handler_args: %{test_pid: self()},
           notify_pid: self()
         )
 
       # Send start_record message
-      send(pid, {:start_record, "/tmp/recording.wav", max_duration: 30_000})
-      Process.sleep(100)
+      path = "/tmp/recording.wav"
+      opts = [max_duration: 30_000]
+      send(pid, {:start_record, path, opts})
 
-      # Check state reflects recording
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.output_file == "/tmp/recording.wav"
+      # Verify handler received the message with correct path and options
+      assert_receive {:handler_processed, :start_record, ^path, ^opts}, 1000
 
       MediaSession.terminate_session(pid)
     end
   end
 
   describe "collect_dtmf message handling" do
-    test "handles collect_dtmf message and stores collection state" do
+    test "handles collect_dtmf message and forwards to handler" do
       session_id = "collect-dtmf-msg-#{:rand.uniform(10000)}"
 
       {:ok, pid} =
@@ -453,19 +477,16 @@ defmodule ParrotMedia.MediaSessionNotificationsTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: NotificationTestHandler,
-          handler_args: %{},
+          handler_args: %{test_pid: self()},
           notify_pid: self()
         )
 
       # Send collect_dtmf message
-      send(pid, {:collect_dtmf, max: 4, terminators: ["#", "*"], timeout: 10_000})
-      Process.sleep(100)
+      opts = [max: 4, terminators: ["#", "*"], timeout: 10_000]
+      send(pid, {:collect_dtmf, opts})
 
-      # Check state has DTMF collection configured
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.dtmf_collection != nil
-      assert data.dtmf_collection.max == 4
-      assert data.dtmf_collection.terminators == ["#", "*"]
+      # Verify handler received the message with correct options
+      assert_receive {:handler_processed, :collect_dtmf, ^opts}, 1000
 
       MediaSession.terminate_session(pid)
     end
