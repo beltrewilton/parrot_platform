@@ -712,6 +712,172 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   @doc """
+  Returns the current state of a transaction state machine.
+
+  This function provides a public API for inspecting the current state of a
+  transaction, useful for monitoring, debugging, and testing purposes.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+
+  ## Returns
+  The current state atom: `:trying`, `:calling`, `:proceeding`, `:completed`,
+  `:confirmed`, or `:terminated`
+
+  ## Example
+
+      {:ok, pid} = TransactionStatem.start_link([transaction, handler])
+      state = TransactionStatem.get_state(pid)
+      # => :proceeding
+
+  ## RFC References
+  - RFC 3261 Section 17: Transaction states
+  """
+  @spec get_state(pid()) :: state_name()
+  def get_state(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_state)
+  end
+
+  @doc """
+  Returns the status code of the last response sent or received by this transaction.
+
+  This function provides a public API for inspecting the last response processed
+  by a transaction, useful for monitoring and debugging.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+
+  ## Returns
+  - `{:ok, status_code}` - The status code of the last response (e.g., 200, 404)
+  - `{:ok, nil}` - No response has been sent or received yet
+
+  ## Example
+
+      {:ok, code} = TransactionStatem.get_last_response_code(pid)
+      # => {:ok, 180}
+
+  """
+  @spec get_last_response_code(pid()) :: {:ok, non_neg_integer() | nil}
+  def get_last_response_code(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_last_response_code)
+  end
+
+  @doc """
+  Checks if a specific timer is currently active.
+
+  This function provides a public API for checking timer status, useful for
+  monitoring and debugging RFC 3261 timer behavior.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+  - `timer_name` - Timer name atom (`:a`, `:b`, `:c`, `:d`, `:e`, `:f`, `:g`, `:h`, `:i`, `:j`, `:k`)
+
+  ## Returns
+  - `true` if the timer is active
+  - `false` if the timer is not set or has fired
+
+  ## Example
+
+      {:ok, active} = TransactionStatem.timer_active?(pid, :g)
+      # active => true
+
+  ## RFC References
+  - RFC 3261 Section 17.1.2.2: Transaction timers
+  """
+  @spec timer_active?(pid(), atom()) :: {:ok, boolean()}
+  def timer_active?(pid, timer_name) when is_pid(pid) and is_atom(timer_name) do
+    :gen_statem.call(pid, {:timer_active?, timer_name})
+  end
+
+  @doc """
+  Gets the reference for a specific timer if active.
+
+  This function provides access to timer references for monitoring and testing
+  timer behavior, particularly for RFC 3261 compliance verification.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+  - `timer_name` - Timer name atom
+
+  ## Returns
+  - `{:ok, reference()}` if timer is active
+  - `{:ok, nil}` if timer is not set
+
+  ## Example
+
+      {:ok, ref} = TransactionStatem.get_timer_ref(pid, :g)
+
+  """
+  @spec get_timer_ref(pid(), atom()) :: {:ok, reference() | nil}
+  def get_timer_ref(pid, timer_name) when is_pid(pid) and is_atom(timer_name) do
+    :gen_statem.call(pid, {:get_timer_ref, timer_name})
+  end
+
+  @doc """
+  Checks if a client transaction has been cancelled.
+
+  This function provides a public API for checking cancellation status,
+  useful for monitoring and debugging CANCEL processing.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+
+  ## Returns
+  - `{:ok, true}` if the transaction has been cancelled
+  - `{:ok, false}` if the transaction is not cancelled
+
+  ## Example
+
+      {:ok, cancelled} = TransactionStatem.is_cancelled?(pid)
+      # cancelled => false
+
+  ## RFC References
+  - RFC 3261 Section 9.1: CANCEL Processing
+  """
+  @spec is_cancelled?(pid()) :: {:ok, boolean()}
+  def is_cancelled?(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :is_cancelled?)
+  end
+
+  @doc """
+  Gets the owner monitor reference if set.
+
+  This function provides access to the owner monitoring state for debugging
+  and testing owner lifecycle management.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+
+  ## Returns
+  - `{:ok, reference()}` if an owner is being monitored
+  - `{:ok, nil}` if no owner is set
+
+  """
+  @spec get_owner_monitor(pid()) :: {:ok, reference() | nil}
+  def get_owner_monitor(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_owner_monitor)
+  end
+
+  @doc """
+  Gets the auto-response code configured for owner death.
+
+  This function returns the status code that will be sent automatically
+  if the transaction owner dies before sending a final response.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+
+  ## Returns
+  - `{:ok, integer()}` - The configured auto-response code
+  - `{:ok, nil}` - No auto-response configured
+
+  """
+  @spec get_auto_resp_code(pid()) :: {:ok, integer() | nil}
+  def get_auto_resp_code(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_auto_resp_code)
+  end
+
+  @doc """
   Initializes the transaction state machine.
 
   This function is called by gen_statem when starting a new transaction process.
@@ -1903,6 +2069,20 @@ defmodule ParrotSip.TransactionStatem do
   def trying(:state_timeout, event, state),
     do: handle_event(:state_timeout, event, :trying, state)
 
+  def trying({:call, from}, :get_state, _state) do
+    {:keep_state_and_data, [{:reply, from, :trying}]}
+  end
+
+  def trying({:call, from}, :get_last_response_code, %{data: %{transaction: trans}} = _state) do
+    code = if trans.last_response, do: trans.last_response.status_code, else: nil
+    {:keep_state_and_data, [{:reply, from, {:ok, code}}]}
+  end
+
+  def trying({:call, from}, request, state) do
+    result = handle_introspection_call(request, state)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def trying(event_type, _event, state) do
     Logger.debug("TransactionStatem.trying/3: Ignoring unexpected event: #{inspect(event_type)}")
     {:keep_state, state}
@@ -2012,6 +2192,20 @@ defmodule ParrotSip.TransactionStatem do
   def proceeding(:state_timeout, event, state),
     do: handle_event(:state_timeout, event, :proceeding, state)
 
+  def proceeding({:call, from}, :get_state, _state) do
+    {:keep_state_and_data, [{:reply, from, :proceeding}]}
+  end
+
+  def proceeding({:call, from}, :get_last_response_code, %{data: %{transaction: trans}} = _state) do
+    code = if trans.last_response, do: trans.last_response.status_code, else: nil
+    {:keep_state_and_data, [{:reply, from, {:ok, code}}]}
+  end
+
+  def proceeding({:call, from}, request, state) do
+    result = handle_introspection_call(request, state)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def proceeding(event_type, _event, state) do
     Logger.debug(
       "TransactionStatem.proceeding/3: Ignoring unexpected event: #{inspect(event_type)}"
@@ -2081,6 +2275,20 @@ defmodule ParrotSip.TransactionStatem do
 
   def calling(:state_timeout, event, state),
     do: handle_event(:state_timeout, event, :calling, state)
+
+  def calling({:call, from}, :get_state, _state) do
+    {:keep_state_and_data, [{:reply, from, :calling}]}
+  end
+
+  def calling({:call, from}, :get_last_response_code, %{data: %{transaction: trans}} = _state) do
+    code = if trans.last_response, do: trans.last_response.status_code, else: nil
+    {:keep_state_and_data, [{:reply, from, {:ok, code}}]}
+  end
+
+  def calling({:call, from}, request, state) do
+    result = handle_introspection_call(request, state)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
 
   def calling(event_type, _event, state) do
     Logger.debug("TransactionStatem.calling/3: Ignoring unexpected event: #{inspect(event_type)}")
@@ -2160,6 +2368,20 @@ defmodule ParrotSip.TransactionStatem do
   def completed(:state_timeout, event, state),
     do: handle_event(:state_timeout, event, :completed, state)
 
+  def completed({:call, from}, :get_state, _state) do
+    {:keep_state_and_data, [{:reply, from, :completed}]}
+  end
+
+  def completed({:call, from}, :get_last_response_code, %{data: %{transaction: trans}} = _state) do
+    code = if trans.last_response, do: trans.last_response.status_code, else: nil
+    {:keep_state_and_data, [{:reply, from, {:ok, code}}]}
+  end
+
+  def completed({:call, from}, request, state) do
+    result = handle_introspection_call(request, state)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def completed(event_type, _event, state) do
     Logger.debug(
       "TransactionStatem.completed/3: Ignoring unexpected event: #{inspect(event_type)}"
@@ -2200,6 +2422,20 @@ defmodule ParrotSip.TransactionStatem do
   def confirmed(:state_timeout, event, state),
     do: handle_event(:state_timeout, event, :confirmed, state)
 
+  def confirmed({:call, from}, :get_state, _state) do
+    {:keep_state_and_data, [{:reply, from, :confirmed}]}
+  end
+
+  def confirmed({:call, from}, :get_last_response_code, %{data: %{transaction: trans}} = _state) do
+    code = if trans.last_response, do: trans.last_response.status_code, else: nil
+    {:keep_state_and_data, [{:reply, from, {:ok, code}}]}
+  end
+
+  def confirmed({:call, from}, request, state) do
+    result = handle_introspection_call(request, state)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def confirmed(event_type, _event, state) do
     Logger.debug(
       "TransactionStatem.confirmed/3: Ignoring unexpected event: #{inspect(event_type)}"
@@ -2235,6 +2471,20 @@ defmodule ParrotSip.TransactionStatem do
     )
 
     {:keep_state, state}
+  end
+
+  def terminated({:call, from}, :get_state, _state) do
+    {:keep_state_and_data, [{:reply, from, :terminated}]}
+  end
+
+  def terminated({:call, from}, :get_last_response_code, %{data: %{transaction: trans}} = _state) do
+    code = if trans.last_response, do: trans.last_response.status_code, else: nil
+    {:keep_state_and_data, [{:reply, from, {:ok, code}}]}
+  end
+
+  def terminated({:call, from}, request, state) do
+    result = handle_introspection_call(request, state)
+    {:keep_state_and_data, [{:reply, from, result}]}
   end
 
   def terminated(_event_type, _event, state) do
@@ -2362,6 +2612,55 @@ defmodule ParrotSip.TransactionStatem do
 
   defp handle_common_event(_event, state) do
     {:keep_state, state}
+  end
+
+  # Handle introspection calls - used by all states for public API queries
+  defp handle_introspection_call({:timer_active?, timer_name}, %{timers: timers} = _state) do
+    ref = Map.get(timers || %{}, timer_name)
+    active = ref != nil and Process.read_timer(ref) != false
+    {:ok, active}
+  end
+
+  defp handle_introspection_call({:timer_active?, _timer_name}, _state) do
+    {:ok, false}
+  end
+
+  defp handle_introspection_call({:get_timer_ref, timer_name}, %{timers: timers} = _state) do
+    ref = Map.get(timers || %{}, timer_name)
+    {:ok, ref}
+  end
+
+  defp handle_introspection_call({:get_timer_ref, _timer_name}, _state) do
+    {:ok, nil}
+  end
+
+  defp handle_introspection_call(:is_cancelled?, %{data: %{cancelled: cancelled}} = _state) do
+    {:ok, cancelled || false}
+  end
+
+  defp handle_introspection_call(:is_cancelled?, _state) do
+    {:ok, false}
+  end
+
+  defp handle_introspection_call(:get_owner_monitor, %{owner_mon: ref} = _state) do
+    {:ok, ref}
+  end
+
+  defp handle_introspection_call(:get_owner_monitor, _state) do
+    {:ok, nil}
+  end
+
+  defp handle_introspection_call(:get_auto_resp_code, %{data: %{auto_resp: code}} = _state) do
+    {:ok, code}
+  end
+
+  defp handle_introspection_call(:get_auto_resp_code, _state) do
+    {:ok, nil}
+  end
+
+  # Catch-all for unknown introspection calls
+  defp handle_introspection_call(request, _state) do
+    {:error, {:unknown_call, request}}
   end
 
   @doc """

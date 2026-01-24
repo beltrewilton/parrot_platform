@@ -122,7 +122,7 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :proceeding)
       assert_last_response(pid, 180)
 
-      state_before = get_transaction_state(pid)
+      {:ok, code_before} = TransactionStatem.get_last_response_code(pid)
 
       :gen_statem.cast(pid, {:received, request})
       Process.sleep(50)
@@ -130,8 +130,8 @@ defmodule ParrotSip.TransactionStatemTest do
       assert_state(pid, :proceeding)
       assert_last_response(pid, 180)
 
-      state_after = get_transaction_state(pid)
-      assert state_before.last_response == state_after.last_response
+      {:ok, code_after} = TransactionStatem.get_last_response_code(pid)
+      assert code_before == code_after
     end
 
     test "retransmission in completed retransmits final response", %{test_id: test_id} do
@@ -802,13 +802,13 @@ defmodule ParrotSip.TransactionStatemTest do
       provisional = Message.reply(register, 100, "Trying")
       :ok = TransactionStatem.server_response(provisional, transaction)
 
-      state_before = get_transaction_state(pid)
+      {:ok, code_before} = TransactionStatem.get_last_response_code(pid)
 
       :ok = TransactionStatem.server_process(register, handler)
       Process.sleep(50)
 
-      state_after = get_transaction_state(pid)
-      assert state_before.last_response == state_after.last_response
+      {:ok, code_after} = TransactionStatem.get_last_response_code(pid)
+      assert code_before == code_after
     end
 
     test "handles in-dialog requests by creating new transaction", %{test_id: test_id} do
@@ -905,57 +905,44 @@ defmodule ParrotSip.TransactionStatemTest do
     start_supervised({ParrotSip.TransactionStatem, [transaction, handler]}, id: transaction.id)
   end
 
-  defp get_transaction_state(pid) do
-    state = :sys.get_state(pid)
-    data = elem(state, 1)
-    data.data.transaction
-  end
-
   defp get_timer_ref(pid, timer_name) do
-    state = :sys.get_state(pid)
-    data = elem(state, 1)
-    timers = data.timers || %{}
-    Map.get(timers, timer_name)
+    {:ok, ref} = TransactionStatem.get_timer_ref(pid, timer_name)
+    ref
   end
 
   defp timer_active?(pid, timer_name) do
-    case get_timer_ref(pid, timer_name) do
-      nil -> false
-      ref -> Process.read_timer(ref) != false
-    end
+    {:ok, active} = TransactionStatem.timer_active?(pid, timer_name)
+    active
   end
 
   defp get_cancelled_flag(pid) do
-    state = :sys.get_state(pid)
-    data = elem(state, 1)
-    get_in(data, [:data, :cancelled]) || false
+    {:ok, cancelled} = TransactionStatem.is_cancelled?(pid)
+    cancelled
   end
 
   defp get_owner_monitor(pid) do
-    state = :sys.get_state(pid)
-    data = elem(state, 1)
-    data.owner_mon
+    {:ok, ref} = TransactionStatem.get_owner_monitor(pid)
+    ref
   end
 
   defp get_auto_resp_code(pid) do
-    state = :sys.get_state(pid)
-    data = elem(state, 1)
-    get_in(data, [:data, :auto_resp])
+    {:ok, code} = TransactionStatem.get_auto_resp_code(pid)
+    code
   end
 
   defp get_last_response(pid) do
-    trans = get_transaction_state(pid)
-    trans.last_response
+    {:ok, code} = TransactionStatem.get_last_response_code(pid)
+    # Return a simple struct-like map for compatibility with tests that check status_code
+    if code, do: %{status_code: code}, else: nil
   end
 
   defp assert_last_response(pid, status_code) do
-    trans = get_transaction_state(pid)
-    assert trans.last_response.status_code == status_code
+    {:ok, code} = TransactionStatem.get_last_response_code(pid)
+    assert code == status_code
   end
 
   defp assert_state(pid, expected_state) do
-    state = :sys.get_state(pid)
-    actual_state = elem(state, 0)
+    actual_state = TransactionStatem.get_state(pid)
 
     assert actual_state == expected_state,
            "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
@@ -1563,29 +1550,19 @@ defmodule ParrotSip.TransactionStatemTest do
     end
 
     test "unexpected call returns error", %{test_id: test_id} do
-      # Test line 1819-1821: unexpected call messages  
-      # NOTE: The current implementation doesn't reply to unknown calls,
-      # causing timeout. This test verifies the logging/handling code path.
+      # Unknown calls receive an error response instead of timing out
       request = build_register(unique_branch("z9hG4bKunexpCall", test_id))
       {:ok, transaction} = Transaction.create_non_invite_server(request)
       handler = TestHandler.new()
 
       {:ok, pid} = start_transaction(transaction, handler)
 
-      # Send unexpected call - it will timeout but the handle_event code runs
-      task =
-        Task.async(fn ->
-          catch_exit do
-            :gen_statem.call(pid, {:some_unknown_call, "request"}, 100)
-          end
-        end)
+      # Send unexpected call - returns error for unknown call
+      result = :gen_statem.call(pid, {:some_unknown_call, "request"})
 
-      result = Task.await(task)
-      # Will be {:timeout, ...} because handle_event doesn't reply
-      assert match?({:timeout, _}, result)
+      assert match?({:error, {:unknown_call, _}}, result)
 
       # Process should still be alive
-      Process.sleep(10)
       assert Process.alive?(pid)
       assert_state(pid, :trying)
     end
