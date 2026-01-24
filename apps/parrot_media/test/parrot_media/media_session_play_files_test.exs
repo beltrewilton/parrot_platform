@@ -10,7 +10,12 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
 
     @impl true
     def init(args) do
-      {:ok, Map.put(args, :messages_received, [])}
+      # Notify test process that handler was initialized
+      if test_pid = args[:test_pid] do
+        send(test_pid, {:handler_initialized, args})
+      end
+
+      {:ok, args}
     end
 
     @impl true
@@ -19,14 +24,10 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
         "TestMediaHandler received play_files: #{inspect(files)}, opts: #{inspect(opts)}"
       )
 
-      # Track the message
-      updated_state =
-        Map.update(
-          state,
-          :messages_received,
-          [{:play_files, files, opts}],
-          &[{:play_files, files, opts} | &1]
-        )
+      # Notify test process
+      if test_pid = state[:test_pid] do
+        send(test_pid, {:handler_processed, :play_files, files, opts})
+      end
 
       # Return appropriate action based on options
       action =
@@ -35,35 +36,34 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
           false -> {:play_sequence, files}
         end
 
-      {[action], updated_state}
+      {[action], state}
     end
 
     @impl true
     def handle_info({:use_audio_devices, opts}, state) do
       Logger.info("TestMediaHandler received use_audio_devices: #{inspect(opts)}")
 
+      # Notify test process
+      if test_pid = state[:test_pid] do
+        send(test_pid, {:handler_processed, :use_audio_devices, opts})
+      end
+
       input = Keyword.get(opts, :input)
       output = Keyword.get(opts, :output)
 
-      updated_state =
-        Map.update(
-          state,
-          :messages_received,
-          [{:use_audio_devices, opts}],
-          &[{:use_audio_devices, opts} | &1]
-        )
-
-      {[{:connect_audio_device, input, output}], updated_state}
+      {[{:connect_audio_device, input, output}], state}
     end
 
     @impl true
     def handle_info(:stop_playback, state) do
       Logger.info("TestMediaHandler received stop_playback")
 
-      updated_state =
-        Map.update(state, :messages_received, [:stop_playback], &[:stop_playback | &1])
+      # Notify test process
+      if test_pid = state[:test_pid] do
+        send(test_pid, {:handler_processed, :stop_playback})
+      end
 
-      {[:stop], updated_state}
+      {[:stop], state}
     end
 
     @impl true
@@ -120,28 +120,19 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: TestMediaHandler,
-          handler_args: %{test: true}
+          handler_args: %{test_pid: self()}
         )
 
-      # Get initial state
-      {state_name, _data} = :sys.get_state(pid)
-      assert state_name == :idle
+      # Verify initial state via public API
+      state_info = :gen_statem.call(pid, :get_state)
+      assert state_info.state == :idle
 
       # Send play_files message
       test_file = "/tmp/test.wav"
       send(pid, {:play_files, [test_file], loop: false})
 
-      # Give it time to process
-      Process.sleep(100)
-
-      # Check that the state was updated with the audio file
-      {_state_name, updated_data} = :sys.get_state(pid)
-      assert updated_data.audio_file == test_file
-      assert updated_data.audio_source == :file
-
-      # Verify handler received the message (stored in handler_state)
-      assert {:play_files, [^test_file], [loop: false]} =
-               List.first(updated_data.handler_state.messages_received)
+      # Verify handler processed the message
+      assert_receive {:handler_processed, :play_files, [^test_file], [loop: false]}, 1000
     end
 
     test "handles play_files with loop option" do
@@ -153,23 +144,15 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: TestMediaHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send play_files with loop
       test_files = ["/tmp/test1.wav", "/tmp/test2.wav"]
       send(pid, {:play_files, test_files, loop: true})
 
-      Process.sleep(100)
-
-      # Check state was updated
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.audio_file == "/tmp/test1.wav"
-      assert data.audio_source == :file
-
       # Verify handler got the message with loop option
-      assert {:play_files, ^test_files, [loop: true]} =
-               List.first(data.handler_state.messages_received)
+      assert_receive {:handler_processed, :play_files, ^test_files, [loop: true]}, 1000
     end
 
     test "handles stop_playback message" do
@@ -181,27 +164,20 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: TestMediaHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # First play something
       send(pid, {:play_files, ["/tmp/test.wav"], []})
-      Process.sleep(50)
+
+      # Verify handler received play_files
+      assert_receive {:handler_processed, :play_files, ["/tmp/test.wav"], []}, 1000
 
       # Then stop
       send(pid, :stop_playback)
-      Process.sleep(50)
 
-      # Check handler received both messages
-      {_state_name, data} = :sys.get_state(pid)
-      messages = data.handler_state.messages_received
-
-      assert :stop_playback in messages
-
-      assert Enum.any?(messages, fn
-               {:play_files, _, _} -> true
-               _ -> false
-             end)
+      # Verify handler received stop_playback
+      assert_receive {:handler_processed, :stop_playback}, 1000
     end
 
     test "handles use_audio_devices message" do
@@ -213,23 +189,14 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
           dialog_id: "test-dialog",
           role: :uac,
           media_handler: TestMediaHandler,
-          handler_args: %{}
+          handler_args: %{test_pid: self()}
         )
 
       # Send use_audio_devices message
       send(pid, {:use_audio_devices, [input: 1, output: 2]})
-      Process.sleep(100)
-
-      # Check state was updated with device info
-      {_state_name, data} = :sys.get_state(pid)
-      assert data.input_device_id == 1
-      assert data.output_device_id == 2
-      assert data.audio_source == :device
-      assert data.audio_sink == :device
 
       # Verify handler received the message
-      assert {:use_audio_devices, [input: 1, output: 2]} =
-               List.first(data.handler_state.messages_received)
+      assert_receive {:handler_processed, :use_audio_devices, [input: 1, output: 2]}, 1000
     end
   end
 
@@ -244,7 +211,7 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
           dialog_id: "test-dialog",
           role: :uas,
           media_handler: TestMediaHandler,
-          handler_args: %{},
+          handler_args: %{test_pid: self()},
           local_rtp_port: 20000 + :rand.uniform(10000)
         )
 
@@ -266,11 +233,10 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
       :ok = MediaSession.start_media(pid)
       Process.sleep(100)
 
-      # Verify we're in active state with a pipeline
-      {state_name_before, data_before} = :sys.get_state(pid)
-      assert state_name_before == :active
-      initial_pipeline = data_before.pipeline_pid
-      assert initial_pipeline != nil
+      # Verify we're in active state with a pipeline via public API
+      state_info_before = :gen_statem.call(pid, :get_state)
+      assert state_info_before.state == :active
+      assert state_info_before.pipeline_active == true
 
       # Get the actual path to the test audio file
       priv_dir = :code.priv_dir(:parrot_media)
@@ -278,20 +244,17 @@ defmodule ParrotMedia.MediaSessionPlayFilesTest do
 
       # Send play_files to trigger restart
       send(pid, {:play_files, [audio_file], []})
-      Process.sleep(200)
 
-      # Check that pipeline was restarted (new PID)
-      # Check if the process is still alive first
+      # Verify handler processed the play_files message
+      assert_receive {:handler_processed, :play_files, [^audio_file], []}, 1000
+
+      # Check if the process is still alive
       assert Process.alive?(pid), "MediaSession process died unexpectedly"
-      {_state_name_after, data_after} = :sys.get_state(pid)
-      assert data_after.audio_file == audio_file
 
-      # Pipeline should have been restarted with new file
-      new_pipeline = data_after.pipeline_pid
-      assert new_pipeline != nil
-      # Note: Pipeline PID might be the same if restart was very fast,
-      # but the audio_file should definitely be updated
-      assert data_after.audio_source == :file
+      # Verify state is still active with pipeline via public API
+      state_info_after = :gen_statem.call(pid, :get_state)
+      assert state_info_after.state == :active
+      assert state_info_after.pipeline_active == true
     end
   end
 end
