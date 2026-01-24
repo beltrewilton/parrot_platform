@@ -277,6 +277,10 @@ defmodule ParrotMedia.MOS.Calculator do
     {:reply, score, state}
   end
 
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state}
+  end
+
   def handle_call(:call_summary, _from, state) do
     summary = generate_summary(state)
     {:reply, summary, state}
