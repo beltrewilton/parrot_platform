@@ -70,6 +70,14 @@ defmodule ParrotTransport.WebsocketListener do
     :gen_statem.call(listener, :stop)
   end
 
+  @doc """
+  Gets the current state of the listener.
+  """
+  @spec get_state(:gen_statem.server_ref()) :: :listening | :stopping
+  def get_state(listener) do
+    :gen_statem.call(listener, :get_state)
+  end
+
   # ============================================================================
   # :gen_statem callbacks
   # ============================================================================
@@ -139,6 +147,10 @@ defmodule ParrotTransport.WebsocketListener do
 
   def listening({:call, from}, :stop, data) do
     {:next_state, :stopping, data, [{:reply, from, :ok}]}
+  end
+
+  def listening({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :listening}]}
   end
 
   # ============================================================================

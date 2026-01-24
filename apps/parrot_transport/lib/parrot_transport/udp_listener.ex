@@ -90,6 +90,14 @@ defmodule ParrotTransport.UdpListener do
     :gen_statem.call(listener, :stop)
   end
 
+  @doc """
+  Gets the current state of the listener.
+  """
+  @spec get_state(:gen_statem.server_ref()) :: :bound | :stopping
+  def get_state(listener) do
+    :gen_statem.call(listener, :get_state)
+  end
+
   # ============================================================================
   # :gen_statem callbacks
   # ============================================================================
@@ -204,6 +212,10 @@ defmodule ParrotTransport.UdpListener do
 
   def bound({:call, from}, :stop, data) do
     {:next_state, :stopping, data, [{:reply, from, :ok}]}
+  end
+
+  def bound({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :bound}]}
   end
 
   # ============================================================================

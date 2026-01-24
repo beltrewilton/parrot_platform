@@ -93,6 +93,14 @@ defmodule ParrotTransport.Connection do
   end
 
   @doc """
+  Gets the current state of the connection.
+  """
+  @spec get_state(:gen_statem.server_ref()) :: :connecting | :connected | :reconnecting | :stopping
+  def get_state(conn) do
+    :gen_statem.call(conn, :get_state)
+  end
+
+  @doc """
   Starts a simple TLS connection handler (non-gen_statem).
 
   This spawns a dedicated process for handling a TLS socket with framing.
@@ -186,6 +194,10 @@ defmodule ParrotTransport.Connection do
     {:next_state, :stopping, data, [{:reply, from, :ok}]}
   end
 
+  def connecting({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :connecting}]}
+  end
+
   # ============================================================================
   # State: :connected
   # ============================================================================
@@ -269,6 +281,10 @@ defmodule ParrotTransport.Connection do
     {:next_state, :stopping, data, [{:reply, from, :ok}]}
   end
 
+  def connected({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :connected}]}
+  end
+
   # ============================================================================
   # State: :reconnecting
   # ============================================================================
@@ -303,6 +319,10 @@ defmodule ParrotTransport.Connection do
     end
 
     {:next_state, :stopping, %{data | reconnect_timer: nil}, [{:reply, from, :ok}]}
+  end
+
+  def reconnecting({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :reconnecting}]}
   end
 
   # ============================================================================

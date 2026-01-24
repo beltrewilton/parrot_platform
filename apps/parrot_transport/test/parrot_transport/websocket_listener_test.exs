@@ -15,7 +15,7 @@ defmodule ParrotTransport.WebsocketListenerTest do
 
       Process.sleep(50)
 
-      assert :listening = :sys.get_state(pid) |> elem(0)
+      assert :listening = WebsocketListener.get_state(pid)
     end
 
     test "binds to specific port" do

@@ -28,8 +28,7 @@ defmodule ParrotTransport.ConnectionTest do
       # Give time to reach :connected state
       Process.sleep(50)
 
-      state = :sys.get_state(conn_pid)
-      assert elem(state, 0) == :connected
+      assert :connected == Connection.get_state(conn_pid)
     end
 
     test "handles connection refusal", %{port: _port} do
@@ -45,8 +44,7 @@ defmodule ParrotTransport.ConnectionTest do
       # Should enter reconnecting state
       Process.sleep(100)
 
-      state = :sys.get_state(conn_pid)
-      assert elem(state, 0) == :reconnecting
+      assert :reconnecting == Connection.get_state(conn_pid)
     end
   end
 
@@ -161,8 +159,7 @@ defmodule ParrotTransport.ConnectionTest do
       # Give time to detect closure and enter reconnecting
       Process.sleep(100)
 
-      state = :sys.get_state(conn_pid)
-      assert elem(state, 0) == :reconnecting
+      assert :reconnecting == Connection.get_state(conn_pid)
     end
 
     test "reconnects after connection loss", %{server_socket: server_socket, listen_socket: listen_socket, conn_pid: conn_pid} do
@@ -175,8 +172,7 @@ defmodule ParrotTransport.ConnectionTest do
 
       # Should be back in connected state
       Process.sleep(50)
-      state = :sys.get_state(conn_pid)
-      assert elem(state, 0) == :connected
+      assert :connected == Connection.get_state(conn_pid)
     end
   end
 

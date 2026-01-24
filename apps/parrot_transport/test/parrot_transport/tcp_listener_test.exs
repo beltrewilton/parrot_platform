@@ -10,7 +10,7 @@ defmodule ParrotTransport.TcpListenerTest do
       {:ok, pid} = TcpListener.start_link(config, self())
 
       # Socket binding happens synchronously in init, so state is immediately :listening
-      assert :listening = :sys.get_state(pid) |> elem(0)
+      assert :listening = TcpListener.get_state(pid)
     end
 
     test "binds to specific port" do
