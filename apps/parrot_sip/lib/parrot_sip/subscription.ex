@@ -200,6 +200,56 @@ defmodule ParrotSip.Subscription do
     ParrotSip.Subscription.Supervisor.num_active()
   end
 
+  # ===========================================================================
+  # Public Introspection APIs
+  # ===========================================================================
+
+  @doc """
+  Returns the current state name of the subscription state machine.
+
+  ## Returns
+    - `:pending` - Subscription received but not yet authorized
+    - `:active` - Subscription is active
+    - `:terminated` - Subscription has ended
+  """
+  @spec get_state(pid()) :: subscription_state()
+  def get_state(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_state)
+  end
+
+  @doc """
+  Returns the subscription role.
+
+  ## Returns
+    - `{:ok, :subscriber}` or `{:ok, :notifier}`
+  """
+  @spec get_role(pid()) :: {:ok, role()}
+  def get_role(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_role)
+  end
+
+  @doc """
+  Returns the subscription expiration time in seconds.
+
+  ## Returns
+    - `{:ok, expires}` where expires is a non-negative integer
+  """
+  @spec get_expires(pid()) :: {:ok, non_neg_integer() | nil}
+  def get_expires(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_expires)
+  end
+
+  @doc """
+  Returns the state body (for notifiers).
+
+  ## Returns
+    - `{:ok, state_body}` where state_body is a string or nil
+  """
+  @spec get_state_body(pid()) :: {:ok, String.t() | nil}
+  def get_state_body(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_state_body)
+  end
+
   # gen_statem callbacks
 
   @impl :gen_statem
@@ -238,6 +288,15 @@ defmodule ParrotSip.Subscription do
   # State: pending
 
   @doc false
+  def pending({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :pending}]}
+  end
+
+  def pending({:call, from}, request, data) when request in [:get_role, :get_expires, :get_state_body] do
+    result = handle_introspection_call(request, data)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def pending({:call, from}, {:notify_received, notify_msg}, data) do
     # RFC 6665 Section 4.1.3: Subscriber MUST accept NOTIFY in any state
     Logger.debug("subscription #{data.id}: received NOTIFY in pending state")
@@ -323,6 +382,15 @@ defmodule ParrotSip.Subscription do
   # State: active
 
   @doc false
+  def active({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :active}]}
+  end
+
+  def active({:call, from}, request, data) when request in [:get_role, :get_expires, :get_state_body] do
+    result = handle_introspection_call(request, data)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def active({:call, from}, {:notify_received, notify_msg}, data) do
     Logger.debug("subscription #{data.id}: received NOTIFY in active state")
     process_notify(:active, notify_msg, data, from)
@@ -393,11 +461,33 @@ defmodule ParrotSip.Subscription do
   # State: terminated
 
   @doc false
+  def terminated({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :terminated}]}
+  end
+
+  def terminated({:call, from}, request, data) when request in [:get_role, :get_expires, :get_state_body] do
+    result = handle_introspection_call(request, data)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def terminated(_, _, _data) do
     {:stop, :normal}
   end
 
   # Private functions
+
+  # Handle introspection calls for public API
+  defp handle_introspection_call(:get_role, %Data{role: role}) do
+    {:ok, role}
+  end
+
+  defp handle_introspection_call(:get_expires, %Data{expires: expires}) do
+    {:ok, expires}
+  end
+
+  defp handle_introspection_call(:get_state_body, %Data{state_body: state_body}) do
+    {:ok, state_body}
+  end
 
   defp process_notify(_current_state, notify_msg, data, from) do
     # Check Subscription-State header

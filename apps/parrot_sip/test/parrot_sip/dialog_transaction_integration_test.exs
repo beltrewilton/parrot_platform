@@ -36,6 +36,29 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
   alias ParrotSip.{DialogStatem, TransactionStatem, Transaction, Message}
   alias ParrotSip.Headers.{Via, From, To, Contact, CSeq}
 
+  # ===========================================================================
+  # Test Helpers - Public API wrappers for DialogStatem
+  # ===========================================================================
+
+  # Assert the dialog state
+  defp assert_dialog_state(pid, expected_state) do
+    actual_state = DialogStatem.get_state(pid)
+    assert actual_state == expected_state,
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
+  # Get the full dialog data
+  defp get_dialog_data(pid) do
+    {:ok, dialog} = DialogStatem.get_dialog_data(pid)
+    dialog
+  end
+
+  # Get the dialog type
+  defp get_dialog_type(pid) do
+    {:ok, type} = DialogStatem.get_dialog_type(pid)
+    type
+  end
+
   describe "initial INVITE transaction creates dialog - REAL integration" do
     @tag :integration
     test "UAC: Real TransactionStatem process creates dialog via callback on 180 response" do
@@ -92,10 +115,10 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       assert Process.alive?(dialog_pid)
 
       # Step 6: Verify dialog is in early state
-      {state, data} = :sys.get_state(dialog_pid)
-      assert state == :early
-      assert data.dialog.state == :early
-      assert data.dialog.call_id == invite.call_id
+      assert_dialog_state(dialog_pid, :early)
+      dialog = get_dialog_data(dialog_pid)
+      assert dialog.state == :early
+      assert dialog.call_id == invite.call_id
 
       # Cleanup
       :gen_statem.stop(dialog_pid)
@@ -129,8 +152,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, call_id, from_tag, to_tag)
       [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
 
-      {state_before, _} = :sys.get_state(dialog_pid)
-      assert state_before == :early
+      assert_dialog_state(dialog_pid, :early)
 
       # Step 4: SAME transaction receives 200 OK - should update existing dialog
       ok_response = %{ringing_response | status_code: 200, reason_phrase: "OK"}
@@ -138,9 +160,9 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       Process.sleep(100)
 
       # Step 5: Verify SAME dialog transitioned to confirmed
-      {state_after, data} = :sys.get_state(dialog_pid)
-      assert state_after == :confirmed
-      assert data.dialog.state == :confirmed
+      assert_dialog_state(dialog_pid, :confirmed)
+      dialog = get_dialog_data(dialog_pid)
+      assert dialog.state == :confirmed
 
       # Cleanup
       :gen_statem.stop(dialog_pid)
@@ -215,10 +237,8 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       assert Process.alive?(dialog2_pid)
 
       # Both in early state
-      {state1, _} = :sys.get_state(dialog1_pid)
-      {state2, _} = :sys.get_state(dialog2_pid)
-      assert state1 == :early
-      assert state2 == :early
+      assert_dialog_state(dialog1_pid, :early)
+      assert_dialog_state(dialog2_pid, :early)
 
       # Step 6: Transaction receives 200 OK with proxy1 tag - confirms first dialog
       ok_response = %{ringing1 | status_code: 200, reason_phrase: "OK"}
@@ -226,10 +246,8 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       Process.sleep(100)
 
       # First dialog confirmed, second still early
-      {state1_final, _} = :sys.get_state(dialog1_pid)
-      {state2_final, _} = :sys.get_state(dialog2_pid)
-      assert state1_final == :confirmed
-      assert state2_final == :early
+      assert_dialog_state(dialog1_pid, :confirmed)
+      assert_dialog_state(dialog2_pid, :early)
 
       # Cleanup
       :gen_statem.stop(dialog1_pid)
@@ -256,9 +274,9 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       dialog_id_str = ParrotSip.Dialog.to_string(dialog_id)
 
       assert [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
-      {state, data} = :sys.get_state(dialog_pid)
-      assert state == :confirmed
-      assert data.dialog.call_id == invite.call_id
+      assert_dialog_state(dialog_pid, :confirmed)
+      dialog = get_dialog_data(dialog_pid)
+      assert dialog.call_id == invite.call_id
 
       # Cleanup
       :gen_statem.stop(dialog_pid)
@@ -283,9 +301,9 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
 
       # Step 3: Verify BYE has correct dialog context
       assert bye_request.call_id == invite.call_id
-      {_state, data} = :sys.get_state(dialog_pid)
-      assert bye_request.from.parameters["tag"] == data.dialog.local_tag
-      assert bye_request.to.parameters["tag"] == data.dialog.remote_tag
+      dialog = get_dialog_data(dialog_pid)
+      assert bye_request.from.parameters["tag"] == dialog.local_tag
+      assert bye_request.to.parameters["tag"] == dialog.remote_tag
 
       # Step 4: This BYE request can now be passed to TransactionStatem.client_new()
       # (not testing actual transaction creation here, just that dialog produces valid request)
@@ -338,9 +356,10 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       Process.sleep(50)
 
       # Verify dialog transitioned to terminated
-      {state, data} = :sys.get_state(dialog_pid)
+      state = DialogStatem.get_state(dialog_pid)
       assert state == :confirmed or state == :terminated
-      assert data.dialog.state == :terminated
+      dialog = get_dialog_data(dialog_pid)
+      assert dialog.state == :terminated
 
       :gen_statem.stop(dialog_pid)
     end
@@ -434,8 +453,6 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       ok_response = build_response_message(200, "OK", invite)
       {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, ok_response})
 
-      {_state, _data_before} = :sys.get_state(dialog_pid)
-
       # Simulate receiving re-INVITE from remote (UAS side)
       reinvite = %Message{
         method: :invite,
@@ -487,9 +504,9 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       assert result == :process
 
       # Verify dialog state updated
-      {_state, data} = :sys.get_state(dialog_pid)
-      assert data.dialog.remote_seq == 2
-      assert data.dialog.state == :terminated
+      dialog = get_dialog_data(dialog_pid)
+      assert dialog.remote_seq == 2
+      assert dialog.state == :terminated
 
       :gen_statem.stop(dialog_pid)
     end
@@ -593,8 +610,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
       [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
 
-      {state_before, _} = :sys.get_state(dialog_pid)
-      assert state_before == :early
+      assert_dialog_state(dialog_pid, :early)
 
       # In real scenario, UAC would send CANCEL which triggers UAS to send 487
       # For this test, we simulate receiving 487 directly (like the 486 test)
@@ -610,8 +626,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
 
       # Dialog should be terminated
       if Process.alive?(dialog_pid) do
-        {state_after, _} = :sys.get_state(dialog_pid)
-        assert state_after == :terminated
+        assert_dialog_state(dialog_pid, :terminated)
       end
 
       :gen_statem.stop(trans_pid)
@@ -682,8 +697,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
 
       # Dialog should terminate or be gone
       if Process.alive?(dialog_pid) do
-        {state, _} = :sys.get_state(dialog_pid)
-        assert state == :terminated
+        assert_dialog_state(dialog_pid, :terminated)
       end
 
       :gen_statem.stop(trans_pid)
@@ -730,8 +744,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, invite})
 
       # Should be in confirmed state immediately for UAS (200 OK sent)
-      {state, _} = :sys.get_state(dialog_pid)
-      assert state == :confirmed
+      assert_dialog_state(dialog_pid, :confirmed)
 
       # But dialog needs ACK to be fully established
       ack = build_ack_message(invite)
@@ -739,8 +752,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       assert result == :process
 
       # Dialog should remain confirmed
-      {state_after, _} = :sys.get_state(dialog_pid)
-      assert state_after == :confirmed
+      assert_dialog_state(dialog_pid, :confirmed)
 
       :gen_statem.stop(dialog_pid)
     end
@@ -774,8 +786,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
       [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
 
-      {state, _} = :sys.get_state(dialog_pid)
-      assert state == :confirmed
+      assert_dialog_state(dialog_pid, :confirmed)
 
       :gen_statem.stop(dialog_pid)
       :gen_statem.stop(trans_pid)
@@ -790,11 +801,11 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       ok_response = build_response_message(200, "OK", subscribe)
       {:ok, dialog_pid} = DialogStatem.start_link({:uas, ok_response, subscribe})
 
-      {_state, data} = :sys.get_state(dialog_pid)
-      assert data.dialog_type == :notify
+      assert get_dialog_type(dialog_pid) == :notify
 
       # Check initial local_seq
-      initial_seq = data.dialog.local_seq
+      dialog = get_dialog_data(dialog_pid)
+      initial_seq = dialog.local_seq
 
       # Simulate multiple NOTIFY transactions within the subscription dialog
       # Each NOTIFY is a separate transaction but within same dialog
@@ -925,8 +936,7 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
       [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
 
-      {state, _} = :sys.get_state(dialog_pid)
-      assert state == :confirmed
+      assert_dialog_state(dialog_pid, :confirmed)
 
       :gen_statem.stop(dialog_pid)
       :gen_statem.stop(trans_pid)
@@ -987,9 +997,9 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       Process.sleep(100)
 
       # Dialog should still be confirmed
-      {state, data} = :sys.get_state(dialog_pid)
-      assert state == :confirmed
-      assert data.dialog.local_seq == 2
+      assert_dialog_state(dialog_pid, :confirmed)
+      dialog = get_dialog_data(dialog_pid)
+      assert dialog.local_seq == 2
 
       :gen_statem.stop(dialog_pid)
       :gen_statem.stop(trans_pid)
@@ -1065,10 +1075,10 @@ defmodule ParrotSip.DialogTransactionIntegrationTest do
       dialog_id_str = ParrotSip.Dialog.generate_id(:uac, invite.call_id, from_tag, to_tag)
       [{dialog_pid, _}] = Registry.lookup(ParrotSip.Registry, dialog_id_str)
 
-      {_state, data} = :sys.get_state(dialog_pid)
+      dialog = get_dialog_data(dialog_pid)
 
       # Route set should be reversed for UAC (RFC 3261 Section 12.1.1)
-      assert data.dialog.route_set == [
+      assert dialog.route_set == [
                "sip:proxy1.example.com;lr",
                "sip:proxy2.example.com;lr"
              ]

@@ -5,6 +5,47 @@ defmodule ParrotSip.DialogStatemTest do
   alias ParrotSip.{DialogStatem, Dialog, Message}
   alias ParrotSip.Headers.{Via, From, To, Contact, CSeq}
 
+  # ===========================================================================
+  # Test Helpers - Public API wrappers
+  # ===========================================================================
+
+  # Assert that the dialog is in the expected state
+  defp assert_state(pid, expected_state) do
+    actual_state = DialogStatem.get_state(pid)
+    assert actual_state == expected_state,
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
+  # Get the dialog ID from the state machine
+  defp get_dialog_id(pid) do
+    {:ok, id} = DialogStatem.get_dialog_id(pid)
+    id
+  end
+
+  # Get the early branch from the state machine
+  defp get_early_branch(pid) do
+    {:ok, branch} = DialogStatem.get_early_branch(pid)
+    branch
+  end
+
+  # Get the dialog type from the state machine
+  defp get_dialog_type(pid) do
+    {:ok, type} = DialogStatem.get_dialog_type(pid)
+    type
+  end
+
+  # Get the dialog info (id, call_id, state, local_tag, remote_tag)
+  defp get_dialog_info(pid) do
+    {:ok, info} = DialogStatem.get_dialog_info(pid)
+    info
+  end
+
+  # Check if the dialog was recovered
+  defp is_recovered?(pid) do
+    {:ok, recovered} = DialogStatem.is_recovered?(pid)
+    recovered
+  end
+
   describe "DialogStatem gen_statem initialization" do
     test "starts UAS dialog with valid INVITE response and request" do
       invite_msg = build_invite_message()
@@ -35,8 +76,7 @@ defmodule ParrotSip.DialogStatemTest do
       assert Process.alive?(pid)
 
       # Verify early branch was set
-      {_state, data} = :sys.get_state(pid)
-      assert data.early_branch != nil
+      assert get_early_branch(pid) != nil
     end
 
     test "initializes with correct callback mode" do
@@ -500,10 +540,8 @@ defmodule ParrotSip.DialogStatemTest do
       assert dialog_desk_pid != dialog_mobile_pid
 
       # Both should be in early state
-      {state_desk, _data_desk} = :sys.get_state(dialog_desk_pid)
-      {state_mobile, _data_mobile} = :sys.get_state(dialog_mobile_pid)
-      assert state_desk == :early
-      assert state_mobile == :early
+      assert_state(dialog_desk_pid, :early)
+      assert_state(dialog_mobile_pid, :early)
 
       # Now desk phone answers with 200 OK
       ok_response_desk = %{response_desk | status_code: 200, reason_phrase: "OK"}
@@ -512,8 +550,7 @@ defmodule ParrotSip.DialogStatemTest do
       Process.sleep(50)
 
       # Desk dialog should transition to confirmed
-      {final_state_desk, _} = :sys.get_state(dialog_desk_pid)
-      assert final_state_desk == :confirmed
+      assert_state(dialog_desk_pid, :confirmed)
 
       # Mobile dialog should still be early (or terminated by application)
       assert Process.alive?(dialog_mobile_pid)
@@ -531,14 +568,14 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid1} = DialogStatem.start_link({:uac, invite, response1})
       {:ok, pid2} = DialogStatem.start_link({:uac, invite, response2})
 
-      {_state1, data1} = :sys.get_state(pid1)
-      {_state2, data2} = :sys.get_state(pid2)
+      info1 = get_dialog_info(pid1)
+      info2 = get_dialog_info(pid2)
 
       # Dialog IDs should be different because to-tags differ
-      assert data1.dialog.id != data2.dialog.id
+      assert info1.id != info2.id
 
       # But call-id should be the same
-      assert data1.dialog.call_id == data2.dialog.call_id
+      assert info1.call_id == info2.call_id
     end
 
     test "confirmed dialog wins over early dialogs with same call-id" do
@@ -553,16 +590,14 @@ defmodule ParrotSip.DialogStatemTest do
       }
 
       {:ok, early_pid} = DialogStatem.start_link({:uac, invite, response_early})
-      {state, _} = :sys.get_state(early_pid)
-      assert state == :early
+      assert_state(early_pid, :early)
 
       # Second fork sends 200 OK
       response_ok = build_response_message(200, "OK")
       response_ok = %{response_ok | to: %{response_ok.to | parameters: %{"tag" => "winner-tag"}}}
 
       {:ok, confirmed_pid} = DialogStatem.start_link({:uac, invite, response_ok})
-      {state, _} = :sys.get_state(confirmed_pid)
-      assert state == :confirmed
+      assert_state(confirmed_pid, :confirmed)
 
       # Both dialogs exist independently
       assert Process.alive?(early_pid)
@@ -578,8 +613,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uas, response_msg, subscribe_msg})
 
       # Verify dialog was created with notify type
-      {_state, data} = :sys.get_state(pid)
-      assert data.dialog_type == :notify
+      assert get_dialog_type(pid) == :notify
       assert Process.alive?(pid)
     end
 
@@ -682,8 +716,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uas, response_msg, notify_msg})
 
       # Verify dialog type is :notify
-      {_state, data} = :sys.get_state(pid)
-      assert data.dialog_type == :notify
+      assert get_dialog_type(pid) == :notify
     end
   end
 
@@ -846,7 +879,7 @@ defmodule ParrotSip.DialogStatemTest do
       invite = build_invite_message()
       response = build_response_message(200, "OK")
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
-      {_state, data} = :sys.get_state(pid)
+      info = get_dialog_info(pid)
 
       # Create a request with the same dialog ID
       # For incoming request to UAS: From=remote (their tag), To=local (our tag)
@@ -854,16 +887,16 @@ defmodule ParrotSip.DialogStatemTest do
         type: :request,
         direction: :incoming,
         method: :options,
-        call_id: data.dialog.call_id,
+        call_id: info.call_id,
         from: %From{
           uri: "sip:test@example.com",
           # Their tag in From
-          parameters: %{"tag" => data.dialog.remote_tag}
+          parameters: %{"tag" => info.remote_tag}
         },
         to: %To{
           uri: "sip:target@example.com",
           # Our tag in To
-          parameters: %{"tag" => data.dialog.local_tag}
+          parameters: %{"tag" => info.local_tag}
         },
         cseq: %CSeq{number: 2, method: :options},
         other_headers: %{}
@@ -1028,8 +1061,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, dialog_pid} = DialogStatem.start_link({:uac, invite, response})
 
       # Get the actual dialog ID from the created dialog
-      {_state, data} = :sys.get_state(dialog_pid)
-      dialog_id_str = data.id
+      dialog_id_str = get_dialog_id(dialog_pid)
 
       options = %Message{method: :options}
 
@@ -1109,9 +1141,9 @@ defmodule ParrotSip.DialogStatemTest do
 
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :early
-      assert data.dialog.state == :early
+      assert_state(pid, :early)
+      info = get_dialog_info(pid)
+      assert info.state == :early
     end
 
     test "transitions early to confirmed on 2xx response" do
@@ -1122,8 +1154,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
 
       # Verify starts in early state
-      {state, _data} = :sys.get_state(pid)
-      assert state == :early
+      assert_state(pid, :early)
 
       # Send 2xx response to transition to confirmed
       final = build_response_with_call_id(200, "OK", call_id)
@@ -1132,8 +1163,7 @@ defmodule ParrotSip.DialogStatemTest do
       :timer.sleep(20)
 
       # Verify transitioned to confirmed
-      {new_state, _new_data} = :sys.get_state(pid)
-      assert new_state == :confirmed
+      assert_state(pid, :confirmed)
     end
 
     test "early dialog handles ACK to transition to confirmed" do
@@ -1582,8 +1612,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
 
       # Verify starts in early state
-      {state, _data} = :sys.get_state(pid)
-      assert state == :early
+      assert_state(pid, :early)
 
       # Transition to confirmed with 200 OK
       final = build_response_message(200, "OK")
@@ -1592,11 +1621,11 @@ defmodule ParrotSip.DialogStatemTest do
       Process.sleep(50)
 
       # Verify dialog transitioned to confirmed
-      {new_state, data} = :sys.get_state(pid)
-      assert new_state == :confirmed
+      assert_state(pid, :confirmed)
+      dialog_id = get_dialog_id(pid)
 
       # Verify broadcast occurred
-      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, data.id)
+      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, dialog_id)
       assert dialog_state.state == :confirmed
       assert dialog_state.owner_node == node()
     end
@@ -1610,11 +1639,11 @@ defmodule ParrotSip.DialogStatemTest do
       Process.sleep(50)
 
       # Dialog should be confirmed
-      {state, data} = :sys.get_state(pid)
-      assert state == :confirmed
+      assert_state(pid, :confirmed)
+      dialog_id = get_dialog_id(pid)
 
       # Verify broadcast occurred
-      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, data.id)
+      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, dialog_id)
       assert dialog_state.state == :confirmed
     end
 
@@ -1625,8 +1654,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
       Process.sleep(50)
-      {_state, data} = :sys.get_state(pid)
-      dialog_id = data.id
+      dialog_id = get_dialog_id(pid)
 
       # Verify dialog was broadcast
       assert {:ok, _} = ParrotSip.DialogBroadcast.get(broadcast_pid, dialog_id)
@@ -1648,7 +1676,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
 
       Process.sleep(50)
-      {_state, data} = :sys.get_state(pid)
+      dialog_id = get_dialog_id(pid)
 
       # Send a response that updates state
       update_response = build_response_message(200, "OK")
@@ -1657,7 +1685,7 @@ defmodule ParrotSip.DialogStatemTest do
       Process.sleep(50)
 
       # Verify dialog state in broadcast
-      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, data.id)
+      {:ok, dialog_state} = ParrotSip.DialogBroadcast.get(broadcast_pid, dialog_id)
       assert dialog_state.state == :confirmed
     end
 
@@ -1719,8 +1747,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_recovered(stored_state)
 
       # Verify state is :confirmed
-      {state, _data} = :sys.get_state(pid)
-      assert state == :confirmed
+      assert_state(pid, :confirmed)
     end
 
     test "recovered dialog can process BYE request" do
@@ -1786,8 +1813,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_recovered(stored_state)
 
       # Verify recovered flag is set
-      {_state, data} = :sys.get_state(pid)
-      assert data.recovered == true
+      assert is_recovered?(pid) == true
     end
 
     test "recovered dialog registers with correct dialog ID" do
@@ -1806,8 +1832,7 @@ defmodule ParrotSip.DialogStatemTest do
       {:ok, pid} = DialogStatem.start_recovered(stored_state)
 
       # Verify dialog is registered in Registry
-      {_state, data} = :sys.get_state(pid)
-      dialog_id = data.id
+      dialog_id = get_dialog_id(pid)
 
       result = Registry.lookup(ParrotSip.Registry, dialog_id)
       assert [{^pid, _}] = result

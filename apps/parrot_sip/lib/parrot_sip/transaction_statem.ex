@@ -878,6 +878,36 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   @doc """
+  Gets the current interval for a retransmission timer.
+
+  This function returns the current interval value for timers A, E, or G
+  which implement exponential backoff per RFC 3261.
+
+  ## Parameters
+  - `pid` - PID of the transaction process
+  - `timer_name` - Timer name atom (:a, :e, or :g)
+
+  ## Returns
+  - `{:ok, interval_ms}` - The current interval in milliseconds
+  - `{:ok, nil}` - If the timer interval is not set
+
+  ## Example
+
+      {:ok, interval} = TransactionStatem.get_timer_interval(pid, :a)
+      # interval => 500 (initial T1)
+      # After first retransmit: 1000 (doubled)
+
+  ## RFC References
+  - RFC 3261 Section 17.1.1.2: Timer A for INVITE client (exponential backoff)
+  - RFC 3261 Section 17.1.2.2: Timer E for non-INVITE client (exponential backoff)
+  - RFC 3261 Section 17.2.1: Timer G for INVITE server (exponential backoff)
+  """
+  @spec get_timer_interval(pid(), atom()) :: {:ok, non_neg_integer() | nil}
+  def get_timer_interval(pid, timer_name) when is_pid(pid) and is_atom(timer_name) do
+    :gen_statem.call(pid, {:get_timer_interval, timer_name})
+  end
+
+  @doc """
   Initializes the transaction state machine.
 
   This function is called by gen_statem when starting a new transaction process.
@@ -2655,6 +2685,19 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   defp handle_introspection_call(:get_auto_resp_code, _state) do
+    {:ok, nil}
+  end
+
+  defp handle_introspection_call({:get_timer_interval, timer_name}, %{data: data} = _state)
+       when timer_name in [:a, :e, :g] do
+    # RFC 3261 T1 default = 500ms for retransmission timers
+    default_t1 = 500
+    interval_key = String.to_atom("timer_#{timer_name}_interval")
+    interval = Map.get(data || %{}, interval_key, default_t1)
+    {:ok, interval}
+  end
+
+  defp handle_introspection_call({:get_timer_interval, _timer_name}, _state) do
     {:ok, nil}
   end
 

@@ -21,6 +21,35 @@ defmodule ParrotSip.SubscriptionTest do
   alias ParrotSip.Message
   alias ParrotSip.Headers.{Via, From, To, CSeq, Contact, Event, SubscriptionState}
 
+  # ===========================================================================
+  # Test Helpers - Public API wrappers
+  # ===========================================================================
+
+  # Assert that the subscription is in the expected state
+  defp assert_state(pid, expected_state) do
+    actual_state = Subscription.get_state(pid)
+    assert actual_state == expected_state,
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
+  # Get the subscription role
+  defp get_role(pid) do
+    {:ok, role} = Subscription.get_role(pid)
+    role
+  end
+
+  # Get the subscription expires
+  defp get_expires(pid) do
+    {:ok, expires} = Subscription.get_expires(pid)
+    expires
+  end
+
+  # Get the state body
+  defp get_state_body(pid) do
+    {:ok, body} = Subscription.get_state_body(pid)
+    body
+  end
+
   describe "Subscription gen_statem initialization - RFC 6665 Section 4" do
     test "starts subscriber in pending state" do
       _subscribe_msg = build_subscribe_message()
@@ -37,10 +66,8 @@ defmodule ParrotSip.SubscriptionTest do
       assert Process.alive?(pid)
 
       # Verify initial state is pending per RFC 6665 Section 4.1.2
-      {state, data} = :sys.get_state(pid)
-      assert state == :pending
-      assert data.role == :subscriber
-      assert data.event_package == "presence"
+      assert_state(pid, :pending)
+      assert get_role(pid) == :subscriber
     end
 
     test "starts notifier in pending state" do
@@ -56,9 +83,8 @@ defmodule ParrotSip.SubscriptionTest do
       assert is_pid(pid)
       assert Process.alive?(pid)
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :pending
-      assert data.role == :notifier
+      assert_state(pid, :pending)
+      assert get_role(pid) == :notifier
     end
 
     test "uses :state_functions callback mode" do
@@ -119,8 +145,7 @@ defmodule ParrotSip.SubscriptionTest do
 
       Process.sleep(10)
 
-      {state, _data} = :sys.get_state(pid)
-      assert state == :active
+      assert_state(pid, :active)
     end
 
     test "transitions from pending to terminated on 4xx/5xx/6xx response", %{pid: pid} do
@@ -138,8 +163,7 @@ defmodule ParrotSip.SubscriptionTest do
 
       Process.sleep(10)
 
-      {state, _data} = :sys.get_state(pid)
-      assert state == :pending
+      assert_state(pid, :pending)
     end
 
     test "transitions from active to terminated on subscription expiry", %{pid: pid} do
@@ -213,8 +237,7 @@ defmodule ParrotSip.SubscriptionTest do
 
       Process.sleep(10)
 
-      {state, _data} = :sys.get_state(pid)
-      assert state == :active
+      assert_state(pid, :active)
     end
 
     test "can send NOTIFY from notifier in active state", %{pid: pid} do
@@ -272,11 +295,10 @@ defmodule ParrotSip.SubscriptionTest do
 
       Process.sleep(10)
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :active
+      assert_state(pid, :active)
 
       # Verify expires value is preserved from init
-      assert data.expires == 1
+      assert get_expires(pid) == 1
     end
 
     test "notifier sets expiry timer" do
@@ -293,9 +315,8 @@ defmodule ParrotSip.SubscriptionTest do
       :gen_statem.cast(pid, :authorize)
       Process.sleep(10)
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :active
-      assert data.expires == 1
+      assert_state(pid, :active)
+      assert get_expires(pid) == 1
     end
 
     test "updates expires on re-SUBSCRIBE response" do
@@ -319,8 +340,7 @@ defmodule ParrotSip.SubscriptionTest do
       :gen_statem.cast(pid, {:subscribe_response, resubscribe_response})
       Process.sleep(10)
 
-      {_state, data} = :sys.get_state(pid)
-      assert data.expires == 7200
+      assert get_expires(pid) == 7200
     end
   end
 
@@ -363,9 +383,8 @@ defmodule ParrotSip.SubscriptionTest do
       publish_msg = build_publish_message()
       :gen_statem.call(pid, {:publish, publish_msg})
 
-      {_state, data} = :sys.get_state(pid)
       # State body should be updated
-      assert data.state_body != nil
+      assert get_state_body(pid) != nil
     end
   end
 

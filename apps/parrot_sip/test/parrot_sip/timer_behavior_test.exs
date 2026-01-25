@@ -38,6 +38,29 @@ defmodule ParrotSip.TimerBehaviorTest do
     {:ok, test_id: test_id}
   end
 
+  # ===========================================================================
+  # Test Helpers - Public API wrappers
+  # ===========================================================================
+
+  # Check if a timer is active
+  defp timer_active?(pid, timer_name) do
+    {:ok, active} = TransactionStatem.timer_active?(pid, timer_name)
+    active
+  end
+
+  # Get the current interval for a retransmission timer
+  defp get_timer_interval(pid, timer_name) do
+    {:ok, interval} = TransactionStatem.get_timer_interval(pid, timer_name)
+    interval
+  end
+
+  # Assert the transaction state
+  defp assert_state(pid, expected_state) do
+    actual_state = TransactionStatem.get_state(pid)
+    assert actual_state == expected_state,
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
   describe "Timer A - INVITE client retransmission" do
     test "starts at T1 (500ms) on initial INVITE", %{test_id: test_id} do
       invite = build_invite_request(test_id)
@@ -46,13 +69,10 @@ defmodule ParrotSip.TimerBehaviorTest do
       # Start transaction
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
 
-      # Get state to check timers
-      {_state_name, state_data} = :sys.get_state(pid)
-
       # Timer A should be active
-      assert Map.has_key?(state_data.timers, :a)
+      assert timer_active?(pid, :a)
       # Initial interval is T1
-      assert Map.get(state_data.data, :timer_a_interval, @t1) == @t1
+      assert get_timer_interval(pid, :a) == @t1
 
       GenServer.stop(pid)
     end
@@ -85,23 +105,20 @@ defmodule ParrotSip.TimerBehaviorTest do
         0 -> :ok
       end
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should have doubled to 1000ms
-      assert Map.get(state_data.data, :timer_a_interval, @t1) == @t1 * 2
+      assert get_timer_interval(pid, :a) == @t1 * 2
 
       # Wait for second retransmission
       Process.sleep(1050)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should have doubled to 2000ms
-      assert Map.get(state_data.data, :timer_a_interval) == @t1 * 4
+      assert get_timer_interval(pid, :a) == @t1 * 4
 
       # Wait for third retransmission
       Process.sleep(2050)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should be at T2 (4000ms) - capped
-      assert Map.get(state_data.data, :timer_a_interval) <= @t2
+      assert get_timer_interval(pid, :a) <= @t2
 
       GenServer.stop(pid)
     end
@@ -118,9 +135,8 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       Process.sleep(50)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer A should be cancelled
-      refute Map.has_key?(state_data.timers, :a)
+      refute timer_active?(pid, :a)
 
       GenServer.stop(pid)
     end
@@ -139,12 +155,11 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       Process.sleep(50)
 
-      {state_name, state_data} = :sys.get_state(pid)
       # Timer A should be cancelled
-      refute Map.has_key?(state_data.timers, :a)
+      refute timer_active?(pid, :a)
 
       # Transaction should be in terminated state for 2xx
-      assert state_name == :terminated
+      assert_state(pid, :terminated)
 
       # Process stays alive but in terminated state
       assert Process.alive?(pid)
@@ -158,12 +173,10 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
 
-      {_state_name, state_data} = :sys.get_state(pid)
-
       # Timer E should be active
-      assert Map.has_key?(state_data.timers, :e)
+      assert timer_active?(pid, :e)
       # Initial interval is T1
-      assert Map.get(state_data.data, :timer_e_interval, @t1) == @t1
+      assert get_timer_interval(pid, :e) == @t1
 
       GenServer.stop(pid)
     end
@@ -179,23 +192,20 @@ defmodule ParrotSip.TimerBehaviorTest do
       # Wait for first retransmission (T1 = 500ms)
       Process.sleep(550)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should have doubled to 1000ms
-      assert Map.get(state_data.data, :timer_e_interval, @t1) == @t1 * 2
+      assert get_timer_interval(pid, :e) == @t1 * 2
 
       # Wait for second retransmission
       Process.sleep(1050)
 
-      {_state_name, state_data} = :sys.get_state(pid)
-      # Timer E should have doubled to 2000ms  
-      assert Map.get(state_data.data, :timer_e_interval) == @t1 * 4
+      # Timer E should have doubled to 2000ms
+      assert get_timer_interval(pid, :e) == @t1 * 4
 
       # Wait for third retransmission
       Process.sleep(2050)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should be at T2 (4000ms) - capped
-      assert Map.get(state_data.data, :timer_e_interval) <= @t2
+      assert get_timer_interval(pid, :e) <= @t2
 
       GenServer.stop(pid)
     end
@@ -212,9 +222,8 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       Process.sleep(50)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer E should be cancelled
-      refute Map.has_key?(state_data.timers, :e)
+      refute timer_active?(pid, :e)
 
       GenServer.stop(pid)
     end
@@ -260,24 +269,21 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       # Verify Timer G is active and intervals are correct
       Process.sleep(50)
-      {_state_name, state_data} = :sys.get_state(pid)
-      assert Map.has_key?(state_data.timers, :g)
+      assert timer_active?(pid, :g)
 
       # Initial interval should be T1 (500ms)
-      assert Map.get(state_data.data, :timer_g_interval, @t1) == @t1
+      assert get_timer_interval(pid, :g) == @t1
 
       # Wait for first retransmission and check interval doubled
       Process.sleep(550)
-      {_state_name, state_data} = :sys.get_state(pid)
-      assert Map.get(state_data.data, :timer_g_interval) == @t1 * 2
+      assert get_timer_interval(pid, :g) == @t1 * 2
 
       # Wait for second retransmission and check interval doubled again
       Process.sleep(1050)
-      {_state_name, state_data} = :sys.get_state(pid)
-      assert Map.get(state_data.data, :timer_g_interval) == @t1 * 4
+      assert get_timer_interval(pid, :g) == @t1 * 4
 
       # Verify timer is still active (transaction still retransmitting)
-      assert Map.has_key?(state_data.timers, :g)
+      assert timer_active?(pid, :g)
 
       GenServer.stop(pid)
     end
@@ -296,9 +302,8 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       Process.sleep(50)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer G should be active
-      assert Map.has_key?(state_data.timers, :g)
+      assert timer_active?(pid, :g)
 
       # Send ACK
       ack = build_ack_for_invite(invite)
@@ -306,9 +311,8 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       Process.sleep(50)
 
-      {_state_name, state_data} = :sys.get_state(pid)
       # Timer G should be cancelled
-      refute Map.has_key?(state_data.timers, :g)
+      refute timer_active?(pid, :g)
 
       GenServer.stop(pid)
     end
@@ -367,11 +371,9 @@ defmodule ParrotSip.TimerBehaviorTest do
 
       {:trans, pid} = TransactionStatem.client_new(transaction, %{}, fn _ -> :ok end)
 
-      {_state_name, state_data} = :sys.get_state(pid)
-
       # Both Timer A and Timer B should be active for INVITE client
-      assert Map.has_key?(state_data.timers, :a)
-      assert Map.has_key?(state_data.timers, :b)
+      assert timer_active?(pid, :a)
+      assert timer_active?(pid, :b)
 
       GenServer.stop(pid)
     end

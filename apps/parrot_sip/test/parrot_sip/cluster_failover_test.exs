@@ -76,6 +76,35 @@ defmodule ParrotSip.ClusterFailoverTest do
     }
   end
 
+  # ===========================================================================
+  # Test Helpers - Public API wrappers
+  # ===========================================================================
+
+  # Assert the dialog state
+  defp assert_state(pid, expected_state) do
+    actual_state = DialogStatem.get_state(pid)
+    assert actual_state == expected_state,
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
+  # Get the dialog ID
+  defp get_dialog_id(pid) do
+    {:ok, id} = DialogStatem.get_dialog_id(pid)
+    id
+  end
+
+  # Get the full dialog data
+  defp get_dialog_data(pid) do
+    {:ok, dialog} = DialogStatem.get_dialog_data(pid)
+    dialog
+  end
+
+  # Check if dialog was recovered
+  defp is_recovered?(pid) do
+    {:ok, recovered} = DialogStatem.is_recovered?(pid)
+    recovered
+  end
+
   describe "round-trip storage - DialogBroadcast integration" do
     test "dialog state can be stored and retrieved from DialogBroadcast", ctx do
       # Create a confirmed dialog
@@ -87,11 +116,10 @@ defmodule ParrotSip.ClusterFailoverTest do
       Process.sleep(50)
 
       # Get the dialog state from the running dialog
-      {state, data} = :sys.get_state(dialog_pid)
-      assert state == :confirmed
+      assert_state(dialog_pid, :confirmed)
 
-      dialog_id = data.id
-      dialog = data.dialog
+      dialog_id = get_dialog_id(dialog_pid)
+      dialog = get_dialog_data(dialog_pid)
 
       # Verify state was automatically broadcast to DialogBroadcast
       {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, dialog_id)
@@ -112,15 +140,15 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, data} = :sys.get_state(dialog_pid)
-      dialog_id = data.id
+      dialog_id = get_dialog_id(dialog_pid)
+      dialog = get_dialog_data(dialog_pid)
 
       {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, dialog_id)
 
       # Verify stored state matches dialog state fields
-      assert stored_state.call_id == data.dialog.call_id
-      assert stored_state.local_tag == data.dialog.local_tag
-      assert stored_state.remote_tag == data.dialog.remote_tag
+      assert stored_state.call_id == dialog.call_id
+      assert stored_state.local_tag == dialog.local_tag
+      assert stored_state.remote_tag == dialog.remote_tag
       assert stored_state.state == :confirmed
     end
 
@@ -133,8 +161,8 @@ defmodule ParrotSip.ClusterFailoverTest do
           response = build_response_with_call_id(200, "OK", call_id)
           {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
           Process.sleep(50)
-          {_state, data} = :sys.get_state(pid)
-          {pid, data.id}
+          dialog_id = get_dialog_id(pid)
+          {pid, dialog_id}
         end
 
       # Verify all three are stored in DialogBroadcast
@@ -159,8 +187,8 @@ defmodule ParrotSip.ClusterFailoverTest do
       Process.sleep(50)
 
       # Get the dialog ID and retrieve stored state
-      {_state, data} = :sys.get_state(original_pid)
-      dialog_id = data.id
+      dialog_id = get_dialog_id(original_pid)
+      dialog = get_dialog_data(original_pid)
 
       {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, dialog_id)
 
@@ -173,12 +201,12 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: stored_state.call_id,
         local_tag: stored_state.local_tag,
         remote_tag: stored_state.remote_tag,
-        local_uri: data.dialog.local_uri,
-        remote_uri: data.dialog.remote_uri,
-        local_seq: data.dialog.local_seq,
-        remote_seq: data.dialog.remote_seq,
-        secure: data.dialog.secure,
-        route_set: data.dialog.route_set
+        local_uri: dialog.local_uri,
+        remote_uri: dialog.remote_uri,
+        local_seq: dialog.local_seq,
+        remote_seq: dialog.remote_seq,
+        secure: dialog.secure,
+        route_set: dialog.route_set
       }
 
       # Recover the dialog
@@ -186,9 +214,8 @@ defmodule ParrotSip.ClusterFailoverTest do
       assert Process.alive?(recovered_pid)
 
       # Verify recovered dialog is in confirmed state
-      {recovered_state, recovered_data} = :sys.get_state(recovered_pid)
-      assert recovered_state == :confirmed
-      assert recovered_data.recovered == true
+      assert_state(recovered_pid, :confirmed)
+      assert is_recovered?(recovered_pid) == true
     end
 
     test "recovered dialog has same dialog ID as original", ctx do
@@ -199,8 +226,8 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, original_data} = :sys.get_state(original_pid)
-      original_dialog_id = original_data.id
+      original_dialog_id = get_dialog_id(original_pid)
+      original_dialog = get_dialog_data(original_pid)
 
       {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, original_dialog_id)
 
@@ -213,18 +240,17 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: stored_state.call_id,
         local_tag: stored_state.local_tag,
         remote_tag: stored_state.remote_tag,
-        local_uri: original_data.dialog.local_uri,
-        remote_uri: original_data.dialog.remote_uri,
-        local_seq: original_data.dialog.local_seq,
-        remote_seq: original_data.dialog.remote_seq,
+        local_uri: original_dialog.local_uri,
+        remote_uri: original_dialog.remote_uri,
+        local_seq: original_dialog.local_seq,
+        remote_seq: original_dialog.remote_seq,
         secure: false,
         route_set: []
       }
 
       {:ok, recovered_pid} = DialogStatem.start_recovered(recovery_state)
 
-      {_recovered_state, recovered_data} = :sys.get_state(recovered_pid)
-      recovered_dialog_id = recovered_data.id
+      recovered_dialog_id = get_dialog_id(recovered_pid)
 
       # Dialog IDs should match
       assert recovered_dialog_id == original_dialog_id
@@ -239,8 +265,9 @@ defmodule ParrotSip.ClusterFailoverTest do
           response = build_response_with_call_id(200, "OK", call_id)
           {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
           Process.sleep(50)
-          {_state, data} = :sys.get_state(pid)
-          {pid, data.id, data.dialog}
+          dialog_id = get_dialog_id(pid)
+          dialog = get_dialog_data(pid)
+          {pid, dialog_id, dialog}
         end
 
       # Simulate node failure - stop all original dialogs
@@ -276,8 +303,7 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       for pid <- recovered_pids do
         assert Process.alive?(pid)
-        {state, _data} = :sys.get_state(pid)
-        assert state == :confirmed
+        assert_state(pid, :confirmed)
       end
     end
   end
@@ -292,8 +318,9 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, original_data} = :sys.get_state(original_pid)
-      {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, original_data.id)
+      original_dialog_id = get_dialog_id(original_pid)
+      original_dialog = get_dialog_data(original_pid)
+      {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, original_dialog_id)
 
       # Stop original
       GenServer.stop(original_pid)
@@ -304,10 +331,10 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: stored_state.call_id,
         local_tag: stored_state.local_tag,
         remote_tag: stored_state.remote_tag,
-        local_uri: original_data.dialog.local_uri,
-        remote_uri: original_data.dialog.remote_uri,
-        local_seq: original_data.dialog.local_seq,
-        remote_seq: original_data.dialog.remote_seq,
+        local_uri: original_dialog.local_uri,
+        remote_uri: original_dialog.remote_uri,
+        local_seq: original_dialog.local_seq,
+        remote_seq: original_dialog.remote_seq,
         secure: false,
         route_set: []
       }
@@ -318,7 +345,7 @@ defmodule ParrotSip.ClusterFailoverTest do
       bye_msg = %Message{
         type: :request,
         method: :bye,
-        request_uri: original_data.dialog.local_uri,
+        request_uri: original_dialog.local_uri,
         version: "SIP/2.0",
         via: %Via{
           protocol: "SIP",
@@ -329,15 +356,15 @@ defmodule ParrotSip.ClusterFailoverTest do
           parameters: %{"branch" => "z9hG4bK-bye-recovered"}
         },
         from: %From{
-          uri: original_data.dialog.remote_uri,
-          parameters: %{"tag" => original_data.dialog.remote_tag}
+          uri: original_dialog.remote_uri,
+          parameters: %{"tag" => original_dialog.remote_tag}
         },
         to: %To{
-          uri: original_data.dialog.local_uri,
-          parameters: %{"tag" => original_data.dialog.local_tag}
+          uri: original_dialog.local_uri,
+          parameters: %{"tag" => original_dialog.local_tag}
         },
-        call_id: original_data.dialog.call_id,
-        cseq: %CSeq{number: original_data.dialog.remote_seq + 1, method: :bye},
+        call_id: original_dialog.call_id,
+        cseq: %CSeq{number: original_dialog.remote_seq + 1, method: :bye},
         other_headers: %{},
         body: ""
       }
@@ -358,8 +385,8 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, original_data} = :sys.get_state(original_pid)
-      original_dialog_id = original_data.id
+      original_dialog_id = get_dialog_id(original_pid)
+      original_dialog = get_dialog_data(original_pid)
       {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, original_dialog_id)
 
       # Stop original
@@ -371,18 +398,17 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: stored_state.call_id,
         local_tag: stored_state.local_tag,
         remote_tag: stored_state.remote_tag,
-        local_uri: original_data.dialog.local_uri,
-        remote_uri: original_data.dialog.remote_uri,
-        local_seq: original_data.dialog.local_seq,
-        remote_seq: original_data.dialog.remote_seq,
+        local_uri: original_dialog.local_uri,
+        remote_uri: original_dialog.remote_uri,
+        local_seq: original_dialog.local_seq,
+        remote_seq: original_dialog.remote_seq,
         secure: false,
         route_set: []
       }
 
       {:ok, recovered_pid} = DialogStatem.start_recovered(recovery_state)
 
-      {_recovered_state, recovered_data} = :sys.get_state(recovered_pid)
-      recovered_dialog_id = recovered_data.id
+      recovered_dialog_id = get_dialog_id(recovered_pid)
 
       # Create outbound BYE request
       bye_template = %Message{method: :bye}
@@ -402,11 +428,12 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, original_data} = :sys.get_state(original_pid)
-      original_local_seq = original_data.dialog.local_seq
-      original_remote_seq = original_data.dialog.remote_seq
+      original_dialog_id = get_dialog_id(original_pid)
+      original_dialog = get_dialog_data(original_pid)
+      original_local_seq = original_dialog.local_seq
+      original_remote_seq = original_dialog.remote_seq
 
-      {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, original_data.id)
+      {:ok, stored_state} = DialogBroadcast.get(ctx.broadcast, original_dialog_id)
 
       # Stop and recover
       GenServer.stop(original_pid)
@@ -416,8 +443,8 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: stored_state.call_id,
         local_tag: stored_state.local_tag,
         remote_tag: stored_state.remote_tag,
-        local_uri: original_data.dialog.local_uri,
-        remote_uri: original_data.dialog.remote_uri,
+        local_uri: original_dialog.local_uri,
+        remote_uri: original_dialog.remote_uri,
         local_seq: original_local_seq,
         remote_seq: original_remote_seq,
         secure: false,
@@ -427,9 +454,9 @@ defmodule ParrotSip.ClusterFailoverTest do
       {:ok, recovered_pid} = DialogStatem.start_recovered(recovery_state)
 
       # Verify sequence numbers are preserved
-      {_recovered_state, recovered_data} = :sys.get_state(recovered_pid)
-      assert recovered_data.dialog.local_seq == original_local_seq
-      assert recovered_data.dialog.remote_seq == original_remote_seq
+      recovered_dialog = get_dialog_data(recovered_pid)
+      assert recovered_dialog.local_seq == original_local_seq
+      assert recovered_dialog.remote_seq == original_remote_seq
     end
   end
 
@@ -487,8 +514,8 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, original_data} = :sys.get_state(original_pid)
-      dialog_id = original_data.id
+      dialog_id = get_dialog_id(original_pid)
+      original_dialog = get_dialog_data(original_pid)
 
       # Update the stored state to simulate it came from remote node
       {:ok, _stored_state} = DialogBroadcast.get(ctx.broadcast, dialog_id)
@@ -524,10 +551,10 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: orphaned_state.call_id,
         local_tag: orphaned_state.local_tag,
         remote_tag: orphaned_state.remote_tag,
-        local_uri: original_data.dialog.local_uri,
-        remote_uri: original_data.dialog.remote_uri,
-        local_seq: original_data.dialog.local_seq,
-        remote_seq: original_data.dialog.remote_seq,
+        local_uri: original_dialog.local_uri,
+        remote_uri: original_dialog.remote_uri,
+        local_seq: original_dialog.local_seq,
+        remote_seq: original_dialog.remote_seq,
         secure: false,
         route_set: []
       }
@@ -536,9 +563,8 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       # Step 6: Verify recovery was successful
       assert Process.alive?(recovered_pid)
-      {recovered_state, recovered_data} = :sys.get_state(recovered_pid)
-      assert recovered_state == :confirmed
-      assert recovered_data.recovered == true
+      assert_state(recovered_pid, :confirmed)
+      assert is_recovered?(recovered_pid) == true
     end
   end
 
@@ -559,10 +585,10 @@ defmodule ParrotSip.ClusterFailoverTest do
       assert {:ok, pid} = DialogStatem.start_recovered(minimal_state)
       assert Process.alive?(pid)
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :confirmed
-      assert data.dialog.secure == false
-      assert data.dialog.route_set == []
+      assert_state(pid, :confirmed)
+      dialog = get_dialog_data(pid)
+      assert dialog.secure == false
+      assert dialog.route_set == []
     end
 
     test "recovery handles all optional fields when present" do
@@ -585,13 +611,13 @@ defmodule ParrotSip.ClusterFailoverTest do
       assert {:ok, pid} = DialogStatem.start_recovered(full_state)
       assert Process.alive?(pid)
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :confirmed
-      assert data.dialog.secure == true
-      assert data.dialog.route_set == ["<sip:proxy1.example.com>", "<sip:proxy2.example.com>"]
-      assert data.dialog.local_host == "192.168.1.100"
-      assert data.dialog.local_port == 5060
-      assert data.dialog.transport == :tcp
+      assert_state(pid, :confirmed)
+      dialog = get_dialog_data(pid)
+      assert dialog.secure == true
+      assert dialog.route_set == ["<sip:proxy1.example.com>", "<sip:proxy2.example.com>"]
+      assert dialog.local_host == "192.168.1.100"
+      assert dialog.local_port == 5060
+      assert dialog.transport == :tcp
     end
 
     test "DialogBroadcast gracefully handles dialog deletion after recovery", ctx do
@@ -602,8 +628,8 @@ defmodule ParrotSip.ClusterFailoverTest do
 
       Process.sleep(50)
 
-      {_state, original_data} = :sys.get_state(original_pid)
-      dialog_id = original_data.id
+      dialog_id = get_dialog_id(original_pid)
+      original_dialog = get_dialog_data(original_pid)
 
       # Verify dialog is stored
       assert {:ok, _} = DialogBroadcast.get(ctx.broadcast, dialog_id)
@@ -620,10 +646,10 @@ defmodule ParrotSip.ClusterFailoverTest do
         call_id: stored_state.call_id,
         local_tag: stored_state.local_tag,
         remote_tag: stored_state.remote_tag,
-        local_uri: original_data.dialog.local_uri,
-        remote_uri: original_data.dialog.remote_uri,
-        local_seq: original_data.dialog.local_seq,
-        remote_seq: original_data.dialog.remote_seq,
+        local_uri: original_dialog.local_uri,
+        remote_uri: original_dialog.remote_uri,
+        local_seq: original_dialog.local_seq,
+        remote_seq: original_dialog.remote_seq,
         secure: false,
         route_set: []
       }

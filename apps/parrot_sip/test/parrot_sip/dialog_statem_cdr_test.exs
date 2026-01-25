@@ -15,6 +15,23 @@ defmodule ParrotSip.DialogStatemCdrTest do
   alias ParrotSip.{DialogStatem, Message}
   alias ParrotSip.Headers.{Via, From, To, Contact, CSeq}
 
+  # ===========================================================================
+  # Test Helpers - Public API wrappers
+  # ===========================================================================
+
+  # Assert that the dialog is in the expected state
+  defp assert_state(pid, expected_state) do
+    actual_state = DialogStatem.get_state(pid)
+    assert actual_state == expected_state,
+           "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
+  end
+
+  # Get timing data from the dialog
+  defp get_timing_data(pid) do
+    {:ok, data} = DialogStatem.get_timing_data(pid)
+    data
+  end
+
   describe "invite_received_at timestamp capture" do
     test "UAS dialog captures invite_received_at on creation" do
       invite = build_invite_message()
@@ -23,20 +40,20 @@ defmodule ParrotSip.DialogStatemCdrTest do
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
       # Get the dialog data and verify timestamp is captured
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
-      assert data.invite_received_at != nil,
+      assert timing.invite_received_at != nil,
              "invite_received_at should be set when UAS dialog is created"
 
-      assert %DateTime{} = data.invite_received_at,
+      assert %DateTime{} = timing.invite_received_at,
              "invite_received_at should be a DateTime struct"
 
-      assert data.invite_received_at.time_zone == "Etc/UTC",
+      assert timing.invite_received_at.time_zone == "Etc/UTC",
              "invite_received_at should have UTC timezone"
 
       # Verify timestamp is recent (within last 5 seconds)
       now = DateTime.utc_now()
-      diff = DateTime.diff(now, data.invite_received_at, :second)
+      diff = DateTime.diff(now, timing.invite_received_at, :second)
       assert diff >= 0 and diff < 5, "invite_received_at should be recent"
     end
 
@@ -46,13 +63,13 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
 
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
-      assert data.invite_received_at != nil,
+      assert timing.invite_received_at != nil,
              "invite_received_at should be set when UAC dialog is created"
 
-      assert %DateTime{} = data.invite_received_at
-      assert data.invite_received_at.time_zone == "Etc/UTC"
+      assert %DateTime{} = timing.invite_received_at
+      assert timing.invite_received_at.time_zone == "Etc/UTC"
     end
 
     test "UAC dialog captures invite_received_at on creation with provisional response" do
@@ -61,12 +78,12 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_link({:uac, invite, provisional})
 
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
-      assert data.invite_received_at != nil,
+      assert timing.invite_received_at != nil,
              "invite_received_at should be set for early UAC dialog"
 
-      assert %DateTime{} = data.invite_received_at
+      assert %DateTime{} = timing.invite_received_at
     end
   end
 
@@ -79,9 +96,9 @@ defmodule ParrotSip.DialogStatemCdrTest do
       {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
 
       # Verify starts in early state with no answered_at
-      {state, data} = :sys.get_state(pid)
-      assert state == :early
-      assert data.answered_at == nil, "answered_at should be nil in early state"
+      assert_state(pid, :early)
+      timing = get_timing_data(pid)
+      assert timing.answered_at == nil, "answered_at should be nil in early state"
 
       # Transition to confirmed with 200 OK
       final = build_response_message(200, "OK")
@@ -90,16 +107,16 @@ defmodule ParrotSip.DialogStatemCdrTest do
       Process.sleep(20)
 
       # Verify transition and answered_at capture
-      {new_state, new_data} = :sys.get_state(pid)
-      assert new_state == :confirmed
+      assert_state(pid, :confirmed)
+      new_timing = get_timing_data(pid)
 
-      assert new_data.answered_at != nil,
+      assert new_timing.answered_at != nil,
              "answered_at should be set after :early -> :confirmed transition"
 
-      assert %DateTime{} = new_data.answered_at,
+      assert %DateTime{} = new_timing.answered_at,
              "answered_at should be a DateTime struct"
 
-      assert new_data.answered_at.time_zone == "Etc/UTC",
+      assert new_timing.answered_at.time_zone == "Etc/UTC",
              "answered_at should have UTC timezone"
     end
 
@@ -110,9 +127,9 @@ defmodule ParrotSip.DialogStatemCdrTest do
       {:ok, pid} = DialogStatem.start_link({:uac, invite, provisional})
 
       # Verify starts in early state
-      {state, data} = :sys.get_state(pid)
-      assert state == :early
-      assert data.answered_at == nil
+      assert_state(pid, :early)
+      timing = get_timing_data(pid)
+      assert timing.answered_at == nil
 
       # Transition to confirmed with 200 OK
       final = build_response_message(200, "OK")
@@ -121,13 +138,13 @@ defmodule ParrotSip.DialogStatemCdrTest do
       Process.sleep(20)
 
       # Verify transition and answered_at capture
-      {new_state, new_data} = :sys.get_state(pid)
-      assert new_state == :confirmed
+      assert_state(pid, :confirmed)
+      new_timing = get_timing_data(pid)
 
-      assert new_data.answered_at != nil,
+      assert new_timing.answered_at != nil,
              "answered_at should be set after :early -> :confirmed transition"
 
-      assert %DateTime{} = new_data.answered_at
+      assert %DateTime{} = new_timing.answered_at
     end
 
     test "answered_at remains nil if call is never answered" do
@@ -137,9 +154,9 @@ defmodule ParrotSip.DialogStatemCdrTest do
       {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
 
       # Verify in early state with nil answered_at
-      {state, data} = :sys.get_state(pid)
-      assert state == :early
-      assert data.answered_at == nil
+      assert_state(pid, :early)
+      timing = get_timing_data(pid)
+      assert timing.answered_at == nil
 
       # Simulate call abandonment (stop without answering)
       :gen_statem.cast(pid, {:uac_trans_result, {:stop, :timeout}})
@@ -157,15 +174,15 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
-      {state, data} = :sys.get_state(pid)
-      assert state == :confirmed
+      assert_state(pid, :confirmed)
+      timing = get_timing_data(pid)
 
       # For dialogs created directly in confirmed, answered_at should equal invite_received_at
       # or be set at creation time
-      assert data.answered_at != nil,
+      assert timing.answered_at != nil,
              "answered_at should be set for dialogs starting in :confirmed state"
 
-      assert %DateTime{} = data.answered_at
+      assert %DateTime{} = timing.answered_at
     end
   end
 
@@ -177,14 +194,14 @@ defmodule ParrotSip.DialogStatemCdrTest do
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
       # Get timing data before termination
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
-      assert data.invite_received_at != nil
-      assert data.answered_at != nil
+      assert timing.invite_received_at != nil
+      assert timing.answered_at != nil
 
       # Capture timestamps
-      invite_time = data.invite_received_at
-      answered_time = data.answered_at
+      invite_time = timing.invite_received_at
+      answered_time = timing.answered_at
 
       # Verify answered_at is >= invite_received_at
       assert DateTime.compare(answered_time, invite_time) in [:eq, :gt],
@@ -204,8 +221,8 @@ defmodule ParrotSip.DialogStatemCdrTest do
       {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
 
       # Capture invite_received_at in early state
-      {_state, early_data} = :sys.get_state(pid)
-      invite_time = early_data.invite_received_at
+      early_timing = get_timing_data(pid)
+      invite_time = early_timing.invite_received_at
       assert invite_time != nil
 
       # Transition to confirmed
@@ -215,8 +232,8 @@ defmodule ParrotSip.DialogStatemCdrTest do
       Process.sleep(20)
 
       # Verify invite_received_at is preserved after transition
-      {_new_state, confirmed_data} = :sys.get_state(pid)
-      assert confirmed_data.invite_received_at == invite_time,
+      confirmed_timing = get_timing_data(pid)
+      assert confirmed_timing.invite_received_at == invite_time,
              "invite_received_at should be preserved across state transitions"
     end
   end
@@ -228,13 +245,13 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
       # Verify DateTime struct
-      assert %DateTime{} = data.invite_received_at
+      assert %DateTime{} = timing.invite_received_at
 
       # Verify microsecond precision is available
-      {_usec, precision} = data.invite_received_at.microsecond
+      {_usec, precision} = timing.invite_received_at.microsecond
       assert precision > 0, "DateTime should have microsecond precision"
     end
 
@@ -244,11 +261,11 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
 
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
-      assert data.invite_received_at.time_zone == "Etc/UTC"
-      assert data.invite_received_at.utc_offset == 0
-      assert data.invite_received_at.std_offset == 0
+      assert timing.invite_received_at.time_zone == "Etc/UTC"
+      assert timing.invite_received_at.utc_offset == 0
+      assert timing.invite_received_at.std_offset == 0
     end
   end
 
@@ -274,13 +291,13 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_recovered(stored_state)
 
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
       # Verify timing fields are recovered
-      assert data.invite_received_at == ~U[2026-01-10 10:00:00.000000Z],
+      assert timing.invite_received_at == ~U[2026-01-10 10:00:00.000000Z],
              "invite_received_at should be recovered from stored state"
 
-      assert data.answered_at == ~U[2026-01-10 10:00:05.123456Z],
+      assert timing.answered_at == ~U[2026-01-10 10:00:05.123456Z],
              "answered_at should be recovered from stored state"
     end
 
@@ -301,14 +318,14 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       {:ok, pid} = DialogStatem.start_recovered(stored_state)
 
-      {_state, data} = :sys.get_state(pid)
+      timing = get_timing_data(pid)
 
       # Recovered dialogs should still have timing fields set
       # (either from stored state or set to current time as fallback)
-      assert data.invite_received_at != nil,
+      assert timing.invite_received_at != nil,
              "recovered dialog should have invite_received_at"
 
-      assert data.answered_at != nil,
+      assert timing.answered_at != nil,
              "recovered confirmed dialog should have answered_at"
     end
   end

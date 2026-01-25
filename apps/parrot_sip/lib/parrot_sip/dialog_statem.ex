@@ -654,9 +654,165 @@ defmodule ParrotSip.DialogStatem do
     ParrotSip.Dialog.Supervisor.num_active()
   end
 
+  # ===========================================================================
+  # Public Introspection APIs
+  # ===========================================================================
+
+  @doc """
+  Returns the current state name of the dialog state machine.
+
+  ## Returns
+    - `:early` - Dialog in early state (provisional responses received)
+    - `:confirmed` - Dialog is confirmed (2xx received)
+    - `:terminated` - Dialog is terminated
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      DialogStatem.get_state(pid)
+      # => :confirmed
+  """
+  @spec get_state(pid()) :: :early | :confirmed | :terminated
+  def get_state(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_state)
+  end
+
+  @doc """
+  Returns the dialog ID (the ID used for Registry lookup).
+
+  ## Returns
+    - `{:ok, dialog_id}` where dialog_id is a string
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      DialogStatem.get_dialog_id(pid)
+      # => {:ok, "uas:call-id:local-tag:remote-tag"}
+  """
+  @spec get_dialog_id(pid()) :: {:ok, String.t() | nil}
+  def get_dialog_id(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_dialog_id)
+  end
+
+  @doc """
+  Returns the early branch for UAC dialogs with provisional responses.
+
+  ## Returns
+    - `{:ok, branch}` where branch is a string, or nil if not set
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, provisional_response})
+      DialogStatem.get_early_branch(pid)
+      # => {:ok, "z9hG4bK-abc123"}
+  """
+  @spec get_early_branch(pid()) :: {:ok, String.t() | nil}
+  def get_early_branch(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_early_branch)
+  end
+
+  @doc """
+  Returns the dialog type (:invite or :notify).
+
+  ## Returns
+    - `{:ok, :invite}` for INVITE dialogs
+    - `{:ok, :notify}` for SUBSCRIBE/NOTIFY dialogs
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, subscribe_msg})
+      DialogStatem.get_dialog_type(pid)
+      # => {:ok, :notify}
+  """
+  @spec get_dialog_type(pid()) :: {:ok, :invite | :notify | nil}
+  def get_dialog_type(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_dialog_type)
+  end
+
+  @doc """
+  Returns a summary of the dialog information.
+
+  ## Returns
+    - `{:ok, %{id: ..., call_id: ..., state: ..., local_tag: ..., remote_tag: ...}}`
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      DialogStatem.get_dialog_info(pid)
+      # => {:ok, %{id: "...", call_id: "...", state: :confirmed, local_tag: "...", remote_tag: "..."}}
+  """
+  @spec get_dialog_info(pid()) :: {:ok, map()}
+  def get_dialog_info(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_dialog_info)
+  end
+
+  @doc """
+  Returns whether this dialog was recovered from cluster failover.
+
+  ## Returns
+    - `{:ok, true}` if the dialog was recovered
+    - `{:ok, false}` if the dialog was created normally
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state)
+      DialogStatem.is_recovered?(pid)
+      # => {:ok, true}
+  """
+  @spec is_recovered?(pid()) :: {:ok, boolean()}
+  def is_recovered?(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :is_recovered?)
+  end
+
+  @doc """
+  Returns timing data for CDR generation.
+
+  ## Returns
+    - `{:ok, %{invite_received_at: DateTime.t() | nil, answered_at: DateTime.t() | nil}}`
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      DialogStatem.get_timing_data(pid)
+      # => {:ok, %{invite_received_at: ~U[2026-01-10 10:00:00Z], answered_at: ~U[2026-01-10 10:00:05Z]}}
+  """
+  @spec get_timing_data(pid()) :: {:ok, %{invite_received_at: DateTime.t() | nil, answered_at: DateTime.t() | nil}}
+  def get_timing_data(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_timing_data)
+  end
+
+  @doc """
+  Returns the full dialog data for recovery purposes.
+
+  This returns all dialog fields needed for cluster failover recovery,
+  including URIs, sequence numbers, routing, and transport info.
+
+  ## Returns
+    - `{:ok, dialog}` - The full dialog struct
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      {:ok, dialog} = DialogStatem.get_dialog_data(pid)
+      # dialog contains all fields: call_id, local_uri, remote_uri, etc.
+  """
+  @spec get_dialog_data(pid()) :: {:ok, ParrotSip.Dialog.t()}
+  def get_dialog_data(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_dialog_data)
+  end
+
   # State Functions
 
   # Early state
+  def early({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :early}]}
+  end
+
+  def early({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data] do
+    result = handle_introspection_call(request, data)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def early({:call, from}, {:uas_request, req_sip_msg}, data) do
     process_uas_request(:early, req_sip_msg, data, from)
   end
@@ -687,6 +843,15 @@ defmodule ParrotSip.DialogStatem do
   end
 
   # Confirmed state
+  def confirmed({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :confirmed}]}
+  end
+
+  def confirmed({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data] do
+    result = handle_introspection_call(request, data)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def confirmed({:call, from}, {:uas_request, req_sip_msg}, data) do
     process_uas_request(:confirmed, req_sip_msg, data, from)
   end
@@ -722,11 +887,59 @@ defmodule ParrotSip.DialogStatem do
   end
 
   # Terminated state
+  def terminated({:call, from}, :get_state, _data) do
+    {:keep_state_and_data, [{:reply, from, :terminated}]}
+  end
+
+  def terminated({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data] do
+    result = handle_introspection_call(request, data)
+    {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
   def terminated(_, _, _data) do
     {:stop, :normal}
   end
 
   # Private Functions
+
+  # Handle introspection calls for public API
+  defp handle_introspection_call(:get_dialog_id, %Data{id: id}) do
+    {:ok, id}
+  end
+
+  defp handle_introspection_call(:get_early_branch, %Data{early_branch: early_branch}) do
+    {:ok, early_branch}
+  end
+
+  defp handle_introspection_call(:get_dialog_type, %Data{dialog_type: dialog_type}) do
+    {:ok, dialog_type}
+  end
+
+  defp handle_introspection_call(:get_dialog_info, %Data{dialog: nil}) do
+    {:ok, %{id: nil, call_id: nil, state: nil, local_tag: nil, remote_tag: nil}}
+  end
+
+  defp handle_introspection_call(:get_dialog_info, %Data{dialog: dialog}) do
+    {:ok, %{
+      id: dialog.id,
+      call_id: dialog.call_id,
+      state: dialog.state,
+      local_tag: dialog.local_tag,
+      remote_tag: dialog.remote_tag
+    }}
+  end
+
+  defp handle_introspection_call(:is_recovered?, %Data{recovered: recovered}) do
+    {:ok, recovered}
+  end
+
+  defp handle_introspection_call(:get_timing_data, %Data{invite_received_at: invite_received_at, answered_at: answered_at}) do
+    {:ok, %{invite_received_at: invite_received_at, answered_at: answered_at}}
+  end
+
+  defp handle_introspection_call(:get_dialog_data, %Data{dialog: dialog}) do
+    {:ok, dialog}
+  end
 
   defp process_uas_request(state, req_sip_msg, data, from) do
     # Process the request in the dialog
