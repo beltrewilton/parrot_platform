@@ -112,7 +112,12 @@ defmodule ParrotMedia.MediaSession do
       # Media direction for SDP (sendrecv, sendonly, recvonly, inactive)
       direction: :sendrecv,
       # MOS Calculator PID (if MOS monitoring is enabled)
-      mos_calculator_pid: nil
+      mos_calculator_pid: nil,
+      # RTP forwarding configuration for B2BUA proxy mode
+      # %{target_pid: pid(), direction: :both | :send_only | :recv_only} | nil
+      rtp_forward_config: nil,
+      # Whether RTP forwarding is paused
+      rtp_forward_paused: false
     ]
 
     @type t :: %__MODULE__{
@@ -146,7 +151,9 @@ defmodule ParrotMedia.MediaSession do
             dtmf_collection: map() | nil,
             dynamic_payload_types: %{String.t() => non_neg_integer()} | nil,
             direction: :sendrecv | :sendonly | :recvonly | :inactive,
-            mos_calculator_pid: pid() | nil
+            mos_calculator_pid: pid() | nil,
+            rtp_forward_config: %{target_pid: pid(), direction: :both | :send_only | :recv_only} | nil,
+            rtp_forward_paused: boolean()
           }
   end
 
@@ -325,6 +332,88 @@ defmodule ParrotMedia.MediaSession do
     :gen_statem.call(get_pid(session), {:set_notify_pid, pid})
   end
 
+  @doc """
+  Sets RTP forwarding destination for proxy-mode B2BUA bridging.
+
+  This configures the MediaSession to forward received RTP packets to another
+  MediaSession, enabling proxy-mode B2BUA operation where media passes through
+  the B2BUA.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `config` - Forwarding configuration map or nil to clear:
+      * `:target_pid` - PID of the target MediaSession to forward to (required)
+      * `:direction` - Direction of forwarding:
+        * `:both` - Forward in both directions (default)
+        * `:send_only` - Only forward outbound RTP
+        * `:recv_only` - Only forward inbound RTP
+
+  ## Returns
+
+    * `:ok` on success
+    * `{:error, :invalid_target_pid}` if target_pid is not a valid PID
+    * `{:error, :invalid_direction}` if direction is not valid
+
+  ## Examples
+
+      # Configure bidirectional forwarding
+      :ok = MediaSession.set_rtp_forward(session_a, %{
+        target_pid: session_b_pid,
+        direction: :both
+      })
+
+      # Clear forwarding configuration
+      :ok = MediaSession.set_rtp_forward(session_a, nil)
+  """
+  @spec set_rtp_forward(String.t() | pid(), map() | nil, timeout()) :: :ok | {:error, term()}
+  def set_rtp_forward(session, config, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:set_rtp_forward, config}, timeout)
+  end
+
+  @doc """
+  Pauses RTP forwarding.
+
+  Temporarily stops forwarding RTP packets to the configured target.
+  The forwarding configuration is preserved and can be resumed with `resume_forward/1`.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `:ok` on success
+    * `{:error, :no_forward_configured}` if no forwarding is configured
+  """
+  @spec pause_forward(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def pause_forward(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :pause_forward, timeout)
+  end
+
+  @doc """
+  Resumes RTP forwarding after pause.
+
+  Resumes forwarding RTP packets to the configured target after it was paused
+  with `pause_forward/1`.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `:ok` on success
+    * `{:error, :no_forward_configured}` if no forwarding is configured
+    * `{:error, :not_paused}` if forwarding is not currently paused
+  """
+  @spec resume_forward(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def resume_forward(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :resume_forward, timeout)
+  end
+
   # Callbacks
 
   @impl true
@@ -472,6 +561,19 @@ defmodule ParrotMedia.MediaSession do
     {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
   end
 
+  # RTP forwarding calls - available in all states
+  def idle({:call, from}, {:set_rtp_forward, config}, data) do
+    handle_set_rtp_forward(from, config, data)
+  end
+
+  def idle({:call, from}, :pause_forward, data) do
+    handle_pause_forward(from, data)
+  end
+
+  def idle({:call, from}, :resume_forward, data) do
+    handle_resume_forward(from, data)
+  end
+
   # No catch-all for :call, :cast, or other event types - let them crash
 
   defp process_offer_internal(from, sdp_offer, data) do
@@ -535,6 +637,19 @@ defmodule ParrotMedia.MediaSession do
   # set_notify_pid call
   def negotiating({:call, from}, {:set_notify_pid, pid}, data) do
     {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
+  # RTP forwarding calls - available in all states
+  def negotiating({:call, from}, {:set_rtp_forward, config}, data) do
+    handle_set_rtp_forward(from, config, data)
+  end
+
+  def negotiating({:call, from}, :pause_forward, data) do
+    handle_pause_forward(from, data)
+  end
+
+  def negotiating({:call, from}, :resume_forward, data) do
+    handle_resume_forward(from, data)
   end
 
   # No catch-all for :call, :cast, or other event types - let them crash
@@ -620,6 +735,19 @@ defmodule ParrotMedia.MediaSession do
     {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
   end
 
+  # RTP forwarding calls - available in all states
+  def ready({:call, from}, {:set_rtp_forward, config}, data) do
+    handle_set_rtp_forward(from, config, data)
+  end
+
+  def ready({:call, from}, :pause_forward, data) do
+    handle_pause_forward(from, data)
+  end
+
+  def ready({:call, from}, :resume_forward, data) do
+    handle_resume_forward(from, data)
+  end
+
   #################
   # State: active #
   #################
@@ -666,6 +794,19 @@ defmodule ParrotMedia.MediaSession do
   # set_notify_pid call
   def active({:call, from}, {:set_notify_pid, pid}, data) do
     {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
+  # RTP forwarding calls - available in all states
+  def active({:call, from}, {:set_rtp_forward, config}, data) do
+    handle_set_rtp_forward(from, config, data)
+  end
+
+  def active({:call, from}, :pause_forward, data) do
+    handle_pause_forward(from, data)
+  end
+
+  def active({:call, from}, :resume_forward, data) do
+    handle_resume_forward(from, data)
   end
 
   #################
@@ -723,6 +864,19 @@ defmodule ParrotMedia.MediaSession do
   # set_notify_pid call
   def paused({:call, from}, {:set_notify_pid, pid}, data) do
     {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
+  # RTP forwarding calls - available in all states
+  def paused({:call, from}, {:set_rtp_forward, config}, data) do
+    handle_set_rtp_forward(from, config, data)
+  end
+
+  def paused({:call, from}, :pause_forward, data) do
+    handle_pause_forward(from, data)
+  end
+
+  def paused({:call, from}, :resume_forward, data) do
+    handle_resume_forward(from, data)
   end
 
   #####################
@@ -945,10 +1099,78 @@ defmodule ParrotMedia.MediaSession do
       role: data.role,
       has_local_sdp: data.local_sdp != nil,
       has_remote_sdp: data.remote_sdp != nil,
-      pipeline_active: data.pipeline_pid != nil
+      pipeline_active: data.pipeline_pid != nil,
+      rtp_forward_config: data.rtp_forward_config,
+      rtp_forward_paused: data.rtp_forward_paused
     }
 
     {:keep_state_and_data, [{:reply, from, state_info}]}
+  end
+
+  # RTP Forwarding helpers
+
+  # Handle set_rtp_forward call - validates and stores the forwarding configuration
+  defp handle_set_rtp_forward(from, nil, data) do
+    # Clearing the forwarding configuration
+    Logger.info("MediaSession #{data.id}: Clearing RTP forwarding configuration")
+    updated_data = %{data | rtp_forward_config: nil, rtp_forward_paused: false}
+    {:keep_state, updated_data, [{:reply, from, :ok}]}
+  end
+
+  defp handle_set_rtp_forward(from, %{target_pid: target_pid} = _config, data)
+       when not is_pid(target_pid) do
+    Logger.warning("MediaSession #{data.id}: Invalid target_pid for RTP forwarding: #{inspect(target_pid)}")
+    {:keep_state_and_data, [{:reply, from, {:error, :invalid_target_pid}}]}
+  end
+
+  defp handle_set_rtp_forward(from, %{direction: direction} = _config, data)
+       when direction not in [:both, :send_only, :recv_only] do
+    Logger.warning("MediaSession #{data.id}: Invalid direction for RTP forwarding: #{inspect(direction)}")
+    {:keep_state_and_data, [{:reply, from, {:error, :invalid_direction}}]}
+  end
+
+  defp handle_set_rtp_forward(from, %{target_pid: target_pid, direction: direction} = config, data) do
+    Logger.info("MediaSession #{data.id}: Setting RTP forwarding to #{inspect(target_pid)} with direction #{direction}")
+
+    # Store the forwarding configuration
+    updated_data = %{data | rtp_forward_config: config, rtp_forward_paused: false}
+
+    # TODO: In future, notify the pipeline to set up actual RTP forwarding
+    # For now, we just store the configuration for the B2BUA to use
+
+    {:keep_state, updated_data, [{:reply, from, :ok}]}
+  end
+
+  # Handle pause_forward call
+  defp handle_pause_forward(from, %{rtp_forward_config: nil} = _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :no_forward_configured}}]}
+  end
+
+  defp handle_pause_forward(from, data) do
+    Logger.info("MediaSession #{data.id}: Pausing RTP forwarding")
+    updated_data = %{data | rtp_forward_paused: true}
+
+    # TODO: In future, notify the pipeline to pause RTP forwarding
+
+    {:keep_state, updated_data, [{:reply, from, :ok}]}
+  end
+
+  # Handle resume_forward call
+  defp handle_resume_forward(from, %{rtp_forward_config: nil} = _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :no_forward_configured}}]}
+  end
+
+  defp handle_resume_forward(from, %{rtp_forward_paused: false} = _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_paused}}]}
+  end
+
+  defp handle_resume_forward(from, data) do
+    Logger.info("MediaSession #{data.id}: Resuming RTP forwarding")
+    updated_data = %{data | rtp_forward_paused: false}
+
+    # TODO: In future, notify the pipeline to resume RTP forwarding
+
+    {:keep_state, updated_data, [{:reply, from, :ok}]}
   end
 
   # Private helpers
