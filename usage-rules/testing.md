@@ -188,13 +188,13 @@ SIP_TRACE=true mix test
 
 ## Testing State Machines
 
-Test state transitions:
+Test state transitions using **public APIs** (never use `:sys.get_state` - it couples tests to implementation):
 
 ```elixir
 test "transaction state transitions" do
   {:ok, pid} = start_test_transaction()
-  
-  # Verify initial state
+
+  # Verify initial state via public API (e.g., TransactionStatem.get_state/1)
   assert :trying = get_state(pid)
   
   # Send provisional response

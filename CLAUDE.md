@@ -302,6 +302,12 @@ When working with SIP handlers and media handlers:
    - Transport layer never inspects payloads
    - Media layer independent of SIP
 
+6. **Don't use `:sys.get_state/1` in tests**
+   - Tests should verify behavior via public APIs, not implementation details
+   - Add public introspection APIs to gen_statem modules (e.g., `get_state/1`, `get_timer_interval/2`)
+   - Pattern: `def get_state(pid), do: :gen_statem.call(pid, :get_state)` with handler in state functions
+   - This makes tests resilient to internal refactoring
+
 ---
 
 ## Architecture Overview
