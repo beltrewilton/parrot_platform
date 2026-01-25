@@ -197,13 +197,12 @@ defmodule ParrotSip.Transaction.Server do
   @spec sipmsg(Transaction.t()) :: Message.t()
   def sipmsg(%Transaction{request: req_sip_msg}), do: req_sip_msg
 
-  # Get the current state of a dialog
+  # Get the current state of a dialog using public API
   @spec get_dialog_state(pid()) :: :early | :confirmed | :terminated | :unknown
   defp get_dialog_state(dialog_pid) do
     try do
-      :sys.get_state(dialog_pid)
-      |> case do
-        {state, _data} when state in [:early, :confirmed, :terminated] -> state
+      case ParrotSip.DialogStatem.get_state(dialog_pid) do
+        state when state in [:early, :confirmed, :terminated] -> state
         _ -> :unknown
       end
     catch

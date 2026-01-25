@@ -75,10 +75,9 @@ defmodule ParrotSip do
     # Look up the transaction process via Registry
     case Registry.lookup(ParrotSip.Registry, {:transaction, transaction_id}) do
       [{pid, _}] when is_pid(pid) ->
-        # Get the current state from gen_statem
+        # Get the current state using public API
         try do
-          # gen_statem stores state in format {state_name, data}
-          {state_name, _data} = :sys.get_state(pid)
+          state_name = ParrotSip.TransactionStatem.get_state(pid)
           {:ok, state_name}
         catch
           :exit, _ -> {:error, :not_found}
