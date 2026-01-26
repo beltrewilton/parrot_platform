@@ -46,7 +46,18 @@ defmodule ParrotSip.CDR.DispatcherTest do
       media_info: %MediaInfo{
         codec: "PCMU",
         codec_payload_type: 0,
-        mos_score: 4.2,
+        mos_summary: %{
+          min_mos: 4.0,
+          max_mos: 4.4,
+          avg_mos: 4.2,
+          total_packets: 5000,
+          total_lost: 20,
+          overall_loss_percent: 0.4,
+          intervals_calculated: 55,
+          duration_ms: 55_000,
+          status: :complete,
+          quality_events: []
+        },
         packets_sent: 5000,
         packets_received: 4980,
         jitter_ms: 15.5
@@ -468,10 +479,23 @@ defmodule ParrotSip.CDR.DispatcherTest do
     end
 
     test "passes CDR with media_info intact" do
+      mos_summary = %{
+        min_mos: 4.3,
+        max_mos: 4.5,
+        avg_mos: 4.5,
+        total_packets: 10000,
+        total_lost: 50,
+        overall_loss_percent: 0.5,
+        intervals_calculated: 100,
+        duration_ms: 100_000,
+        status: :complete,
+        quality_events: []
+      }
+
       media_info = %MediaInfo{
         codec: "opus",
         codec_payload_type: 111,
-        mos_score: 4.5,
+        mos_summary: mos_summary,
         packets_sent: 10000,
         packets_received: 9950,
         jitter_ms: 8.3
@@ -485,7 +509,7 @@ defmodule ParrotSip.CDR.DispatcherTest do
       assert_receive {:cdr_received, received_cdr, _state}, 1000
       assert received_cdr.media_info.codec == "opus"
       assert received_cdr.media_info.codec_payload_type == 111
-      assert received_cdr.media_info.mos_score == 4.5
+      assert received_cdr.media_info.mos_summary.avg_mos == 4.5
       assert received_cdr.media_info.packets_sent == 10000
       assert received_cdr.media_info.packets_received == 9950
       assert received_cdr.media_info.jitter_ms == 8.3

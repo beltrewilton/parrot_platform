@@ -578,13 +578,26 @@ defmodule ParrotSip.CDR.GeneratorTest do
       timing = build_timing_data()
       termination_cause = build_termination_cause()
 
+      mos_summary = %{
+        min_mos: 4.0,
+        max_mos: 4.4,
+        avg_mos: 4.2,
+        total_packets: 1500,
+        total_lost: 20,
+        overall_loss_percent: 1.33,
+        intervals_calculated: 30,
+        duration_ms: 60_000,
+        status: :complete,
+        quality_events: []
+      }
+
       media_info = %MediaInfo{
         codec: "PCMU",
         codec_payload_type: 0,
         packets_sent: 1500,
         packets_received: 1480,
         jitter_ms: 2.5,
-        mos_score: 4.2
+        mos_summary: mos_summary
       }
 
       {:ok, cdr} = Generator.generate(dialog, timing, termination_cause, media_info: media_info)

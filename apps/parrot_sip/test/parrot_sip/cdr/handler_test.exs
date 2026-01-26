@@ -182,7 +182,18 @@ defmodule ParrotSip.CDR.HandlerTest do
       media_info: %MediaInfo{
         codec: "PCMU",
         codec_payload_type: 0,
-        mos_score: 4.2,
+        mos_summary: %{
+          min_mos: 4.0,
+          max_mos: 4.4,
+          avg_mos: 4.2,
+          total_packets: 5000,
+          total_lost: 20,
+          overall_loss_percent: 0.4,
+          intervals_calculated: 55,
+          duration_ms: 55_000,
+          status: :complete,
+          quality_events: []
+        },
         packets_sent: 5000,
         packets_received: 4980,
         jitter_ms: 15.5

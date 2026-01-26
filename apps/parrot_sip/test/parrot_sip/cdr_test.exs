@@ -306,10 +306,23 @@ defmodule ParrotSip.CDRTest do
     test "answered call with embedded media info" do
       now = DateTime.utc_now()
 
+      mos_summary = %{
+        min_mos: 4.0,
+        max_mos: 4.4,
+        avg_mos: 4.2,
+        total_packets: 12000,
+        total_lost: 50,
+        overall_loss_percent: 0.42,
+        intervals_calculated: 60,
+        duration_ms: 60_000,
+        status: :complete,
+        quality_events: []
+      }
+
       media_info = %MediaInfo{
         codec: "PCMU",
         codec_payload_type: 0,
-        mos_score: 4.2,
+        mos_summary: mos_summary,
         packets_sent: 12000,
         packets_received: 11950,
         jitter_ms: 15.5
@@ -344,7 +357,7 @@ defmodule ParrotSip.CDRTest do
       assert cdr.media_info != nil
       assert cdr.media_info.codec == "PCMU"
       assert cdr.media_info.codec_payload_type == 0
-      assert cdr.media_info.mos_score == 4.2
+      assert cdr.media_info.mos_summary.avg_mos == 4.2
       assert cdr.media_info.packets_sent == 12000
       assert cdr.media_info.packets_received == 11950
       assert cdr.media_info.jitter_ms == 15.5
