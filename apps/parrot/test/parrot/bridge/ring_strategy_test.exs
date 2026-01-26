@@ -103,6 +103,12 @@ defmodule Parrot.Bridge.RingStrategyTest do
         RingStrategy.delayed(delay: 0)
       end
     end
+
+    test "validates negative delay" do
+      assert_raise ArgumentError, ~r/delay must be positive/, fn ->
+        RingStrategy.delayed(delay: -1000)
+      end
+    end
   end
 
   # ==========================================================================
@@ -221,6 +227,15 @@ defmodule Parrot.Bridge.RingStrategyTest do
       assert {:ring_leg, :leg_3, 4_000} in timers
       assert {:ring_leg, :leg_4, 6_000} in timers
     end
+
+    test "returns empty results when no legs provided" do
+      strategy = RingStrategy.delayed(delay: 5_000)
+
+      assert {:ok, result} = RingStrategy.execute(strategy, [])
+      assert result.ring_now == []
+      assert result.ring_later == []
+      assert result.timers == []
+    end
   end
 
   # ==========================================================================
@@ -322,6 +337,23 @@ defmodule Parrot.Bridge.RingStrategyTest do
 
       assert {:ring_next, :leg_2, updated_state} = RingStrategy.handle_event(state, event)
       assert updated_state.failed == [{:leg_1, :ring_timeout}]
+    end
+
+    test "ring_timeout on last leg returns all_failed", %{state: state} do
+      # Set up state with last leg ringing
+      state = %{state | ringing: [:leg_3], pending: [], failed: [{:leg_1, :busy}, {:leg_2, :timeout}]}
+      event = {:ring_timeout, :leg_3}
+
+      assert {:all_failed, reasons} = RingStrategy.handle_event(state, event)
+      assert {:leg_1, :busy} in reasons
+      assert {:leg_2, :timeout} in reasons
+      assert {:leg_3, :ring_timeout} in reasons
+    end
+
+    test "ignores events for unknown legs", %{state: state} do
+      event = {:answered, :unknown_leg, %{}}
+
+      assert {:continue, ^state} = RingStrategy.handle_event(state, event)
     end
   end
 
