@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS Bridge Reject - B-Leg Scenario
+
+  Acts as the B-leg destination that rejects the bridged call.
+  This scenario receives the INVITE from Parrot B2BUA and rejects with 486 Busy Here.
+
+  Flow:
+  1. Receive INVITE from B2BUA
+  2. Send 100 Trying
+  3. Send 180 Ringing (brief)
+  4. Send 486 Busy Here
+  5. Receive ACK for error
+
+  Use with: uac_bridge_reject.xml sending to Parrot B2BUA
+
+  RFC References:
+  - RFC 3261 Section 16: B2BUA patterns
+  - RFC 3261 Section 21.4.4: 486 Busy Here
+-->
+<scenario name="UAS Bridge Reject - B-Leg">
+  <!-- Receive INVITE from B2BUA -->
+  <recv request="INVITE" crlf="true">
+  </recv>
+
+  <!-- Send 100 Trying -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 100 Trying
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Send 180 Ringing briefly -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:bob@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Brief pause before rejecting -->
+  <pause milliseconds="300"/>
+
+  <!-- Send 486 Busy Here to reject the call -->
+  <send retrans="500">
+    <![CDATA[
+
+      SIP/2.0 486 Busy Here
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK for error response -->
+  <recv request="ACK" optional="false">
+  </recv>
+
+</scenario>

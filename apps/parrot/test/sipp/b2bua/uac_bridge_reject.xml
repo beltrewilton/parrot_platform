@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC Bridge Reject - A-Leg Scenario
+
+  Tests B2BUA bridge when B-leg rejects the call (486 Busy Here).
+  The B2BUA should relay the rejection back to the A-leg.
+
+  Flow:
+  1. UAC sends INVITE to B2BUA
+  2. B2BUA sends 100 Trying
+  3. B2BUA sends 180 Ringing (when B-leg rings)
+  4. B-leg rejects with 486 Busy Here
+  5. B2BUA relays rejection to A-leg (may use 486 or another error code)
+  6. UAC sends ACK for the error response
+
+  Use with: uas_bridge_reject_bleg.xml running on a different port
+
+  RFC References:
+  - RFC 3261 Section 16: B2BUA patterns
+  - RFC 5765: B2BUA requirements
+-->
+<scenario name="UAC Bridge Reject - A-Leg">
+  <!-- Initial INVITE to B2BUA -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: B2BUA Bridge Reject Test - A-Leg
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123456 IN IP4 [local_ip]
+      s=B2BUA Bridge Reject Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Optional 180 Ringing (B2BUA may forward from B-leg before rejection) -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect error response (4xx/5xx/6xx) - B-leg rejected -->
+  <!-- B2BUA may relay 486 directly or translate to another code -->
+  <recv response="486" optional="true">
+  </recv>
+
+  <!-- Alternative: B2BUA might relay as 480 Temporarily Unavailable -->
+  <recv response="480" optional="true">
+  </recv>
+
+  <!-- Alternative: B2BUA might relay as 503 Service Unavailable -->
+  <recv response="503" optional="true">
+  </recv>
+
+  <!-- Send ACK for error response (required per RFC 3261) -->
+  <send>
+    <![CDATA[
+
+      ACK sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>
