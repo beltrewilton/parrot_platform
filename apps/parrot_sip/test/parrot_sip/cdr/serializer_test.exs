@@ -2,7 +2,7 @@ defmodule ParrotSip.CDR.SerializerTest do
   use ExUnit.Case, async: true
 
   alias ParrotSip.CDR
-  alias ParrotSip.CDR.{Serializer, TerminationCause}
+  alias ParrotSip.CDR.{Serializer, TerminationCause, MediaInfo}
 
   # Shared test fixtures
   @invite_time ~U[2026-01-10 10:00:00Z]
@@ -123,9 +123,9 @@ defmodule ParrotSip.CDR.SerializerTest do
       assert headers1 == headers2
     end
 
-    test "returns exactly 16 columns" do
+    test "returns exactly 21 columns (16 original + 5 MOS)" do
       headers = Serializer.csv_headers()
-      assert length(headers) == 16
+      assert length(headers) == 21
     end
   end
 
@@ -386,7 +386,13 @@ defmodule ParrotSip.CDR.SerializerTest do
         talk_duration_ms,
         termination_party,
         termination_sip_code,
-        termination_reason
+        termination_reason,
+        # MOS columns (empty for this fixture without media_info)
+        _mos_avg,
+        _mos_min,
+        _mos_max,
+        _mos_status,
+        _packet_loss_percent
       ] = row
 
       assert id == "550e8400-e29b-41d4-a716-446655440000"
@@ -428,7 +434,13 @@ defmodule ParrotSip.CDR.SerializerTest do
         talk_duration_ms,
         termination_party,
         termination_sip_code,
-        termination_reason
+        termination_reason,
+        # MOS columns should also be empty
+        mos_avg,
+        mos_min,
+        mos_max,
+        mos_status,
+        packet_loss_percent
       ] = row
 
       assert id == ""
@@ -445,6 +457,12 @@ defmodule ParrotSip.CDR.SerializerTest do
       assert termination_party == ""
       assert termination_sip_code == ""
       assert termination_reason == ""
+      # MOS columns empty when no media_info
+      assert mos_avg == ""
+      assert mos_min == ""
+      assert mos_max == ""
+      assert mos_status == ""
+      assert packet_loss_percent == ""
     end
 
     test "handles unanswered call with nil answered_at" do
@@ -514,7 +532,7 @@ defmodule ParrotSip.CDR.SerializerTest do
       # Simulate what a CSV library would do
       zipped = Enum.zip(headers, row)
 
-      assert length(zipped) == 16
+      assert length(zipped) == 21
       assert {"id", "550e8400-e29b-41d4-a716-446655440000"} in zipped
       assert {"disposition", "answered"} in zipped
     end
@@ -565,6 +583,371 @@ defmodule ParrotSip.CDR.SerializerTest do
         transport_value = Enum.at(row, 7)
         assert transport_value == to_string(transport)
       end
+    end
+  end
+
+  # ===========================================================================
+  # T05: MOS Summary Serialization Tests
+  # ===========================================================================
+  describe "mos_summary JSON serialization" do
+    defp build_cdr_with_mos_summary do
+      %CDR{
+        id: "mos-test-cdr-001",
+        correlation_id: "mos-corr-001",
+        call_id: "mos-call@example.com",
+        caller_uri: "sip:alice@example.com",
+        callee_uri: "sip:bob@example.com",
+        disposition: :answered,
+        direction: :inbound,
+        transport: :udp,
+        invite_received_at: ~U[2026-01-10 10:00:00Z],
+        answered_at: ~U[2026-01-10 10:00:05Z],
+        ended_at: ~U[2026-01-10 10:02:05Z],
+        ring_duration_ms: 5000,
+        talk_duration_ms: 120_000,
+        termination_cause: %TerminationCause{
+          party: :caller,
+          sip_code: 200,
+          reason: "BYE",
+          method: :bye
+        },
+        media_info: %MediaInfo{
+          codec: "PCMU",
+          codec_payload_type: 0,
+          packets_sent: 6000,
+          packets_received: 5950,
+          jitter_ms: 12.5,
+          mos_summary: %{
+            min_mos: 3.2,
+            max_mos: 4.4,
+            avg_mos: 3.9,
+            total_packets: 5950,
+            total_lost: 50,
+            overall_loss_percent: 0.84,
+            intervals_calculated: 24,
+            duration_ms: 120_000,
+            status: :complete,
+            quality_events: [
+              %{
+                timestamp: ~U[2026-01-10 10:01:00Z],
+                mos_value: 3.1,
+                threshold_name: :good,
+                direction: :falling
+              },
+              %{
+                timestamp: ~U[2026-01-10 10:01:30Z],
+                mos_value: 3.6,
+                threshold_name: :good,
+                direction: :rising
+              }
+            ]
+          }
+        }
+      }
+    end
+
+    defp build_cdr_with_nil_mos_summary do
+      %CDR{
+        id: "no-mos-cdr-001",
+        correlation_id: "no-mos-corr-001",
+        call_id: "no-mos-call@example.com",
+        caller_uri: "sip:alice@example.com",
+        callee_uri: "sip:bob@example.com",
+        disposition: :answered,
+        direction: :inbound,
+        transport: :udp,
+        invite_received_at: ~U[2026-01-10 10:00:00Z],
+        answered_at: ~U[2026-01-10 10:00:05Z],
+        ended_at: ~U[2026-01-10 10:02:05Z],
+        ring_duration_ms: 5000,
+        talk_duration_ms: 120_000,
+        termination_cause: nil,
+        media_info: %MediaInfo{
+          codec: "PCMU",
+          codec_payload_type: 0,
+          packets_sent: 6000,
+          packets_received: 5950,
+          jitter_ms: 12.5,
+          mos_summary: nil
+        }
+      }
+    end
+
+    defp build_cdr_with_insufficient_data_mos do
+      %CDR{
+        id: "short-call-cdr-001",
+        disposition: :answered,
+        direction: :inbound,
+        ring_duration_ms: 1000,
+        talk_duration_ms: 2000,
+        media_info: %MediaInfo{
+          codec: "PCMU",
+          mos_summary: %{
+            min_mos: 0.0,
+            max_mos: 0.0,
+            avg_mos: 0.0,
+            total_packets: 10,
+            total_lost: 0,
+            overall_loss_percent: 0.0,
+            intervals_calculated: 0,
+            duration_ms: 2000,
+            status: :insufficient_data,
+            quality_events: []
+          }
+        }
+      }
+    end
+
+    test "to_map includes mos_summary with all fields" do
+      cdr = build_cdr_with_mos_summary()
+      map = Serializer.to_map(cdr)
+
+      assert is_map(map.mos_summary)
+      assert map.mos_summary["min_mos"] == 3.2
+      assert map.mos_summary["max_mos"] == 4.4
+      assert map.mos_summary["avg_mos"] == 3.9
+      assert map.mos_summary["total_packets"] == 5950
+      assert map.mos_summary["total_lost"] == 50
+      assert map.mos_summary["overall_loss_percent"] == 0.84
+      assert map.mos_summary["intervals_calculated"] == 24
+      assert map.mos_summary["duration_ms"] == 120_000
+      assert map.mos_summary["status"] == "complete"
+    end
+
+    test "to_map includes quality_events with serialized timestamps" do
+      cdr = build_cdr_with_mos_summary()
+      map = Serializer.to_map(cdr)
+
+      events = map.mos_summary["quality_events"]
+      assert length(events) == 2
+
+      [first_event, second_event] = events
+      assert first_event["timestamp"] == "2026-01-10T10:01:00Z"
+      assert first_event["mos_value"] == 3.1
+      assert first_event["threshold_name"] == "good"
+      assert first_event["direction"] == "falling"
+
+      assert second_event["timestamp"] == "2026-01-10T10:01:30Z"
+      assert second_event["mos_value"] == 3.6
+      assert second_event["threshold_name"] == "good"
+      assert second_event["direction"] == "rising"
+    end
+
+    test "to_map handles nil mos_summary" do
+      cdr = build_cdr_with_nil_mos_summary()
+      map = Serializer.to_map(cdr)
+
+      assert map.mos_summary == nil
+    end
+
+    test "to_map handles nil media_info" do
+      cdr = build_minimal_cdr()
+      map = Serializer.to_map(cdr)
+
+      assert map.mos_summary == nil
+    end
+
+    test "to_map handles insufficient_data status" do
+      cdr = build_cdr_with_insufficient_data_mos()
+      map = Serializer.to_map(cdr)
+
+      assert map.mos_summary["status"] == "insufficient_data"
+      assert map.mos_summary["quality_events"] == []
+    end
+
+    test "to_json produces valid JSON with mos_summary" do
+      cdr = build_cdr_with_mos_summary()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      assert is_map(decoded["mos_summary"])
+      assert decoded["mos_summary"]["avg_mos"] == 3.9
+      assert decoded["mos_summary"]["status"] == "complete"
+    end
+
+    test "to_json handles nil mos_summary" do
+      cdr = build_cdr_with_nil_mos_summary()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      assert decoded["mos_summary"] == nil
+    end
+
+    test "to_json includes quality_events in nested structure" do
+      cdr = build_cdr_with_mos_summary()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      events = decoded["mos_summary"]["quality_events"]
+      assert is_list(events)
+      assert length(events) == 2
+    end
+  end
+
+  describe "mos_summary CSV serialization" do
+    defp build_cdr_with_mos_for_csv do
+      %CDR{
+        id: "csv-mos-cdr-001",
+        correlation_id: "csv-mos-corr-001",
+        call_id: "csv-mos-call@example.com",
+        caller_uri: "sip:alice@example.com",
+        callee_uri: "sip:bob@example.com",
+        disposition: :answered,
+        direction: :inbound,
+        transport: :udp,
+        invite_received_at: ~U[2026-01-10 10:00:00Z],
+        answered_at: ~U[2026-01-10 10:00:05Z],
+        ended_at: ~U[2026-01-10 10:02:05Z],
+        ring_duration_ms: 5000,
+        talk_duration_ms: 120_000,
+        termination_cause: %TerminationCause{
+          party: :caller,
+          sip_code: 200,
+          reason: "BYE",
+          method: :bye
+        },
+        media_info: %MediaInfo{
+          codec: "PCMU",
+          mos_summary: %{
+            min_mos: 3.2,
+            max_mos: 4.4,
+            avg_mos: 3.9,
+            total_packets: 5950,
+            total_lost: 50,
+            overall_loss_percent: 0.84,
+            status: :complete,
+            quality_events: []
+          }
+        }
+      }
+    end
+
+    test "csv_headers includes MOS columns" do
+      headers = Serializer.csv_headers()
+
+      assert "mos_avg" in headers
+      assert "mos_min" in headers
+      assert "mos_max" in headers
+      assert "mos_status" in headers
+      assert "packet_loss_percent" in headers
+    end
+
+    test "csv_headers returns 21 columns (16 original + 5 MOS)" do
+      headers = Serializer.csv_headers()
+      assert length(headers) == 21
+    end
+
+    test "csv_headers has MOS columns at the end" do
+      headers = Serializer.csv_headers()
+
+      # MOS columns should be at positions 16-20 (0-indexed)
+      assert Enum.at(headers, 16) == "mos_avg"
+      assert Enum.at(headers, 17) == "mos_min"
+      assert Enum.at(headers, 18) == "mos_max"
+      assert Enum.at(headers, 19) == "mos_status"
+      assert Enum.at(headers, 20) == "packet_loss_percent"
+    end
+
+    test "to_csv_row includes MOS values" do
+      cdr = build_cdr_with_mos_for_csv()
+      row = Serializer.to_csv_row(cdr)
+
+      # MOS values at positions 16-20
+      assert Enum.at(row, 16) == "3.9"
+      assert Enum.at(row, 17) == "3.2"
+      assert Enum.at(row, 18) == "4.4"
+      assert Enum.at(row, 19) == "complete"
+      assert Enum.at(row, 20) == "0.84"
+    end
+
+    test "to_csv_row handles nil mos_summary" do
+      cdr = %CDR{
+        id: "no-mos-csv",
+        disposition: :answered,
+        direction: :inbound,
+        ring_duration_ms: 0,
+        talk_duration_ms: 0,
+        media_info: %MediaInfo{
+          codec: "PCMU",
+          mos_summary: nil
+        }
+      }
+
+      row = Serializer.to_csv_row(cdr)
+
+      # All MOS columns should be empty strings
+      assert Enum.at(row, 16) == ""
+      assert Enum.at(row, 17) == ""
+      assert Enum.at(row, 18) == ""
+      assert Enum.at(row, 19) == ""
+      assert Enum.at(row, 20) == ""
+    end
+
+    test "to_csv_row handles nil media_info" do
+      cdr = %CDR{
+        id: "no-media-csv",
+        disposition: :answered,
+        direction: :inbound,
+        ring_duration_ms: 0,
+        talk_duration_ms: 0,
+        media_info: nil
+      }
+
+      row = Serializer.to_csv_row(cdr)
+
+      # All MOS columns should be empty strings
+      assert Enum.at(row, 16) == ""
+      assert Enum.at(row, 17) == ""
+      assert Enum.at(row, 18) == ""
+      assert Enum.at(row, 19) == ""
+      assert Enum.at(row, 20) == ""
+    end
+
+    test "to_csv_row row length matches headers" do
+      cdr = build_cdr_with_mos_for_csv()
+      row = Serializer.to_csv_row(cdr)
+      headers = Serializer.csv_headers()
+
+      assert length(row) == length(headers)
+    end
+
+    test "to_csv_row handles all MOS statuses" do
+      statuses = [:complete, :insufficient_data, :one_way_audio, :unavailable]
+
+      for status <- statuses do
+        cdr = %CDR{
+          disposition: :answered,
+          direction: :inbound,
+          ring_duration_ms: 0,
+          talk_duration_ms: 0,
+          media_info: %MediaInfo{
+            mos_summary: %{
+              min_mos: 3.0,
+              max_mos: 4.0,
+              avg_mos: 3.5,
+              overall_loss_percent: 1.0,
+              status: status
+            }
+          }
+        }
+
+        row = Serializer.to_csv_row(cdr)
+        assert Enum.at(row, 19) == to_string(status)
+      end
+    end
+
+    test "to_csv_row can be used with CSV library for MOS data" do
+      cdr = build_cdr_with_mos_for_csv()
+      headers = Serializer.csv_headers()
+      row = Serializer.to_csv_row(cdr)
+
+      zipped = Enum.zip(headers, row) |> Map.new()
+
+      assert zipped["mos_avg"] == "3.9"
+      assert zipped["mos_min"] == "3.2"
+      assert zipped["mos_max"] == "4.4"
+      assert zipped["mos_status"] == "complete"
+      assert zipped["packet_loss_percent"] == "0.84"
     end
   end
 
