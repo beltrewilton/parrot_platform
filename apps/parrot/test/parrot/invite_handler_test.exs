@@ -59,9 +59,9 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_hangup, 1} in callbacks
     end
 
-    test "defines all 15 expected callbacks" do
+    test "defines all 16 expected callbacks" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 15
+      assert length(callbacks) == 16
     end
 
     # T038: Unit test for handle_media_started/1 callback definition
@@ -869,6 +869,361 @@ defmodule Parrot.InviteHandlerTest do
 
       operations = Call.get_operations(result)
       assert [{:play, "all-lines-busy.wav", []}] = operations
+    end
+  end
+
+  # ===========================================================================
+  # Leg Event Callbacks (B2BUA T07: handle_leg_event/3)
+  # ===========================================================================
+
+  describe "handle_leg_event/3 callback (T07)" do
+    test "defines handle_leg_event/3 callback in behaviour" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_leg_event, 3} in callbacks
+    end
+  end
+
+  describe "use Parrot.InviteHandler - handle_leg_event/3 default" do
+    test "provides default handle_leg_event/3 implementation returning {:ok, call}" do
+      call = Call.new()
+      result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, :b_leg, :ringing)
+      assert {:ok, ^call} = result
+    end
+
+    test "default implementation handles all event types gracefully" do
+      call = Call.new()
+
+      # Test various event types from design doc
+      events = [
+        :trying,
+        :ringing,
+        {:early_media, "v=0\r\n..."},
+        {:answered, "v=0\r\n..."},
+        {:failed, :busy},
+        :bye,
+        :cancelled,
+        :held,
+        :resumed,
+        {:refer_requested, "sip:transfer@example.com"},
+        {:transfer_complete, :c_leg},
+        {:transfer_failed, :no_answer}
+      ]
+
+      for event <- events do
+        result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, :b_leg, event)
+        assert {:ok, ^call} = result, "Expected {:ok, call} for event #{inspect(event)}"
+      end
+    end
+  end
+
+  describe "overriding handle_leg_event/3" do
+    defmodule LegEventHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite
+        |> answer()
+        |> bridge("sip:agent@pbx.local")
+      end
+
+      # Track ringing events
+      def handle_leg_event(call, leg_id, :ringing) do
+        new_assigns = Map.put(call.assigns, :ringing_leg, leg_id)
+        {:ok, %{call | assigns: new_assigns}}
+      end
+
+      # Handle answered - could bridge media
+      def handle_leg_event(call, leg_id, {:answered, sdp}) do
+        new_assigns =
+          call.assigns
+          |> Map.put(:answered_leg, leg_id)
+          |> Map.put(:answered_sdp, sdp)
+
+        {:ok, %{call | assigns: new_assigns}}
+      end
+
+      # Handle failed - play error message and hangup
+      def handle_leg_event(call, _leg_id, {:failed, _reason}) do
+        {:ok, call |> play("unavailable.wav") |> hangup()}
+      end
+
+      # Handle BYE - hangup remaining legs
+      def handle_leg_event(call, _leg_id, :bye) do
+        {:ok, call |> hangup()}
+      end
+
+      # Default fallback
+      def handle_leg_event(call, _leg_id, _event) do
+        {:ok, call}
+      end
+    end
+
+    test "can override to track ringing events" do
+      call = Call.new()
+      {:ok, result} = LegEventHandler.handle_leg_event(call, :b_leg, :ringing)
+
+      assert result.assigns.ringing_leg == :b_leg
+    end
+
+    test "can override to handle answered event with SDP" do
+      call = Call.new()
+      sdp = "v=0\r\no=- 123 456 IN IP4 192.168.1.1\r\n"
+      {:ok, result} = LegEventHandler.handle_leg_event(call, :b_leg, {:answered, sdp})
+
+      assert result.assigns.answered_leg == :b_leg
+      assert result.assigns.answered_sdp == sdp
+    end
+
+    test "can override to queue operations on failure" do
+      call = Call.new()
+      {:ok, result} = LegEventHandler.handle_leg_event(call, :b_leg, {:failed, :busy})
+
+      operations = Call.get_operations(result)
+      assert [{:play, "unavailable.wav", []}, {:hangup, []}] = operations
+    end
+
+    test "can override to hangup on BYE" do
+      call = Call.new()
+      {:ok, result} = LegEventHandler.handle_leg_event(call, :b_leg, :bye)
+
+      operations = Call.get_operations(result)
+      assert [{:hangup, []}] = operations
+    end
+
+    test "handle_leg_event/3 is defoverridable" do
+      call = Call.new()
+
+      # MinimalHandler uses default
+      minimal_result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, :b_leg, :ringing)
+      assert minimal_result == {:ok, call}
+
+      # LegEventHandler overrides it
+      {:ok, custom_result} = LegEventHandler.handle_leg_event(call, :b_leg, :ringing)
+      assert custom_result.assigns[:ringing_leg] == :b_leg
+    end
+  end
+
+  describe "handle_leg_event/3 bridge return value" do
+    defmodule BridgingLegEventHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite
+        |> answer()
+        |> fork(["sip:a@x", "sip:b@x"], strategy: :simultaneous)
+      end
+
+      # When a leg answers, bridge it to A-leg
+      def handle_leg_event(call, leg_id, {:answered, _sdp}) do
+        {:bridge, leg_id, call}
+      end
+
+      def handle_leg_event(call, _leg_id, _event) do
+        {:ok, call}
+      end
+    end
+
+    test "can return {:bridge, leg_id, call} to connect leg to A-leg" do
+      call = Call.new()
+      result = BridgingLegEventHandler.handle_leg_event(call, :b_leg, {:answered, "v=0\r\n"})
+
+      assert {:bridge, :b_leg, ^call} = result
+    end
+
+    test "bridge return value preserves call struct" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      {:bridge, _leg_id, returned_call} =
+        BridgingLegEventHandler.handle_leg_event(call, :b_leg, {:answered, "v=0\r\n"})
+
+      assert returned_call.assigns.session_id == "test-123"
+    end
+  end
+
+  describe "handle_leg_event/3 reject_refer return value" do
+    defmodule ReferRejectingHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Reject transfer requests from certain legs
+      def handle_leg_event(call, :untrusted_leg, {:refer_requested, _uri}) do
+        {:reject_refer, :forbidden, call}
+      end
+
+      # Allow other transfer requests
+      def handle_leg_event(call, _leg_id, {:refer_requested, uri}) do
+        new_assigns = Map.put(call.assigns, :transfer_requested_to, uri)
+        {:ok, %{call | assigns: new_assigns}}
+      end
+
+      def handle_leg_event(call, _leg_id, _event) do
+        {:ok, call}
+      end
+    end
+
+    test "can return {:reject_refer, reason, call} to reject REFER request" do
+      call = Call.new()
+      result = ReferRejectingHandler.handle_leg_event(call, :untrusted_leg, {:refer_requested, "sip:target@x"})
+
+      assert {:reject_refer, :forbidden, ^call} = result
+    end
+
+    test "can allow REFER requests from trusted legs" do
+      call = Call.new()
+      {:ok, result} =
+        ReferRejectingHandler.handle_leg_event(call, :trusted_leg, {:refer_requested, "sip:target@x"})
+
+      assert result.assigns.transfer_requested_to == "sip:target@x"
+    end
+  end
+
+  describe "handle_leg_event/3 with all leg events from design doc" do
+    defmodule ComprehensiveLegEventHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite), do: invite |> answer()
+
+      def handle_leg_event(call, leg_id, :trying) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:trying, leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, :ringing) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:ringing, leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, {:early_media, sdp}) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:early_media, leg_id, sdp})}}
+      end
+
+      def handle_leg_event(call, leg_id, {:answered, sdp}) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:answered, leg_id, sdp})}}
+      end
+
+      def handle_leg_event(call, leg_id, {:failed, reason}) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:failed, leg_id, reason})}}
+      end
+
+      def handle_leg_event(call, leg_id, :bye) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:bye, leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, :cancelled) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:cancelled, leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, :held) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:held, leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, :resumed) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:resumed, leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, {:refer_requested, uri}) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:refer_requested, leg_id, uri})}}
+      end
+
+      def handle_leg_event(call, leg_id, {:transfer_complete, new_leg_id}) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:transfer_complete, leg_id, new_leg_id})}}
+      end
+
+      def handle_leg_event(call, leg_id, {:transfer_failed, reason}) do
+        {:ok, %{call | assigns: Map.put(call.assigns, :event, {:transfer_failed, leg_id, reason})}}
+      end
+    end
+
+    test "handles :trying event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, :trying)
+      assert result.assigns.event == {:trying, :b_leg}
+    end
+
+    test "handles :ringing event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, :ringing)
+      assert result.assigns.event == {:ringing, :b_leg}
+    end
+
+    test "handles {:early_media, sdp} event" do
+      call = Call.new()
+      sdp = "v=0\r\n"
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, {:early_media, sdp})
+      assert result.assigns.event == {:early_media, :b_leg, sdp}
+    end
+
+    test "handles {:answered, sdp} event" do
+      call = Call.new()
+      sdp = "v=0\r\n"
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, {:answered, sdp})
+      assert result.assigns.event == {:answered, :b_leg, sdp}
+    end
+
+    test "handles {:failed, reason} event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, {:failed, :busy})
+      assert result.assigns.event == {:failed, :b_leg, :busy}
+    end
+
+    test "handles :bye event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, :bye)
+      assert result.assigns.event == {:bye, :b_leg}
+    end
+
+    test "handles :cancelled event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, :cancelled)
+      assert result.assigns.event == {:cancelled, :b_leg}
+    end
+
+    test "handles :held event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, :held)
+      assert result.assigns.event == {:held, :b_leg}
+    end
+
+    test "handles :resumed event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, :resumed)
+      assert result.assigns.event == {:resumed, :b_leg}
+    end
+
+    test "handles {:refer_requested, uri} event" do
+      call = Call.new()
+      uri = "sip:transfer@example.com"
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, {:refer_requested, uri})
+      assert result.assigns.event == {:refer_requested, :b_leg, uri}
+    end
+
+    test "handles {:transfer_complete, new_leg_id} event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, {:transfer_complete, :c_leg})
+      assert result.assigns.event == {:transfer_complete, :b_leg, :c_leg}
+    end
+
+    test "handles {:transfer_failed, reason} event" do
+      call = Call.new()
+      {:ok, result} = ComprehensiveLegEventHandler.handle_leg_event(call, :b_leg, {:transfer_failed, :no_answer})
+      assert result.assigns.event == {:transfer_failed, :b_leg, :no_answer}
+    end
+  end
+
+  describe "handle_leg_event/3 leg_id types" do
+    test "accepts atom leg IDs" do
+      call = Call.new()
+      result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, :a_leg, :ringing)
+      assert {:ok, _} = result
+
+      result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, :b_leg, :ringing)
+      assert {:ok, _} = result
+    end
+
+    test "accepts string leg IDs" do
+      call = Call.new()
+      result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, "custom-leg-123", :ringing)
+      assert {:ok, _} = result
     end
   end
 end

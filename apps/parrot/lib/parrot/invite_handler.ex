@@ -105,6 +105,7 @@ defmodule Parrot.InviteHandler do
   - `handle_media_started/1` - Called when media stream starts
   - `handle_media_stopped/2` - Called when media stream stops
   - `handle_tts_error/3` - Called when TTS synthesis fails
+  - `handle_leg_event/3` - Called when a B2BUA leg event occurs (ringing, answered, failed, bye, etc.)
   """
 
   alias Parrot.Call
@@ -398,6 +399,114 @@ defmodule Parrot.InviteHandler do
               {:noreply, Call.t()} | Call.t()
 
   @doc """
+  Called when a leg event occurs in a B2BUA scenario (T07).
+
+  This callback is invoked when a leg (outbound call) experiences a state change
+  during call bridging, forking, or transfer operations. Use pattern matching on
+  the event to handle different leg states.
+
+  ## Arguments
+
+  - `call` - The current call state
+  - `leg_id` - The identifier for the leg (atom like `:b_leg` or string like `"custom-leg-123"`)
+  - `event` - The event that occurred (see Events below)
+
+  ## Events
+
+  | Event | Description |
+  |-------|-------------|
+  | `:trying` | Outbound INVITE sent |
+  | `:ringing` | Received 180 Ringing |
+  | `{:early_media, sdp}` | Received 183 with SDP |
+  | `{:answered, sdp}` | Received 200 OK |
+  | `{:failed, reason}` | Leg failed |
+  | `:bye` | Remote party sent BYE |
+  | `:cancelled` | Leg cancelled (another answered) |
+  | `:held` | Leg placed on hold |
+  | `:resumed` | Leg resumed |
+  | `{:refer_requested, uri}` | Remote sent REFER |
+  | `{:transfer_complete, leg_id}` | Transfer succeeded |
+  | `{:transfer_failed, reason}` | Transfer failed |
+
+  ## Return Values
+
+  | Return | Effect |
+  |--------|--------|
+  | `{:ok, call}` | Continue |
+  | `{:bridge, leg_id, call}` | Connect this leg to A-leg |
+  | `{:reject_refer, reason, call}` | Reject REFER request |
+
+  ## Example
+
+      def handle_leg_event(call, leg_id, :ringing) do
+        Logger.info("\#{leg_id} is ringing")
+        {:ok, call}
+      end
+
+      def handle_leg_event(call, leg_id, {:answered, _sdp}) do
+        Logger.info("\#{leg_id} answered")
+        {:ok, call}
+      end
+
+      def handle_leg_event(call, leg_id, {:failed, reason}) do
+        Logger.warn("\#{leg_id} failed: \#{inspect(reason)}")
+        {:ok, call |> play("unavailable.wav") |> hangup()}
+      end
+
+      def handle_leg_event(call, _leg_id, :bye) do
+        {:ok, call |> hangup()}
+      end
+
+      # Bridge on answer during fork
+      def handle_leg_event(call, leg_id, {:answered, _sdp}) do
+        {:bridge, leg_id, call}
+      end
+
+      # Reject transfers from untrusted legs
+      def handle_leg_event(call, :untrusted_leg, {:refer_requested, _uri}) do
+        {:reject_refer, :forbidden, call}
+      end
+  """
+  @callback handle_leg_event(
+              call :: Call.t(),
+              leg_id :: atom() | String.t(),
+              event :: leg_event()
+            ) ::
+              {:ok, Call.t()}
+              | {:bridge, atom() | String.t(), Call.t()}
+              | {:reject_refer, atom(), Call.t()}
+
+  @typedoc """
+  Leg events that can occur during B2BUA operations.
+
+  - `:trying` - Outbound INVITE sent
+  - `:ringing` - Received 180 Ringing
+  - `{:early_media, sdp}` - Received 183 with SDP
+  - `{:answered, sdp}` - Received 200 OK
+  - `{:failed, reason}` - Leg failed
+  - `:bye` - Remote party sent BYE
+  - `:cancelled` - Leg cancelled (another answered)
+  - `:held` - Leg placed on hold
+  - `:resumed` - Leg resumed
+  - `{:refer_requested, uri}` - Remote sent REFER
+  - `{:transfer_complete, leg_id}` - Transfer succeeded
+  - `{:transfer_failed, reason}` - Transfer failed
+  """
+  @type leg_event ::
+          :trying
+          | :ringing
+          | {:early_media, String.t()}
+          | {:answered, String.t()}
+          | {:failed, atom() | term()}
+          | :bye
+          | :cancelled
+          | :held
+          | :resumed
+          | {:refer_requested, String.t()}
+          | {:transfer_complete, atom() | String.t()}
+          | {:transfer_failed, atom() | term()}
+
+  @doc """
   Provides default implementations and imports Call functions.
 
   When you `use Parrot.InviteHandler`, you get:
@@ -520,6 +629,13 @@ defmodule Parrot.InviteHandler do
         {:noreply, call}
       end
 
+      @impl Parrot.InviteHandler
+      def handle_leg_event(call, _leg_id, _event) do
+        # Default: return {:ok, call} (T07)
+        # Handler controls all termination - no automatic cleanup
+        {:ok, call}
+      end
+
       defoverridable handle_play_complete: 2,
                      handle_dtmf: 2,
                      handle_prompt_complete: 3,
@@ -533,7 +649,8 @@ defmodule Parrot.InviteHandler do
                      handle_sdp_error: 2,
                      handle_tts_error: 3,
                      handle_media_started: 1,
-                     handle_media_stopped: 2
+                     handle_media_stopped: 2,
+                     handle_leg_event: 3
     end
   end
 end
