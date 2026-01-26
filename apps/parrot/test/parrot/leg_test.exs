@@ -216,6 +216,30 @@ defmodule Parrot.LegTest do
       assert {:error, :invalid_transition} = Leg.transition(leg, :ringing)
       assert leg.state == :held
     end
+
+    test "early_media -> trying is invalid (no backwards)" do
+      leg = Leg.new(state: :early_media)
+      assert {:error, :invalid_transition} = Leg.transition(leg, :trying)
+      assert leg.state == :early_media
+    end
+
+    test "early_media -> ringing is invalid (no backwards)" do
+      leg = Leg.new(state: :early_media)
+      assert {:error, :invalid_transition} = Leg.transition(leg, :ringing)
+      assert leg.state == :early_media
+    end
+
+    test "answered -> ringing is invalid (no backwards)" do
+      leg = Leg.new(state: :answered)
+      assert {:error, :invalid_transition} = Leg.transition(leg, :ringing)
+      assert leg.state == :answered
+    end
+
+    test "answered -> init is invalid (no backwards)" do
+      leg = Leg.new(state: :answered)
+      assert {:error, :invalid_transition} = Leg.transition(leg, :init)
+      assert leg.state == :answered
+    end
   end
 
   describe "transition!/2" do
@@ -231,6 +255,22 @@ defmodule Parrot.LegTest do
       assert_raise Parrot.Leg.InvalidTransitionError, fn ->
         Leg.transition!(leg, :answered)
       end
+    end
+
+    test "raised exception contains correct information" do
+      leg = Leg.new(id: "test-leg-123", state: :init)
+
+      error =
+        assert_raise Parrot.Leg.InvalidTransitionError, fn ->
+          Leg.transition!(leg, :answered)
+        end
+
+      assert error.from_state == :init
+      assert error.to_state == :answered
+      assert error.leg_id == "test-leg-123"
+      assert Exception.message(error) =~ "init"
+      assert Exception.message(error) =~ "answered"
+      assert Exception.message(error) =~ "test-leg-123"
     end
   end
 

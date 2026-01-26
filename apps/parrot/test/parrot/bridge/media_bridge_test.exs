@@ -180,6 +180,30 @@ defmodule Parrot.Bridge.MediaBridgeTest do
       assert {:ok, still_held_a} = MediaBridge.hold(held_a, :leg_a)
       assert still_held_a.state == :held_a
     end
+
+    test "hold :leg_b when already held_b is idempotent", %{bridged: bridged} do
+      {:ok, held_b} = MediaBridge.hold(bridged, :leg_b)
+      assert {:ok, still_held_b} = MediaBridge.hold(held_b, :leg_b)
+      assert still_held_b.state == :held_b
+    end
+
+    test "hold :both when already held_both is idempotent", %{bridged: bridged} do
+      {:ok, held_both} = MediaBridge.hold(bridged, :both)
+      assert {:ok, still_held_both} = MediaBridge.hold(held_both, :both)
+      assert still_held_both.state == :held_both
+    end
+
+    test "hold :both from held_a transitions to held_both", %{bridged: bridged} do
+      {:ok, held_a} = MediaBridge.hold(bridged, :leg_a)
+      assert {:ok, held_both} = MediaBridge.hold(held_a, :both)
+      assert held_both.state == :held_both
+    end
+
+    test "hold :both from held_b transitions to held_both", %{bridged: bridged} do
+      {:ok, held_b} = MediaBridge.hold(bridged, :leg_b)
+      assert {:ok, held_both} = MediaBridge.hold(held_b, :both)
+      assert held_both.state == :held_both
+    end
   end
 
   describe "resume/2" do
@@ -235,6 +259,24 @@ defmodule Parrot.Bridge.MediaBridgeTest do
       {:ok, held_a} = MediaBridge.hold(bridged, :leg_a)
       assert {:ok, still_held_a} = MediaBridge.resume(held_a, :leg_b)
       assert still_held_a.state == :held_a
+    end
+
+    test "resume :leg_a from held_b has no effect (idempotent)", %{bridged: bridged} do
+      {:ok, held_b} = MediaBridge.hold(bridged, :leg_b)
+      assert {:ok, still_held_b} = MediaBridge.resume(held_b, :leg_a)
+      assert still_held_b.state == :held_b
+    end
+
+    test "resume :both from held_a returns to bridged", %{bridged: bridged} do
+      {:ok, held_a} = MediaBridge.hold(bridged, :leg_a)
+      assert {:ok, resumed} = MediaBridge.resume(held_a, :both)
+      assert resumed.state == :bridged
+    end
+
+    test "resume :both from held_b returns to bridged", %{bridged: bridged} do
+      {:ok, held_b} = MediaBridge.hold(bridged, :leg_b)
+      assert {:ok, resumed} = MediaBridge.resume(held_b, :both)
+      assert resumed.state == :bridged
     end
   end
 
@@ -375,6 +417,59 @@ defmodule Parrot.Bridge.MediaBridgeTest do
 
       assert MediaBridge.held?(bridge) == false
       assert MediaBridge.held?(bridged) == false
+    end
+  end
+
+  describe "edge cases" do
+    test "bridge preserves leg media PIDs" do
+      {:ok, media_a} = MockMediaSession.start_link(id: "leg-a")
+      {:ok, media_b} = MockMediaSession.start_link(id: "leg-b")
+      {:ok, bridge} = MediaBridge.create(media_a, media_b)
+
+      assert bridge.leg_a_media == media_a
+      assert bridge.leg_b_media == media_b
+
+      {:ok, bridged} = MediaBridge.bridge(bridge)
+
+      # PIDs should remain unchanged after bridging
+      assert bridged.leg_a_media == media_a
+      assert bridged.leg_b_media == media_b
+    end
+
+    test "same PID for both legs is allowed" do
+      # Edge case: While unusual, the struct doesn't prevent same PID
+      # This documents current behavior - may want to add validation later
+      {:ok, media} = MockMediaSession.start_link(id: "shared")
+      {:ok, bridge} = MediaBridge.create(media, media)
+
+      assert bridge.leg_a_media == media
+      assert bridge.leg_b_media == media
+      assert bridge.state == :idle
+    end
+
+    test "multiple hold/resume cycles work correctly" do
+      {:ok, media_a} = MockMediaSession.start_link(id: "leg-a")
+      {:ok, media_b} = MockMediaSession.start_link(id: "leg-b")
+      {:ok, bridge} = MediaBridge.create(media_a, media_b)
+      {:ok, bridged} = MediaBridge.bridge(bridge)
+
+      # First cycle
+      {:ok, held} = MediaBridge.hold(bridged, :leg_a)
+      assert held.state == :held_a
+      {:ok, resumed} = MediaBridge.resume(held, :leg_a)
+      assert resumed.state == :bridged
+
+      # Second cycle
+      {:ok, held2} = MediaBridge.hold(resumed, :leg_b)
+      assert held2.state == :held_b
+      {:ok, resumed2} = MediaBridge.resume(held2, :leg_b)
+      assert resumed2.state == :bridged
+
+      # Third cycle - both
+      {:ok, held3} = MediaBridge.hold(resumed2, :both)
+      assert held3.state == :held_both
+      {:ok, resumed3} = MediaBridge.resume(held3, :both)
+      assert resumed3.state == :bridged
     end
   end
 end
