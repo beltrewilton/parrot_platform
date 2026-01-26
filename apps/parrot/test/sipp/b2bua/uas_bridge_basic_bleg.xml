@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS Bridge Basic - B-Leg Scenario
+
+  Acts as the B-leg destination for B2BUA basic bridge testing.
+  This scenario receives the bridged call from Parrot B2BUA and answers it.
+
+  Flow:
+  1. Receive INVITE from B2BUA
+  2. Send 100 Trying
+  3. Send 180 Ringing
+  4. Send 200 OK with SDP
+  5. Receive ACK
+  6. Wait for call duration
+  7. Receive BYE (from B2BUA when A-leg hangs up)
+  8. Send 200 OK
+
+  Use with: uac_bridge_basic.xml sending to Parrot B2BUA
+
+  RFC References:
+  - RFC 3261 Section 16: B2BUA patterns
+  - RFC 5765: B2BUA requirements
+-->
+<scenario name="UAS Bridge Basic - B-Leg">
+  <!-- Receive INVITE from B2BUA -->
+  <recv request="INVITE" crlf="true">
+  </recv>
+
+  <!-- Send 100 Trying -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 100 Trying
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Send 180 Ringing -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:bob@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Brief pause to simulate real ringing -->
+  <pause milliseconds="500"/>
+
+  <!-- Send 200 OK with SDP -->
+  <send retrans="500">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:bob@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=bob 654321 654321 IN IP4 [local_ip]
+      s=B2BUA Basic Bridge Test B-Leg
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK -->
+  <recv request="ACK" optional="false" rtd="true">
+  </recv>
+
+  <!-- Call established, wait for BYE from B2BUA -->
+  <recv request="BYE">
+  </recv>
+
+  <!-- Send 200 OK for BYE -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>

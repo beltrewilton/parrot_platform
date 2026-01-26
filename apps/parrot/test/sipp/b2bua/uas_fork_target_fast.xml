@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS Fork Target Fast - B-Leg Scenario
+
+  Acts as a fork target that answers quickly (before other targets).
+  Used to test "first answer wins" fork strategy.
+
+  This target answers after 200ms, designed to win against uas_fork_target_slow.xml
+  which answers after 1500ms.
+
+  Flow:
+  1. Receive INVITE from B2BUA forker
+  2. Send 100 Trying
+  3. Send 180 Ringing
+  4. Wait 200ms (fast answer)
+  5. Send 200 OK with SDP
+  6. Receive ACK (we won)
+  7. Wait for BYE
+
+  Note: If we lose to another target, we'll receive CANCEL instead of ACK.
+  The scenario handles both cases with optional elements.
+
+  Use with: uac_fork_simultaneous.xml + uas_fork_target_slow.xml
+
+  RFC References:
+  - RFC 3261 Section 16.7: Forking
+-->
+<scenario name="UAS Fork Target Fast">
+  <!-- Receive INVITE from forker -->
+  <recv request="INVITE" crlf="true">
+  </recv>
+
+  <!-- Send 100 Trying -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 100 Trying
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Send 180 Ringing -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:fast-target@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Fast answer - only 200ms delay -->
+  <pause milliseconds="200"/>
+
+  <!-- Send 200 OK with SDP -->
+  <send retrans="500">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:fast-target@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=fast-target 654321 654321 IN IP4 [local_ip]
+      s=Fork Target Fast
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Receive ACK (if we won) -->
+  <recv request="ACK" optional="true" rtd="true">
+  </recv>
+
+  <!-- If we won, wait then receive BYE -->
+  <recv request="BYE" optional="true" timeout="5000">
+  </recv>
+
+  <!-- Send 200 OK for BYE if received -->
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- If we lost (got CANCEL before answering), handle it -->
+  <recv request="CANCEL" optional="true">
+  </recv>
+
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>
