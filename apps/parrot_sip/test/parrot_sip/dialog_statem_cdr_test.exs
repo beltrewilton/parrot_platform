@@ -440,4 +440,353 @@ defmodule ParrotSip.DialogStatemCdrTest do
       body: ""
     }
   end
+
+  # ===========================================================================
+  # MOS-CDR Integration Tests
+  # ===========================================================================
+
+  describe "MOS-CDR integration" do
+    setup do
+      # Start CDR handler registry if not already running
+      case Process.whereis(ParrotSip.CDR.Registry) do
+        nil -> ParrotSip.CDR.start_link()
+        _pid -> :ok
+      end
+
+      # Clear any existing handlers before each test
+      ParrotSip.CDR.clear_handlers()
+
+      :ok
+    end
+
+    test "CDR includes MOS summary when fetcher provided" do
+      # Register a test CDR handler to capture generated CDRs
+      test_pid = self()
+
+      handler_module = define_test_cdr_handler(test_pid)
+      ParrotSip.CDR.register_handler(handler_module, [])
+
+      # Build mock MOS summary data
+      mock_summary = %{
+        avg_mos: 4.2,
+        min_mos: 3.8,
+        max_mos: 4.4,
+        total_packets: 5000,
+        total_lost: 50,
+        overall_loss_percent: 1.0,
+        status: :complete,
+        quality_events: []
+      }
+
+      # Define a fetcher that returns our mock data
+      mos_fetcher = fn _session_id -> mock_summary end
+
+      # Build matched invite/response pair
+      {invite, response} = build_matched_invite_response(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, [mos_fetcher: mos_fetcher]})
+
+      # Set the media session ID
+      {:ok, dialog_id} = DialogStatem.get_dialog_id(pid)
+      DialogStatem.set_mos_fetcher(dialog_id, mos_fetcher, "media-session-123")
+
+      # Verify dialog is in confirmed state
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog to trigger CDR generation
+      :gen_statem.stop(pid, :normal, 5000)
+
+      # Wait for CDR to be dispatched
+      assert_receive {:cdr_received, cdr}, 500
+
+      # Verify MOS summary is included in CDR
+      assert cdr.media_info != nil, "CDR should include media_info"
+      assert cdr.media_info.mos_summary != nil, "media_info should include mos_summary"
+      assert cdr.media_info.mos_summary.avg_mos == 4.2
+      assert cdr.media_info.mos_summary.min_mos == 3.8
+      assert cdr.media_info.mos_summary.max_mos == 4.4
+      assert cdr.media_info.mos_summary.total_packets == 5000
+      assert cdr.media_info.mos_summary.total_lost == 50
+      assert cdr.media_info.mos_summary.overall_loss_percent == 1.0
+      assert cdr.media_info.mos_summary.status == :complete
+
+      # Verify packets_received is calculated correctly (total - lost)
+      assert cdr.media_info.packets_received == 4950
+    end
+
+    test "CDR has nil mos_summary when fetcher returns nil" do
+      # Register a test CDR handler to capture generated CDRs
+      test_pid = self()
+
+      handler_module = define_test_cdr_handler(test_pid)
+      ParrotSip.CDR.register_handler(handler_module, [])
+
+      # Define a fetcher that returns nil
+      mos_fetcher = fn _session_id -> nil end
+
+      # Build matched invite/response pair
+      {invite, response} = build_matched_invite_response(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, [mos_fetcher: mos_fetcher]})
+
+      # Set the media session ID
+      {:ok, dialog_id} = DialogStatem.get_dialog_id(pid)
+      DialogStatem.set_mos_fetcher(dialog_id, mos_fetcher, "media-session-nil")
+
+      # Verify dialog is in confirmed state
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog to trigger CDR generation
+      :gen_statem.stop(pid, :normal, 5000)
+
+      # Wait for CDR to be dispatched
+      assert_receive {:cdr_received, cdr}, 500
+
+      # Verify media_info is nil when fetcher returns nil
+      assert cdr.media_info == nil, "CDR media_info should be nil when fetcher returns nil"
+    end
+
+    test "CDR generated even if mos_fetcher crashes" do
+      # Register a test CDR handler to capture generated CDRs
+      test_pid = self()
+
+      handler_module = define_test_cdr_handler(test_pid)
+      ParrotSip.CDR.register_handler(handler_module, [])
+
+      # Define a fetcher that raises an exception
+      mos_fetcher = fn _session_id ->
+        raise "Simulated MOS fetcher failure"
+      end
+
+      # Build matched invite/response pair
+      {invite, response} = build_matched_invite_response(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, [mos_fetcher: mos_fetcher]})
+
+      # Set the media session ID
+      {:ok, dialog_id} = DialogStatem.get_dialog_id(pid)
+      DialogStatem.set_mos_fetcher(dialog_id, mos_fetcher, "media-session-crash")
+
+      # Verify dialog is in confirmed state
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog to trigger CDR generation
+      # The crash in mos_fetcher should NOT prevent CDR generation
+      :gen_statem.stop(pid, :normal, 5000)
+
+      # Wait for CDR to be dispatched - CDR should still be generated
+      assert_receive {:cdr_received, cdr}, 500
+
+      # Verify CDR was generated but without MOS data
+      assert cdr.media_info == nil, "CDR media_info should be nil when fetcher crashes"
+      assert cdr.call_id != nil, "CDR should still have call_id"
+      assert cdr.disposition != nil, "CDR should still have disposition"
+    end
+
+    test "set_mos_fetcher/3 updates dialog data" do
+      # Build matched invite/response pair
+      {invite, response} = build_matched_invite_response(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Verify dialog is in confirmed state
+      assert_state(pid, :confirmed)
+      {:ok, dialog_id} = DialogStatem.get_dialog_id(pid)
+
+      # Define mock fetcher
+      mock_summary = %{
+        avg_mos: 4.0,
+        min_mos: 3.5,
+        max_mos: 4.5,
+        total_packets: 1000,
+        total_lost: 10,
+        overall_loss_percent: 1.0,
+        status: :complete,
+        quality_events: []
+      }
+      mos_fetcher = fn _session_id -> mock_summary end
+
+      # Register CDR handler before setting fetcher
+      test_pid = self()
+      handler_module = define_test_cdr_handler(test_pid)
+      ParrotSip.CDR.register_handler(handler_module, [])
+
+      # Set the MOS fetcher after dialog creation
+      DialogStatem.set_mos_fetcher(dialog_id, mos_fetcher, "late-media-session-456")
+
+      # Give time for the cast to be processed
+      Process.sleep(50)
+
+      # Terminate the dialog to trigger CDR generation
+      :gen_statem.stop(pid, :normal, 5000)
+
+      # Wait for CDR to be dispatched
+      assert_receive {:cdr_received, cdr}, 500
+
+      # Verify MOS data is included in CDR from the late-set fetcher
+      assert cdr.media_info != nil, "CDR should include media_info from late-set fetcher"
+      assert cdr.media_info.mos_summary != nil, "media_info should include mos_summary"
+      assert cdr.media_info.mos_summary.avg_mos == 4.0
+    end
+
+    test "CDR generated without MOS when no fetcher is set" do
+      # Register a test CDR handler to capture generated CDRs
+      test_pid = self()
+
+      handler_module = define_test_cdr_handler(test_pid)
+      ParrotSip.CDR.register_handler(handler_module, [])
+
+      # Build matched invite/response pair
+      {invite, response} = build_matched_invite_response(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Verify dialog is in confirmed state
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog to trigger CDR generation
+      :gen_statem.stop(pid, :normal, 5000)
+
+      # Wait for CDR to be dispatched
+      assert_receive {:cdr_received, cdr}, 500
+
+      # Verify CDR was generated but without MOS data
+      assert cdr.media_info == nil, "CDR media_info should be nil when no fetcher is set"
+      assert cdr.call_id != nil, "CDR should still have call_id"
+    end
+
+    test "CDR generated without MOS when no media_session_id is set" do
+      # Register a test CDR handler to capture generated CDRs
+      test_pid = self()
+
+      handler_module = define_test_cdr_handler(test_pid)
+      ParrotSip.CDR.register_handler(handler_module, [])
+
+      # Define a fetcher (but we won't set the session ID)
+      mos_fetcher = fn _session_id ->
+        %{avg_mos: 4.0, min_mos: 3.5, max_mos: 4.5, total_packets: 1000, total_lost: 10}
+      end
+
+      # Build matched invite/response pair
+      {invite, response} = build_matched_invite_response(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, [mos_fetcher: mos_fetcher]})
+
+      # Don't call set_mos_fetcher - leave media_session_id as nil
+
+      # Verify dialog is in confirmed state
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog to trigger CDR generation
+      :gen_statem.stop(pid, :normal, 5000)
+
+      # Wait for CDR to be dispatched
+      assert_receive {:cdr_received, cdr}, 500
+
+      # Verify CDR was generated but without MOS data (no session ID)
+      assert cdr.media_info == nil, "CDR media_info should be nil when no session ID is set"
+      assert cdr.call_id != nil, "CDR should still have call_id"
+    end
+  end
+
+  # Build a matched invite/response pair that share the same call_id and have proper tags.
+  # This is required for dialog creation to work correctly.
+  defp build_matched_invite_response(status, reason) do
+    call_id = unique_call_id()
+    from_tag = "mos-from-tag-#{:erlang.unique_integer([:positive])}"
+    to_tag = "mos-to-tag-#{:erlang.unique_integer([:positive])}"
+    branch = "z9hG4bK-mos-#{:erlang.unique_integer([:positive])}"
+
+    invite = %Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:user@example.com",
+      version: "SIP/2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => branch}
+      },
+      from: %From{
+        display_name: "MOS Test Caller",
+        uri: "sip:caller@example.com",
+        parameters: %{"tag" => from_tag}
+      },
+      to: %To{
+        display_name: "MOS Test Callee",
+        uri: "sip:callee@example.com",
+        parameters: %{}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :invite},
+      contact: %Contact{
+        uri: "sip:caller@127.0.0.1:5060",
+        parameters: %{}
+      },
+      other_headers: %{},
+      body: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 10000 RTP/AVP 0\r\n"
+    }
+
+    response = %Message{
+      type: :response,
+      method: nil,
+      request_uri: nil,
+      version: "SIP/2.0",
+      status_code: status,
+      reason_phrase: reason,
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => branch}
+      },
+      from: %From{
+        display_name: "MOS Test Caller",
+        uri: "sip:caller@example.com",
+        parameters: %{"tag" => from_tag}
+      },
+      to: %To{
+        display_name: "MOS Test Callee",
+        uri: "sip:callee@example.com",
+        parameters: %{"tag" => to_tag}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :invite},
+      other_headers: %{},
+      body: ""
+    }
+
+    {invite, response}
+  end
+
+  # Helper to dynamically define a test CDR handler module
+  defp define_test_cdr_handler(test_pid) do
+    # Use a unique module name to avoid conflicts between tests
+    module_name = :"TestCDRHandler_#{:erlang.unique_integer([:positive])}"
+
+    # Define the module dynamically
+    Module.create(
+      module_name,
+      quote do
+        @behaviour ParrotSip.CDR.Handler
+
+        @impl true
+        def init(_args), do: {:ok, %{}}
+
+        @impl true
+        def handle_cdr(cdr, state) do
+          send(unquote(test_pid), {:cdr_received, cdr})
+          {:ok, state}
+        end
+      end,
+      Macro.Env.location(__ENV__)
+    )
+
+    module_name
+  end
 end

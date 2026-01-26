@@ -1190,6 +1190,7 @@ defmodule ParrotSip.DialogStatem do
 
   # Helper functions
 
+  # UAS 3-tuple (without opts)
   defp dialog_registry_key(
          {:uas, %Message{to: %{parameters: %{"tag" => to_tag}}},
           %Message{
@@ -1202,12 +1203,39 @@ defmodule ParrotSip.DialogStatem do
     {:dialog, dialog_id_str}
   end
 
+  # UAS 4-tuple (with opts)
+  defp dialog_registry_key(
+         {:uas, %Message{to: %{parameters: %{"tag" => to_tag}}},
+          %Message{
+            from: %{parameters: %{"tag" => from_tag}},
+            call_id: call_id
+          }, _opts}
+       ) do
+    # For UAS: local=to_tag, remote=from_tag
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
+    {:dialog, dialog_id_str}
+  end
+
+  # UAC 3-tuple (without opts)
   defp dialog_registry_key(
          {:uac,
           %Message{
             from: %{parameters: %{"tag" => from_tag}},
             call_id: call_id
           }, %Message{to: %{parameters: %{"tag" => to_tag}}}}
+       ) do
+    # For UAC: local=from_tag, remote=to_tag
+    dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
+    {:dialog, dialog_id_str}
+  end
+
+  # UAC 4-tuple (with opts)
+  defp dialog_registry_key(
+         {:uac,
+          %Message{
+            from: %{parameters: %{"tag" => from_tag}},
+            call_id: call_id
+          }, %Message{to: %{parameters: %{"tag" => to_tag}}}, _opts}
        ) do
     # For UAC: local=from_tag, remote=to_tag
     dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
