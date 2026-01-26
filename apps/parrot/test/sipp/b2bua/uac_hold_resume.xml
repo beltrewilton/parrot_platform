@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC Hold Resume - A-Leg Scenario
+
+  Tests B2BUA hold/resume mid-call. The A-leg places the call on hold
+  and B2BUA should propagate the hold to the B-leg.
+
+  Flow:
+  1. UAC sends INVITE to B2BUA
+  2. B2BUA forwards to B-leg, B-leg answers
+  3. B2BUA sends 200 OK to A-leg
+  4. UAC sends ACK - call established and bridged
+  5. A-leg sends re-INVITE with sendonly (hold)
+  6. B2BUA propagates hold to B-leg via re-INVITE
+  7. B2BUA responds 200 OK to A-leg
+  8. UAC sends ACK
+  9. Pause (call on hold)
+  10. A-leg sends re-INVITE with sendrecv (resume)
+  11. B2BUA propagates resume to B-leg
+  12. B2BUA responds 200 OK
+  13. UAC sends ACK
+  14. Pause (call active)
+  15. UAC sends BYE
+
+  Use with: uas_hold_resume_bleg.xml running on a different port
+
+  RFC References:
+  - RFC 3264 Section 8: Hold/Resume via SDP direction
+  - RFC 3261 Section 14: Modifying an Existing Session
+-->
+<scenario name="UAC Hold Resume - A-Leg">
+  <!-- Initial INVITE to B2BUA -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: B2BUA Hold/Resume Test - A-Leg
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123456 IN IP4 [local_ip]
+      s=B2BUA Hold Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Expect 180 Ringing -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Optional 183 Session Progress -->
+  <recv response="183" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call established, wait before hold -->
+  <pause milliseconds="1000"/>
+
+  <!-- ============ HOLD: Send re-INVITE with sendonly ============ -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: B2BUA Hold/Resume Test - HOLD
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123457 IN IP4 [local_ip]
+      s=B2BUA Hold Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendonly
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for hold re-INVITE (with recvonly) -->
+  <recv response="200">
+  </recv>
+
+  <!-- Send ACK for hold -->
+  <send>
+    <![CDATA[
+
+      ACK sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call on hold, wait -->
+  <pause milliseconds="2000"/>
+
+  <!-- ============ RESUME: Send re-INVITE with sendrecv ============ -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: B2BUA Hold/Resume Test - RESUME
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123458 IN IP4 [local_ip]
+      s=B2BUA Hold Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for resume re-INVITE -->
+  <recv response="200">
+  </recv>
+
+  <!-- Send ACK for resume -->
+  <send>
+    <![CDATA[
+
+      ACK sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call resumed, wait before ending -->
+  <pause milliseconds="1000"/>
+
+  <!-- Send BYE -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 4 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>

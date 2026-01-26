@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAS Refer Inbound Scenario
+
+  Tests how Parrot B2BUA handles an incoming REFER request from a remote party.
+  This scenario acts as the remote party that sends a REFER to the B2BUA.
+
+  Flow:
+  1. UAC sends INVITE to B2BUA (establishes call)
+  2. B2BUA answers, call established
+  3. UAC sends REFER to B2BUA (requesting transfer)
+  4. B2BUA may accept (202 Accepted) or reject (4xx)
+  5. If accepted, B2BUA sends NOTIFY with transfer progress
+  6. UAC responds to NOTIFY
+
+  This tests the B2BUA's ability to handle incoming REFER requests
+  and decide whether to accept or reject the transfer request based
+  on handler logic.
+
+  RFC References:
+  - RFC 3515: The Session Initiation Protocol (SIP) Refer Method
+  - RFC 6665: SIP-Specific Event Notification
+-->
+<scenario name="UAS Refer Inbound">
+  <!-- Initial INVITE to establish call -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:remote@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:remote@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: B2BUA Inbound REFER Test
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=remote 123456 123456 IN IP4 [local_ip]
+      s=B2BUA Inbound REFER Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Expect 180 Ringing -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:remote@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call established, wait before sending REFER -->
+  <pause milliseconds="1000"/>
+
+  <!-- ============ Send REFER to request transfer ============ -->
+  <send retrans="500">
+    <![CDATA[
+
+      REFER sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:remote@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 REFER
+      Contact: <sip:remote@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Refer-To: <sip:new-destination@example.com>
+      Referred-By: <sip:remote@[local_ip]:[local_port]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- B2BUA may accept (202) or reject (4xx/6xx) -->
+  <!-- Accept case: 202 Accepted -->
+  <recv response="202" optional="true">
+  </recv>
+
+  <!-- Reject case: 403 Forbidden (transfer not allowed) -->
+  <recv response="403" optional="true">
+  </recv>
+
+  <!-- Reject case: 603 Decline -->
+  <recv response="603" optional="true">
+  </recv>
+
+  <!-- If accepted, receive NOTIFY with transfer status -->
+  <recv request="NOTIFY" optional="true">
+  </recv>
+
+  <!-- Send 200 OK for NOTIFY -->
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- May receive additional NOTIFY with final transfer status -->
+  <recv request="NOTIFY" optional="true">
+  </recv>
+
+  <!-- Send 200 OK for NOTIFY -->
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Wait for call to end -->
+  <pause milliseconds="2000"/>
+
+  <!-- Receive BYE (either from transfer completion or normal hangup) -->
+  <recv request="BYE" optional="true">
+  </recv>
+
+  <!-- Send 200 OK for BYE -->
+  <send optional="true">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Alternative: We send BYE to end the call -->
+  <send optional="true">
+    <![CDATA[
+
+      BYE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:remote@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" optional="true">
+  </recv>
+
+</scenario>

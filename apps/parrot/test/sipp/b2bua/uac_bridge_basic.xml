@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC Bridge Basic - A-Leg Scenario
+
+  Tests basic B2BUA bridge functionality where Parrot bridges an incoming
+  call (A-leg) to an outbound destination (B-leg) that answers.
+
+  Flow:
+  1. UAC sends INVITE to B2BUA
+  2. B2BUA sends 100 Trying
+  3. B2BUA sends 180 Ringing (when B-leg rings)
+  4. B2BUA sends 200 OK (when B-leg answers)
+  5. UAC sends ACK
+  6. Call is bridged
+  7. UAC sends BYE
+  8. B2BUA responds 200 OK
+
+  Use with: uas_bridge_basic_bleg.xml running on a different port
+
+  RFC References:
+  - RFC 3261 Section 16: B2BUA patterns
+  - RFC 5765: B2BUA requirements
+-->
+<scenario name="UAC Bridge Basic - A-Leg">
+  <!-- Initial INVITE to B2BUA -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: B2BUA Basic Bridge Test - A-Leg
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123456 IN IP4 [local_ip]
+      s=B2BUA Basic Bridge Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Expect 180 Ringing (B2BUA forwards from B-leg) -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Optional 183 Session Progress -->
+  <recv response="183" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK (B-leg answered) -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call bridged, wait for media exchange -->
+  <pause milliseconds="2000"/>
+
+  <!-- Send BYE to end A-leg -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:b2bua@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2bua@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>
