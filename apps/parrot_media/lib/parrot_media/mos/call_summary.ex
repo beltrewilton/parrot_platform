@@ -275,4 +275,71 @@ defmodule ParrotMedia.MOS.CallSummary do
   defp calculate_loss_percent(total_packets, total_lost) do
     total_lost / total_packets * 100.0
   end
+
+  @doc """
+  Converts a CallSummary struct to a plain map with string keys.
+
+  This function is designed for CDR integration and JSON serialization.
+  All atom keys are converted to strings, and nested quality_events
+  are also converted to maps with string keys.
+
+  ## Fields converted:
+
+  - All struct fields become string keys
+  - `:status` atom is converted to a string (e.g., `:complete` -> `"complete"`)
+  - `:quality_events` list items have their atom keys converted to strings
+  - DateTime values in quality_events are converted to ISO 8601 strings
+
+  ## Example
+
+      iex> {:ok, summary} = CallSummary.new(
+      ...>   session_id: "call-123",
+      ...>   min_mos: 3.5,
+      ...>   max_mos: 4.3,
+      ...>   avg_mos: 3.9,
+      ...>   total_packets: 5000,
+      ...>   total_lost: 50,
+      ...>   intervals_calculated: 10,
+      ...>   duration_ms: 50_000,
+      ...>   status: :complete
+      ...> )
+      iex> map = CallSummary.to_map(summary)
+      iex> map["status"]
+      "complete"
+      iex> map["session_id"]
+      "call-123"
+  """
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = summary) do
+    %{
+      "session_id" => summary.session_id,
+      "min_mos" => summary.min_mos,
+      "max_mos" => summary.max_mos,
+      "avg_mos" => summary.avg_mos,
+      "total_packets" => summary.total_packets,
+      "total_lost" => summary.total_lost,
+      "overall_loss_percent" => summary.overall_loss_percent,
+      "intervals_calculated" => summary.intervals_calculated,
+      "duration_ms" => summary.duration_ms,
+      "status" => Atom.to_string(summary.status),
+      "quality_events" => Enum.map(summary.quality_events, &convert_quality_event/1)
+    }
+  end
+
+  defp convert_quality_event(event) when is_map(event) do
+    event
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      string_key = atom_to_string(key)
+      converted_value = convert_event_value(key, value)
+      Map.put(acc, string_key, converted_value)
+    end)
+  end
+
+  defp atom_to_string(key) when is_atom(key), do: Atom.to_string(key)
+  defp atom_to_string(key) when is_binary(key), do: key
+
+  defp convert_event_value(:type, value) when is_atom(value), do: Atom.to_string(value)
+  defp convert_event_value(:direction, value) when is_atom(value), do: Atom.to_string(value)
+  defp convert_event_value(:timestamp, %DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp convert_event_value(_key, value), do: value
 end

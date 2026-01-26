@@ -697,6 +697,202 @@ defmodule ParrotMedia.MOS.CallSummaryTest do
     end
   end
 
+  describe "to_map/1" do
+    test "returns expected map structure with all fields" do
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: "test-session-123",
+          min_mos: 3.5,
+          max_mos: 4.3,
+          avg_mos: 3.9,
+          total_packets: 5000,
+          total_lost: 50,
+          intervals_calculated: 10,
+          duration_ms: 50_000,
+          status: :complete
+        )
+
+      result = CallSummary.to_map(summary)
+
+      assert is_map(result)
+      assert result["session_id"] == "test-session-123"
+      assert result["min_mos"] == 3.5
+      assert result["max_mos"] == 4.3
+      assert result["avg_mos"] == 3.9
+      assert result["total_packets"] == 5000
+      assert result["total_lost"] == 50
+      assert result["overall_loss_percent"] == 1.0
+      assert result["intervals_calculated"] == 10
+      assert result["duration_ms"] == 50_000
+      assert result["status"] == "complete"
+      assert result["quality_events"] == []
+    end
+
+    test "handles empty quality_events list" do
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: "empty-events",
+          min_mos: 4.0,
+          max_mos: 4.5,
+          avg_mos: 4.2,
+          total_packets: 1000,
+          total_lost: 10,
+          intervals_calculated: 5,
+          duration_ms: 25_000,
+          status: :complete,
+          quality_events: []
+        )
+
+      result = CallSummary.to_map(summary)
+
+      assert result["quality_events"] == []
+    end
+
+    test "converts all nested quality_events to maps with string keys" do
+      events = [
+        %{
+          type: :threshold_crossed,
+          mos: 2.9,
+          threshold: 3.0,
+          direction: :down,
+          timestamp: ~U[2026-01-10 12:00:30Z]
+        },
+        %{
+          type: :threshold_crossed,
+          mos: 3.1,
+          threshold: 3.0,
+          direction: :up,
+          timestamp: ~U[2026-01-10 12:00:45Z]
+        }
+      ]
+
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: "events-test",
+          min_mos: 2.9,
+          max_mos: 4.0,
+          avg_mos: 3.5,
+          total_packets: 5000,
+          total_lost: 150,
+          intervals_calculated: 10,
+          duration_ms: 50_000,
+          status: :complete,
+          quality_events: events
+        )
+
+      result = CallSummary.to_map(summary)
+
+      assert length(result["quality_events"]) == 2
+
+      [first_event, second_event] = result["quality_events"]
+
+      # Verify string keys
+      assert first_event["type"] == "threshold_crossed"
+      assert first_event["mos"] == 2.9
+      assert first_event["threshold"] == 3.0
+      assert first_event["direction"] == "down"
+      assert first_event["timestamp"] == "2026-01-10T12:00:30Z"
+
+      assert second_event["type"] == "threshold_crossed"
+      assert second_event["mos"] == 3.1
+      assert second_event["threshold"] == 3.0
+      assert second_event["direction"] == "up"
+      assert second_event["timestamp"] == "2026-01-10T12:00:45Z"
+    end
+
+    test "converts status atom to string" do
+      statuses = [:complete, :insufficient_data, :one_way_audio]
+
+      for status <- statuses do
+        {:ok, summary} =
+          CallSummary.new(
+            session_id: "status-test-#{status}",
+            min_mos: 3.0,
+            max_mos: 4.0,
+            avg_mos: 3.5,
+            total_packets: 1000,
+            total_lost: 10,
+            intervals_calculated: 5,
+            duration_ms: 25_000,
+            status: status
+          )
+
+        result = CallSummary.to_map(summary)
+        assert result["status"] == Atom.to_string(status)
+      end
+    end
+
+    test "converts quality_event without optional direction field" do
+      events = [
+        %{
+          type: :threshold_crossed,
+          mos: 2.8,
+          threshold: 3.0,
+          timestamp: ~U[2026-01-10 12:01:00Z]
+        }
+      ]
+
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: "no-direction",
+          min_mos: 2.8,
+          max_mos: 4.0,
+          avg_mos: 3.2,
+          total_packets: 2000,
+          total_lost: 100,
+          intervals_calculated: 5,
+          duration_ms: 25_000,
+          status: :complete,
+          quality_events: events
+        )
+
+      result = CallSummary.to_map(summary)
+
+      [event] = result["quality_events"]
+      assert event["type"] == "threshold_crossed"
+      assert event["mos"] == 2.8
+      assert event["threshold"] == 3.0
+      assert event["timestamp"] == "2026-01-10T12:01:00Z"
+      refute Map.has_key?(event, "direction")
+    end
+
+    test "result is JSON-serializable" do
+      events = [
+        %{
+          type: :threshold_crossed,
+          mos: 2.9,
+          threshold: 3.0,
+          direction: :down,
+          timestamp: ~U[2026-01-10 12:00:30Z]
+        }
+      ]
+
+      {:ok, summary} =
+        CallSummary.new(
+          session_id: "json-test",
+          min_mos: 2.9,
+          max_mos: 4.0,
+          avg_mos: 3.5,
+          total_packets: 5000,
+          total_lost: 150,
+          intervals_calculated: 10,
+          duration_ms: 50_000,
+          status: :complete,
+          quality_events: events
+        )
+
+      result = CallSummary.to_map(summary)
+
+      # Should be JSON-serializable without errors
+      assert {:ok, json} = Jason.encode(result)
+      assert is_binary(json)
+
+      # Round-trip should work
+      assert {:ok, decoded} = Jason.decode(json)
+      assert decoded == result
+    end
+  end
+
   describe "acceptance scenarios" do
     test "completed call provides min/max/avg MOS" do
       # US2 Scenario 1: Given a completed call, When the call ends,
