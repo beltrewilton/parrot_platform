@@ -59,6 +59,14 @@ defmodule Parrot.Call do
   ### Bridging
   * `bridge/2`, `bridge/3` - Bridge to another endpoint
   * `fork/2`, `fork/3` - Fork call to multiple endpoints
+
+  ### B2BUA Operations
+  * `originate/2`, `originate/3` - Create outbound leg
+  * `connect_legs/3`, `connect_legs/4` - Connect two legs for media bridging
+  * `hold/2` - Put a leg on hold
+  * `resume/2` - Resume a held leg
+  * `transfer/3`, `transfer/4` - Transfer a leg (blind or attended)
+  * `hangup_leg/2` - Hang up a specific leg
   """
 
   @type call_state :: :incoming | :ringing | :answered | :terminated
@@ -537,6 +545,191 @@ defmodule Parrot.Call do
   def fork(%__MODULE__{} = call, destinations, opts)
       when is_list(destinations) and is_list(opts) do
     add_operation(call, {:fork, destinations, opts})
+  end
+
+  # ---------------------------------------------------------------------------
+  # B2BUA Operations
+  # ---------------------------------------------------------------------------
+
+  @typedoc """
+  Leg identifier - can be an atom (e.g., :a_leg, :b_leg) or string.
+  """
+  @type leg_id :: atom() | String.t()
+
+  @doc """
+  Creates an outbound leg to the given destination.
+
+  This provides explicit leg control for B2BUA scenarios where you need
+  to manage individual call legs independently.
+
+  ## Examples
+
+      call |> originate("sip:dest@pbx.local")
+
+  """
+  @spec originate(t(), String.t()) :: t()
+  def originate(%__MODULE__{} = call, destination) when is_binary(destination) do
+    add_operation(call, {:originate, destination, []})
+  end
+
+  @doc """
+  Creates an outbound leg to the given destination with options.
+
+  ## Options
+
+  * `:as` - Custom leg ID (atom or string). If not provided, auto-generated.
+  * `:timeout` - Timeout in milliseconds for the origination attempt.
+  * `:headers` - Map of custom SIP headers to add to the outgoing INVITE.
+
+  ## Examples
+
+      call |> originate("sip:dest@pbx.local", as: :b_leg)
+      call |> originate("sip:dest@pbx.local", as: :b_leg, timeout: 30_000)
+      call |> originate("sip:dest@pbx.local", headers: %{"X-Custom" => "value"})
+
+  """
+  @spec originate(t(), String.t(), keyword()) :: t()
+  def originate(%__MODULE__{} = call, destination, opts)
+      when is_binary(destination) and is_list(opts) do
+    add_operation(call, {:originate, destination, opts})
+  end
+
+  @doc """
+  Connects two answered legs for media bridging.
+
+  Both legs must be in the answered state before connecting.
+
+  ## Examples
+
+      call |> connect_legs(:a_leg, :b_leg)
+      call |> connect_legs("leg-1", "leg-2")
+
+  """
+  @spec connect_legs(t(), leg_id(), leg_id()) :: t()
+  def connect_legs(%__MODULE__{} = call, leg_a, leg_b) do
+    add_operation(call, {:connect_legs, leg_a, leg_b, []})
+  end
+
+  @doc """
+  Connects two answered legs for media bridging with options.
+
+  ## Options
+
+  * `:media` - Media bridging mode: `:proxy` (default) or `:direct`
+
+  ## Examples
+
+      call |> connect_legs(:a_leg, :b_leg, media: :proxy)
+      call |> connect_legs(:a_leg, :b_leg, media: :direct)
+
+  """
+  @spec connect_legs(t(), leg_id(), leg_id(), keyword()) :: t()
+  def connect_legs(%__MODULE__{} = call, leg_a, leg_b, opts) when is_list(opts) do
+    add_operation(call, {:connect_legs, leg_a, leg_b, opts})
+  end
+
+  @doc """
+  Puts a leg on hold.
+
+  When a leg is placed on hold, media is paused and the remote party
+  typically receives hold music or silence.
+
+  ## Examples
+
+      call |> hold(:b_leg)
+      call |> hold("custom-leg-id")
+
+  """
+  @spec hold(t(), leg_id()) :: t()
+  def hold(%__MODULE__{} = call, leg_id) do
+    add_operation(call, {:hold, leg_id})
+  end
+
+  @doc """
+  Resumes a held leg.
+
+  Restores media flow for a leg that was previously placed on hold.
+
+  ## Examples
+
+      call |> resume(:b_leg)
+      call |> resume("custom-leg-id")
+
+  """
+  @spec resume(t(), leg_id()) :: t()
+  def resume(%__MODULE__{} = call, leg_id) do
+    add_operation(call, {:resume, leg_id})
+  end
+
+  @doc """
+  Transfers a leg to a new destination (blind transfer).
+
+  Blind transfer immediately redirects the leg to the new destination
+  without consultation. Use `transfer/4` with `type: :attended` for
+  attended (consultative) transfers.
+
+  ## Examples
+
+      call |> transfer(:b_leg, "sip:new-agent@pbx.local")
+
+  ## RFC References
+
+  - RFC 3515 - REFER method
+  """
+  @spec transfer(t(), leg_id(), String.t()) :: t()
+  def transfer(%__MODULE__{} = call, leg_id, destination) when is_binary(destination) do
+    add_operation(call, {:transfer, leg_id, destination, []})
+  end
+
+  @doc """
+  Transfers a leg to a new destination with options.
+
+  ## Options
+
+  * `:type` - Transfer type: `:blind` (default) or `:attended`
+  * `:timeout` - Timeout in milliseconds for the transfer attempt.
+  * `:headers` - Map of custom SIP headers (e.g., Referred-By).
+
+  ## Examples
+
+      # Blind transfer (default)
+      call |> transfer(:b_leg, "sip:new@pbx.local", type: :blind)
+
+      # Attended (consultative) transfer
+      call |> transfer(:b_leg, "sip:new@pbx.local", type: :attended)
+
+      # With custom headers
+      call |> transfer(:b_leg, "sip:new@pbx.local",
+        headers: %{"Referred-By" => "sip:operator@pbx.local"}
+      )
+
+  ## RFC References
+
+  - RFC 3515 - REFER method
+  - RFC 3891 - REFER with Replaces (attended transfer)
+  """
+  @spec transfer(t(), leg_id(), String.t(), keyword()) :: t()
+  def transfer(%__MODULE__{} = call, leg_id, destination, opts)
+      when is_binary(destination) and is_list(opts) do
+    add_operation(call, {:transfer, leg_id, destination, opts})
+  end
+
+  @doc """
+  Hangs up a specific leg.
+
+  Unlike `hangup/1` which terminates the entire call, this only
+  terminates the specified leg. Useful when managing multiple legs
+  in a B2BUA scenario.
+
+  ## Examples
+
+      call |> hangup_leg(:b_leg)
+      call |> hangup_leg("custom-leg-id")
+
+  """
+  @spec hangup_leg(t(), leg_id()) :: t()
+  def hangup_leg(%__MODULE__{} = call, leg_id) do
+    add_operation(call, {:hangup_leg, leg_id})
   end
 
   # ---------------------------------------------------------------------------
