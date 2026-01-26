@@ -28,11 +28,14 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   require Logger
 
+  alias Parrot.Bridge.B2BUA
   alias Parrot.Call
   alias ParrotMedia.WsBidirectional
   alias ParrotMedia.WsBidirectional.Config, as: WsConfig
   alias ParrotSip.Message
   alias ParrotSip.Transaction.Server, as: UAS
+
+  @type leg_id :: atom() | String.t()
 
   @type operation ::
           {:answer, keyword()}
@@ -50,6 +53,13 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:mute_bidirectional, :inbound | :outbound}
           | {:unmute_bidirectional, :inbound | :outbound}
           | {:send_ws_message, String.t() | binary()}
+          # B2BUA operations
+          | {:originate, String.t(), keyword()}
+          | {:connect_legs, leg_id(), leg_id(), keyword()}
+          | {:hold, leg_id()}
+          | {:resume, leg_id()}
+          | {:transfer, leg_id(), String.t(), keyword()}
+          | {:hangup_leg, leg_id()}
 
   @type context :: %{
           required(:uas) => term(),
@@ -57,7 +67,8 @@ defmodule Parrot.Bridge.ActionExecutor do
           required(:media_pid) => pid() | nil,
           required(:sdp_answer) => String.t() | nil,
           optional(:response_fn) => (Message.t(), term() -> :ok),
-          optional(:synthesizer) => pid() | nil
+          optional(:synthesizer) => pid() | nil,
+          optional(:b2bua_pid) => pid() | nil
         }
 
   @type execute_result ::
@@ -219,7 +230,10 @@ defmodule Parrot.Bridge.ActionExecutor do
     # 2. Disconnect bidirectional WebSocket if connected
     # This prevents orphaned WS connections when the call terminates
     if call.__bidirectional_ws_pid__ do
-      Logger.debug("[ActionExecutor] Auto-disconnecting bidirectional WS on hangup: #{inspect(call.__bidirectional_ws_pid__)}")
+      Logger.debug(
+        "[ActionExecutor] Auto-disconnecting bidirectional WS on hangup: #{inspect(call.__bidirectional_ws_pid__)}"
+      )
+
       # WsBidirectional.disconnect handles already-terminated processes gracefully
       # by returning {:error, :not_found}, so we ignore the return value
       _ = WsBidirectional.disconnect(call.__bidirectional_ws_pid__)
@@ -504,14 +518,19 @@ defmodule Parrot.Bridge.ActionExecutor do
         {:ok, call}
 
       {:error, reason} ->
-        Logger.warning("[ActionExecutor] TTS synthesis failed, invoking error handler: #{inspect(reason)}")
-        error_handler = Map.get(context, :tts_error_handler) || &default_tts_error_handler/3
+        Logger.warning(
+          "[ActionExecutor] TTS synthesis failed, invoking error handler: #{inspect(reason)}"
+        )
+
+        error_handler = Map.get(context, :tts_error_handler) || (&default_tts_error_handler/3)
         handler_result = error_handler.(text, reason, call)
         # Handle both {:noreply, call} and raw call return patterns
-        updated_call = case handler_result do
-          {:noreply, c} -> c
-          c -> c
-        end
+        updated_call =
+          case handler_result do
+            {:noreply, c} -> c
+            c -> c
+          end
+
         {:ok, updated_call}
     end
   end
@@ -534,7 +553,9 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   def execute_say_prompt_with_error_handler(call, %{media_pid: media_pid} = context, text, opts) do
-    Logger.debug("[ActionExecutor] Executing say_prompt operation with error handler: #{inspect(text)}")
+    Logger.debug(
+      "[ActionExecutor] Executing say_prompt operation with error handler: #{inspect(text)}"
+    )
 
     profile = Keyword.get(opts, :profile, :default)
     synthesizer = Map.get(context, :synthesizer)
@@ -559,19 +580,28 @@ defmodule Parrot.Bridge.ActionExecutor do
         # Store DTMF collection options for deferred collection
         collect_keys = [:max, :timeout, :terminators]
         collect_opts = Keyword.take(opts, collect_keys)
-        updated_call = %{call | assigns: Map.put(call.assigns, :__pending_collect__, collect_opts)}
+
+        updated_call = %{
+          call
+          | assigns: Map.put(call.assigns, :__pending_collect__, collect_opts)
+        }
 
         {:ok, updated_call}
 
       {:error, reason} ->
-        Logger.warning("[ActionExecutor] TTS synthesis failed for say_prompt, invoking error handler: #{inspect(reason)}")
-        error_handler = Map.get(context, :tts_error_handler) || &default_tts_error_handler/3
+        Logger.warning(
+          "[ActionExecutor] TTS synthesis failed for say_prompt, invoking error handler: #{inspect(reason)}"
+        )
+
+        error_handler = Map.get(context, :tts_error_handler) || (&default_tts_error_handler/3)
         handler_result = error_handler.(text, reason, call)
         # Handle both {:noreply, call} and raw call return patterns
-        updated_call = case handler_result do
-          {:noreply, c} -> c
-          c -> c
-        end
+        updated_call =
+          case handler_result do
+            {:noreply, c} -> c
+            c -> c
+          end
+
         {:ok, updated_call}
     end
   end
@@ -653,7 +683,11 @@ defmodule Parrot.Bridge.ActionExecutor do
         # These will be used by handle_play_complete to start collection
         collect_keys = [:max, :timeout, :terminators]
         collect_opts = Keyword.take(opts, collect_keys)
-        updated_call = %{call | assigns: Map.put(call.assigns, :__pending_collect__, collect_opts)}
+
+        updated_call = %{
+          call
+          | assigns: Map.put(call.assigns, :__pending_collect__, collect_opts)
+        }
 
         {:ok, updated_call}
 
@@ -770,6 +804,49 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   defp execute_operation({:send_ws_message, message}, call, context) do
     case execute_send_ws_message(call, context, message) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  # B2BUA operations
+  defp execute_operation({:originate, destination, opts}, call, context) do
+    case execute_originate(call, context, destination, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:connect_legs, leg_a, leg_b, opts}, call, context) do
+    case execute_connect_legs(call, context, leg_a, leg_b, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:hold, leg_id}, call, context) do
+    case execute_hold(call, context, leg_id) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:resume, leg_id}, call, context) do
+    case execute_resume(call, context, leg_id) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:transfer, leg_id, destination, opts}, call, context) do
+    # Note: Transfer returns the result directly since the current implementation
+    # always returns {:error, :not_implemented} until transfer is fully implemented.
+    # When transfer is implemented, this will need to be updated to handle {:ok, call}.
+    execute_transfer(call, context, leg_id, destination, opts)
+  end
+
+  defp execute_operation({:hangup_leg, leg_id}, call, context) do
+    case execute_hangup_leg(call, context, leg_id) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
       error -> error
     end
@@ -1056,4 +1133,234 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   defp build_local_contact(_), do: nil
+
+  # ============================================================================
+  # B2BUA Operations
+  # ============================================================================
+
+  @doc """
+  Execute the `:originate` operation.
+
+  Creates a new outbound leg via the B2BUA GenServer.
+
+  1. Verify call is in `:answered` state
+  2. Verify b2bua_pid is available in context
+  3. Call `B2BUA.originate/3` to create the leg
+
+  ## Options
+
+  - `:as` - Custom leg ID (auto-generated if not provided)
+  """
+  @spec execute_originate(Call.t(), context(), String.t(), keyword()) :: execute_result()
+  def execute_originate(%Call{state: state}, _context, _destination, _opts)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_originate(_call, %{b2bua_pid: nil}, _destination, _opts) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_originate(_call, %{b2bua_pid: b2bua_pid}, _destination, _opts)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_originate(call, %{b2bua_pid: b2bua_pid}, destination, opts) do
+    Logger.debug("[ActionExecutor] Executing originate to #{destination}")
+
+    case B2BUA.originate(b2bua_pid, destination, opts) do
+      {:ok, _leg_id} ->
+        {:ok, call}
+
+      {:error, :leg_exists} ->
+        {:error, :leg_exists}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Execute the `:connect_legs` operation.
+
+  Connects two answered legs for media bridging via the B2BUA GenServer.
+
+  1. Verify b2bua_pid is available in context
+  2. Call `B2BUA.connect/3` to bridge the legs
+  """
+  @spec execute_connect_legs(Call.t(), context(), leg_id(), leg_id(), keyword()) ::
+          execute_result()
+  def execute_connect_legs(_call, %{b2bua_pid: nil}, _leg_a, _leg_b, _opts) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_connect_legs(_call, %{b2bua_pid: b2bua_pid}, _leg_a, _leg_b, _opts)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_connect_legs(call, %{b2bua_pid: b2bua_pid}, leg_a, leg_b, _opts) do
+    Logger.debug(
+      "[ActionExecutor] Executing connect_legs #{inspect(leg_a)} <-> #{inspect(leg_b)}"
+    )
+
+    case B2BUA.connect(b2bua_pid, leg_a, leg_b) do
+      {:ok, _bridge} ->
+        {:ok, call}
+
+      {:error, :leg_not_found} ->
+        {:error, :leg_not_found}
+
+      {:error, :leg_not_answered} ->
+        {:error, :leg_not_answered}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Execute the `:hold` operation.
+
+  Places a connected leg on hold via the B2BUA GenServer.
+
+  1. Verify b2bua_pid is available in context
+  2. Call `B2BUA.hold/2` to hold the leg
+  """
+  @spec execute_hold(Call.t(), context(), leg_id()) :: execute_result()
+  def execute_hold(_call, %{b2bua_pid: nil}, _leg_id) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_hold(_call, %{b2bua_pid: b2bua_pid}, _leg_id)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_hold(call, %{b2bua_pid: b2bua_pid}, leg_id) do
+    Logger.debug("[ActionExecutor] Executing hold on leg #{inspect(leg_id)}")
+
+    case B2BUA.hold(b2bua_pid, leg_id) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :unknown_leg} ->
+        {:error, :unknown_leg}
+
+      {:error, :leg_not_connected} ->
+        {:error, :leg_not_connected}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Execute the `:resume` operation.
+
+  Resumes a held leg via the B2BUA GenServer.
+
+  1. Verify b2bua_pid is available in context
+  2. Call `B2BUA.resume/2` to resume the leg
+  """
+  @spec execute_resume(Call.t(), context(), leg_id()) :: execute_result()
+  def execute_resume(_call, %{b2bua_pid: nil}, _leg_id) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_resume(_call, %{b2bua_pid: b2bua_pid}, _leg_id)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_resume(call, %{b2bua_pid: b2bua_pid}, leg_id) do
+    Logger.debug("[ActionExecutor] Executing resume on leg #{inspect(leg_id)}")
+
+    case B2BUA.resume(b2bua_pid, leg_id) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :unknown_leg} ->
+        {:error, :unknown_leg}
+
+      {:error, :leg_not_held} ->
+        {:error, :leg_not_held}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Execute the `:transfer` operation.
+
+  Transfers a leg to a new destination.
+
+  Note: Transfer is not yet implemented in the B2BUA GenServer.
+  This function returns `{:error, :not_implemented}` until the B2BUA
+  transfer functionality is added.
+
+  ## Options
+
+  - `:type` - Transfer type: `:blind` (default) or `:attended`
+
+  ## RFC References
+
+  - RFC 3515 - REFER method
+  - RFC 3891 - REFER with Replaces (attended transfer)
+  """
+  @spec execute_transfer(Call.t(), context(), leg_id(), String.t(), keyword()) ::
+          execute_result()
+  def execute_transfer(_call, %{b2bua_pid: nil}, _leg_id, _destination, _opts) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_transfer(_call, %{b2bua_pid: b2bua_pid}, _leg_id, _destination, _opts)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_transfer(_call, %{b2bua_pid: _b2bua_pid}, leg_id, destination, _opts) do
+    Logger.debug(
+      "[ActionExecutor] Transfer requested for leg #{inspect(leg_id)} to #{destination}"
+    )
+
+    # Transfer is not yet implemented in the B2BUA GenServer
+    # Return :not_implemented until the transfer functionality is added
+    {:error, :not_implemented}
+  end
+
+  @doc """
+  Execute the `:hangup_leg` operation.
+
+  Hangs up a specific leg via the B2BUA GenServer.
+
+  1. Verify b2bua_pid is available in context
+  2. Call `B2BUA.hangup_leg/2` to terminate the leg
+  """
+  @spec execute_hangup_leg(Call.t(), context(), leg_id()) :: execute_result()
+  def execute_hangup_leg(_call, %{b2bua_pid: nil}, _leg_id) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_hangup_leg(_call, %{b2bua_pid: b2bua_pid}, _leg_id)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_hangup_leg(call, %{b2bua_pid: b2bua_pid}, leg_id) do
+    Logger.debug("[ActionExecutor] Executing hangup_leg on #{inspect(leg_id)}")
+
+    case B2BUA.hangup_leg(b2bua_pid, leg_id) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :unknown_leg} ->
+        {:error, :unknown_leg}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 end

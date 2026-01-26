@@ -2678,6 +2678,731 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  # ============================================================================
+  # B2BUA Operations Tests (T06)
+  # ============================================================================
+
+  describe "execute_originate/4 (T06 - B2BUA originate)" do
+    # Tests for originating an outbound leg via the B2BUA GenServer
+
+    test "calls B2BUA.originate with destination and options" do
+      call = Call.new(state: :answered)
+
+      # Start a real B2BUA GenServer
+      {:ok, b2bua_pid} =
+        Parrot.Bridge.B2BUA.start_link(
+          handler: nil,
+          media_mode: :proxy
+        )
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      # Execute the originate operation directly
+      {:ok, updated_call} =
+        ActionExecutor.execute_originate(
+          call,
+          context,
+          "sip:dest@example.com",
+          as: :b_leg
+        )
+
+      # Verify the leg was created in the B2BUA
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.remote_uri == "sip:dest@example.com"
+      assert leg.direction == :outbound
+      assert leg.state == :init
+
+      # Call should be returned unchanged (operation succeeded)
+      assert updated_call == call
+
+      # Cleanup
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when b2bua_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_originate(
+                 call,
+                 context,
+                 "sip:dest@example.com",
+                 []
+               )
+    end
+
+    test "returns error when call is not in answered state" do
+      call = Call.new(state: :incoming)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_originate(
+                 call,
+                 context,
+                 "sip:dest@example.com",
+                 []
+               )
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when leg_id already exists" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Pre-create a leg with the same ID
+      {:ok, :b_leg} =
+        Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:first@example.com", as: :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      # Try to originate with the same leg_id
+      assert {:error, :leg_exists} =
+               ActionExecutor.execute_originate(
+                 call,
+                 context,
+                 "sip:second@example.com",
+                 as: :b_leg
+               )
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
+  describe "execute_connect_legs/4 (T06 - B2BUA connect)" do
+    # Tests for connecting two legs via the B2BUA GenServer
+
+    test "calls B2BUA.connect with leg_a and leg_b" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create and answer both legs
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "sdp"})
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_connect_legs(
+          call,
+          context,
+          :a_leg,
+          :b_leg,
+          []
+        )
+
+      # Verify the legs are connected
+      assert Parrot.Bridge.B2BUA.get_active_bridge(b2bua_pid) == {:a_leg, :b_leg}
+      assert updated_call == call
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when b2bua_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_connect_legs(
+                 call,
+                 context,
+                 :a_leg,
+                 :b_leg,
+                 []
+               )
+    end
+
+    test "returns error when leg not found" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :leg_not_found} =
+               ActionExecutor.execute_connect_legs(
+                 call,
+                 context,
+                 :a_leg,
+                 :b_leg,
+                 []
+               )
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when leg not answered" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create legs but don't answer them
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :ringing)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :leg_not_answered} =
+               ActionExecutor.execute_connect_legs(
+                 call,
+                 context,
+                 :a_leg,
+                 :b_leg,
+                 []
+               )
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
+  describe "execute_hold/3 (T06 - B2BUA hold)" do
+    # Tests for placing a leg on hold via the B2BUA GenServer
+
+    test "calls B2BUA.hold with leg_id" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create and connect legs
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "sdp"})
+      {:ok, _bridge} = Parrot.Bridge.B2BUA.connect(b2bua_pid, :a_leg, :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_hold(call, context, :b_leg)
+
+      # Verify the leg is on hold
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.state == :held
+      assert updated_call == call
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when b2bua_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} = ActionExecutor.execute_hold(call, context, :b_leg)
+    end
+
+    test "returns error when leg not found" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :unknown_leg} = ActionExecutor.execute_hold(call, context, :nonexistent)
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when leg not connected" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create leg but don't connect it
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :leg_not_connected} = ActionExecutor.execute_hold(call, context, :a_leg)
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
+  describe "execute_resume/3 (T06 - B2BUA resume)" do
+    # Tests for resuming a held leg via the B2BUA GenServer
+
+    test "calls B2BUA.resume with leg_id" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create, connect, and hold a leg
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "sdp"})
+      {:ok, _bridge} = Parrot.Bridge.B2BUA.connect(b2bua_pid, :a_leg, :b_leg)
+      :ok = Parrot.Bridge.B2BUA.hold(b2bua_pid, :b_leg)
+
+      # Verify it's on hold
+      {:ok, held_leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert held_leg.state == :held
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_resume(call, context, :b_leg)
+
+      # Verify the leg is resumed (back to answered)
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.state == :answered
+      assert updated_call == call
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when b2bua_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} = ActionExecutor.execute_resume(call, context, :b_leg)
+    end
+
+    test "returns error when leg not found" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :unknown_leg} = ActionExecutor.execute_resume(call, context, :nonexistent)
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when leg not held" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create answered leg but don't hold it
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :leg_not_held} = ActionExecutor.execute_resume(call, context, :a_leg)
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
+  describe "execute_transfer/4 (T06 - B2BUA transfer)" do
+    # Tests for transferring a leg to a new destination
+    # Note: B2BUA.transfer is not yet implemented per the design doc
+    # These tests define the expected behavior
+
+    test "returns error when b2bua_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_transfer(
+                 call,
+                 context,
+                 :b_leg,
+                 "sip:new@example.com",
+                 []
+               )
+    end
+
+    test "returns error when transfer not implemented" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      # Transfer is not yet implemented in B2BUA
+      result =
+        ActionExecutor.execute_transfer(
+          call,
+          context,
+          :b_leg,
+          "sip:new@example.com",
+          []
+        )
+
+      # Should return an error indicating transfer is not implemented
+      assert {:error, :not_implemented} = result
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
+  describe "execute_hangup_leg/3 (T06 - B2BUA hangup_leg)" do
+    # Tests for hanging up a specific leg via the B2BUA GenServer
+
+    test "calls B2BUA.hangup_leg with leg_id" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Create a leg
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_hangup_leg(call, context, :b_leg)
+
+      # Verify the leg is terminated
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.state == :terminated
+      assert updated_call == call
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when b2bua_pid is nil" do
+      call = Call.new(state: :answered)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} = ActionExecutor.execute_hangup_leg(call, context, :b_leg)
+    end
+
+    test "returns error when leg not found" do
+      call = Call.new(state: :answered)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      assert {:error, :unknown_leg} =
+               ActionExecutor.execute_hangup_leg(call, context, :nonexistent)
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
+  describe "execute/3 with B2BUA operations via pipeline (T06)" do
+    # Integration tests for B2BUA operations through the main execute/3 dispatch
+
+    test "executes originate operation via pipeline" do
+      call = Call.new(state: :answered) |> Call.originate("sip:dest@example.com", as: :b_leg)
+      operations = Call.get_operations(call)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Verify leg was created
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.remote_uri == "sip:dest@example.com"
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "executes connect_legs operation via pipeline" do
+      call = Call.new(state: :answered) |> Call.connect_legs(:a_leg, :b_leg)
+      operations = Call.get_operations(call)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up answered legs
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "sdp"})
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Verify legs are connected
+      assert Parrot.Bridge.B2BUA.get_active_bridge(b2bua_pid) == {:a_leg, :b_leg}
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "executes hold operation via pipeline" do
+      call = Call.new(state: :answered) |> Call.hold(:b_leg)
+      operations = Call.get_operations(call)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up connected legs
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "sdp"})
+      {:ok, _bridge} = Parrot.Bridge.B2BUA.connect(b2bua_pid, :a_leg, :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Verify leg is held
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.state == :held
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "executes resume operation via pipeline" do
+      call = Call.new(state: :answered) |> Call.resume(:b_leg)
+      operations = Call.get_operations(call)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up held leg
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "sdp"})
+      {:ok, _bridge} = Parrot.Bridge.B2BUA.connect(b2bua_pid, :a_leg, :b_leg)
+      :ok = Parrot.Bridge.B2BUA.hold(b2bua_pid, :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Verify leg is resumed
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.state == :answered
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "executes hangup_leg operation via pipeline" do
+      call = Call.new(state: :answered) |> Call.hangup_leg(:b_leg)
+      operations = Call.get_operations(call)
+
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      {:ok, :b_leg} = Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:dest@example.com", as: :b_leg)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Verify leg is terminated
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.state == :terminated
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "returns error when B2BUA operation fails due to missing b2bua_pid" do
+      call = Call.new(state: :answered) |> Call.originate("sip:dest@example.com")
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} = ActionExecutor.execute(operations, call, context)
+    end
+
+    test "B2BUA operations continue to next operations (non-signaling)" do
+      # B2BUA operations like originate are non-signaling, so they should continue
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up the A-leg first
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      call =
+        Call.new(state: :answered)
+        |> Call.originate("sip:dest@example.com", as: :b_leg)
+        |> Call.play("connecting.wav")
+
+      operations = Call.get_operations(call)
+
+      test_pid = self()
+
+      media_pid =
+        spawn(fn ->
+          receive do
+            msg -> send(test_pid, {:media_msg, msg})
+          end
+        end)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: media_pid,
+        b2bua_pid: b2bua_pid
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Both operations should execute
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.remote_uri == "sip:dest@example.com"
+      assert_receive {:media_msg, {:play_files, ["connecting.wav"], []}}
+
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+  end
+
   # Helper functions
 
   # Starts a mock synthesizer GenServer that delegates to the provided function
