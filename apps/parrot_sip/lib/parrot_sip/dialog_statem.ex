@@ -85,7 +85,7 @@ defmodule ParrotSip.DialogStatem do
 
   alias ParrotSip.{Dialog, Message, Branch, DialogBroadcast}
   alias ParrotSip.CDR
-  alias ParrotSip.CDR.{Generator, Dispatcher, TerminationCause}
+  alias ParrotSip.CDR.{Generator, Dispatcher, MediaInfo, TerminationCause}
   alias ParrotSip.Headers.{Contact, Via}
 
   @type trans :: {:trans, pid()}
@@ -127,7 +127,9 @@ defmodule ParrotSip.DialogStatem do
       # Timestamp when call was answered (:early -> :confirmed transition)
       answered_at: nil,
       # MOS fetcher callback for CDR generation
-      mos_fetcher: nil
+      mos_fetcher: nil,
+      # Media session ID for MOS data retrieval
+      media_session_id: nil
     ]
 
     @type t :: %__MODULE__{
@@ -142,7 +144,8 @@ defmodule ParrotSip.DialogStatem do
             recovered: boolean(),
             invite_received_at: DateTime.t() | nil,
             answered_at: DateTime.t() | nil,
-            mos_fetcher: mos_fetcher()
+            mos_fetcher: mos_fetcher(),
+            media_session_id: String.t() | nil
           }
   end
 
@@ -1362,8 +1365,18 @@ defmodule ParrotSip.DialogStatem do
       ended_at: DateTime.utc_now()
     }
 
+    # Fetch MOS summary using the injected fetcher callback
+    # MOS failures never prevent CDR generation
+    mos_summary = fetch_mos_summary(data)
+
+    # Build media info struct with MOS summary and packet statistics
+    media_info = build_media_info(mos_summary)
+
+    # Build opts with media_info if available
+    opts = if media_info, do: [media_info: media_info], else: []
+
     # Generate CDR
-    case Generator.generate(data.dialog, timing_data, termination_cause) do
+    case Generator.generate(data.dialog, timing_data, termination_cause, opts) do
       {:ok, cdr} ->
         # Fire-and-forget dispatch to all handlers
         handlers = CDR.list_handlers()
@@ -1377,8 +1390,8 @@ defmodule ParrotSip.DialogStatem do
 
         :ok
 
-      {:error, reason} ->
-        Logger.warning("dialog #{inspect(data.id)}: failed to generate CDR: #{inspect(reason)}")
+      {:error, cdr_error} ->
+        Logger.warning("dialog #{inspect(data.id)}: failed to generate CDR: #{inspect(cdr_error)}")
         :ok
     end
   end
@@ -1416,6 +1429,54 @@ defmodule ParrotSip.DialogStatem do
         }
     end
   end
+
+  # Fetches MOS summary data using the injected fetcher callback.
+  # Returns nil if no fetcher is configured, no media session ID exists,
+  # or if the fetcher returns nil or raises an error.
+  # MOS failures never prevent CDR generation.
+  @spec fetch_mos_summary(Data.t()) :: map() | nil
+  defp fetch_mos_summary(%Data{mos_fetcher: nil}), do: nil
+  defp fetch_mos_summary(%Data{media_session_id: nil}), do: nil
+
+  defp fetch_mos_summary(%Data{mos_fetcher: fetcher, media_session_id: session_id}) do
+    try do
+      fetcher.(session_id)
+    rescue
+      error ->
+        Logger.warning("MOS fetcher failed for session #{session_id}: #{inspect(error)}")
+        nil
+    end
+  end
+
+  # Builds a MediaInfo struct from MOS summary data.
+  # Extracts packet statistics from the MOS summary for the CDR.
+  # Returns nil if no MOS summary is available.
+  @spec build_media_info(map() | nil) :: MediaInfo.t() | nil
+  defp build_media_info(nil), do: nil
+
+  defp build_media_info(mos_summary) when is_map(mos_summary) do
+    %MediaInfo{
+      mos_summary: mos_summary,
+      packets_sent: Map.get(mos_summary, :total_packets),
+      packets_received: calculate_packets_received(mos_summary),
+      jitter_ms: extract_avg_jitter(mos_summary)
+    }
+  end
+
+  # Calculate packets received from total packets and loss count.
+  @spec calculate_packets_received(map()) :: non_neg_integer() | nil
+  defp calculate_packets_received(%{total_packets: total, total_lost: lost})
+       when is_integer(total) and is_integer(lost) do
+    max(total - lost, 0)
+  end
+
+  defp calculate_packets_received(_mos_summary), do: nil
+
+  # Extract average jitter from MOS summary if available.
+  # Currently returns nil as jitter is not yet captured in the MOS summary.
+  @spec extract_avg_jitter(map()) :: float() | nil
+  defp extract_avg_jitter(%{avg_jitter_ms: jitter}) when is_number(jitter), do: jitter / 1.0
+  defp extract_avg_jitter(_mos_summary), do: nil
 
   # DialogBroadcast integration helpers
   # These functions provide graceful degradation if DialogBroadcast is not running
