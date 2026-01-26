@@ -156,6 +156,10 @@ defmodule Parrot.Bridge.ActionExecutor do
     dialog_id = compute_dialog_id(sip_msg, final_response)
     Logger.debug("[ActionExecutor] Dialog established: #{dialog_id}")
 
+    # Wire up MOS fetcher for CDR integration
+    # This enables MOS quality data to be included in CDRs when the dialog terminates
+    wire_mos_fetcher(dialog_id, context)
+
     # Start media session if present (FR-006)
     # Per RFC 3261, media can start after 200 OK is sent
     # This enables audio playback and recording operations
@@ -177,6 +181,19 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   defp start_media_if_present(_context), do: :ok
+
+  # Wire up MOS fetcher on the dialog for CDR MOS integration.
+  # Sets the mos_fetcher callback and media_session_id on the dialog so that
+  # MOS quality data can be retrieved when the dialog terminates for CDR generation.
+  @spec wire_mos_fetcher(String.t(), context()) :: :ok
+  defp wire_mos_fetcher(dialog_id, %{mos_fetcher: mos_fetcher, media_session_id: session_id})
+       when is_function(mos_fetcher, 1) and is_binary(session_id) do
+    Logger.debug("[ActionExecutor] Wiring MOS fetcher for dialog #{dialog_id}, session #{session_id}")
+    ParrotSip.DialogStatem.set_mos_fetcher(dialog_id, mos_fetcher, session_id)
+    :ok
+  end
+
+  defp wire_mos_fetcher(_dialog_id, _context), do: :ok
 
   @doc """
   Execute the `:reject` operation.

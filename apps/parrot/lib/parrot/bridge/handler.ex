@@ -195,6 +195,9 @@ defmodule Parrot.Bridge.Handler do
       method: to_string(req_sip_msg.method)
     }
 
+    # Generate media session ID (matches ID used in setup_media_session)
+    media_session_id = "call_#{req_sip_msg.call_id}"
+
     # Build context for Call.Server (includes SIP context for ActionExecutor)
     context = %{
       uas: uas,
@@ -202,7 +205,10 @@ defmodule Parrot.Bridge.Handler do
       media_pid: media_pid,
       dialog_id: req_sip_msg.call_id,
       sdp_answer: sdp_answer,
-      response_fn: Map.get(args, :response_fn)
+      response_fn: Map.get(args, :response_fn),
+      # MOS fetcher callback for CDR integration
+      mos_fetcher: &mos_fetcher/1,
+      media_session_id: media_session_id
     }
 
     # Start Call.Server which will invoke handle_invite and execute operations
@@ -986,5 +992,19 @@ defmodule Parrot.Bridge.Handler do
   defp send_response(uas, response, _args) do
     # Production mode - use UAS transaction
     ParrotSip.Transaction.Server.response(response, uas)
+  end
+
+  # MOS fetcher callback for CDR MOS integration
+  # Called by DialogStatem during termination to retrieve MOS summary data.
+  # Returns a plain map with MOS summary data or nil on error.
+  @spec mos_fetcher(String.t()) :: map() | nil
+  defp mos_fetcher(session_id) do
+    case ParrotMedia.MOS.call_summary(session_id) do
+      {:ok, %ParrotMedia.MOS.CallSummary{} = summary} ->
+        ParrotMedia.MOS.CallSummary.to_map(summary)
+
+      {:error, _reason} ->
+        nil
+    end
   end
 end

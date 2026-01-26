@@ -704,6 +704,47 @@ defmodule ParrotSip.DialogStatem do
     ParrotSip.Dialog.Supervisor.num_active()
   end
 
+  @doc """
+  Sets the MOS fetcher callback and media session ID for a dialog.
+
+  This enables MOS (Mean Opinion Score) data to be included in CDR records
+  when the dialog terminates. The fetcher callback is invoked during termination
+  to retrieve MOS summary data from the media session.
+
+  ## Parameters
+
+    - `dialog_id` - The dialog ID string to update
+    - `mos_fetcher` - A function that takes a session_id and returns a map with
+      MOS summary data or nil
+    - `media_session_id` - The ID of the media session associated with this dialog
+
+  ## Returns
+
+    - `:ok` - Always returns :ok (fire-and-forget)
+
+  ## Example
+
+      mos_fetcher = fn session_id ->
+        case ParrotMedia.MOS.call_summary(session_id) do
+          {:ok, summary} -> ParrotMedia.MOS.CallSummary.to_map(summary)
+          _ -> nil
+        end
+      end
+
+      DialogStatem.set_mos_fetcher(dialog_id, mos_fetcher, "call_abc123")
+  """
+  @spec set_mos_fetcher(String.t(), Data.mos_fetcher(), String.t()) :: :ok
+  def set_mos_fetcher(dialog_id, mos_fetcher, media_session_id)
+      when is_binary(dialog_id) and is_function(mos_fetcher, 1) and is_binary(media_session_id) do
+    case Registry.lookup(ParrotSip.Registry, dialog_id) do
+      [{dialog_pid, _}] ->
+        :gen_statem.cast(dialog_pid, {:set_mos_fetcher, mos_fetcher, media_session_id})
+
+      [] ->
+        :ok
+    end
+  end
+
   # ===========================================================================
   # Public Introspection APIs
   # ===========================================================================
@@ -883,6 +924,10 @@ defmodule ParrotSip.DialogStatem do
     process_set_owner(:early, pid, data)
   end
 
+  def early(:cast, {:set_mos_fetcher, mos_fetcher, media_session_id}, data) do
+    process_set_mos_fetcher(:early, mos_fetcher, media_session_id, data)
+  end
+
   def early(:info, {:DOWN, _ref, :process, _pid, _reason}, data) do
     Logger.info("dialog #{inspect(data.id)}: owner process terminated")
     {:stop, :normal}
@@ -920,6 +965,10 @@ defmodule ParrotSip.DialogStatem do
 
   def confirmed(:cast, {:set_owner, pid}, data) do
     process_set_owner(:confirmed, pid, data)
+  end
+
+  def confirmed(:cast, {:set_mos_fetcher, mos_fetcher, media_session_id}, data) do
+    process_set_mos_fetcher(:confirmed, mos_fetcher, media_session_id, data)
   end
 
   def confirmed(:state_timeout, :subscription_expired, data) do
@@ -1112,6 +1161,12 @@ defmodule ParrotSip.DialogStatem do
     mon = Process.monitor(pid)
     updated_data = %{data | owner_mon: mon}
 
+    {:keep_state, updated_data}
+  end
+
+  defp process_set_mos_fetcher(_state, mos_fetcher, media_session_id, data) do
+    Logger.debug("dialog #{inspect(data.id)}: setting MOS fetcher for session #{media_session_id}")
+    updated_data = %{data | mos_fetcher: mos_fetcher, media_session_id: media_session_id}
     {:keep_state, updated_data}
   end
 
