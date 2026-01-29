@@ -1,5 +1,6 @@
 defmodule Parrot.Call.ServerTest do
-  use ExUnit.Case, async: true
+  # Using async: false because registry tests depend on shared Parrot.Registry state
+  use ExUnit.Case, async: false
 
   alias Parrot.Call
   alias Parrot.Call.Server

@@ -151,7 +151,7 @@ defmodule ParrotMedia.PipelineFileSwitchingTest do
     }
   end
 
-  defp start_test_session(session_id, audio_file, codec \\ :pcma, response_agent) do
+  defp start_test_session(session_id, audio_file, codec, response_agent) do
     {:ok, session_pid} =
       MediaSession.start_link(
         id: session_id,

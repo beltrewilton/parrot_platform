@@ -176,7 +176,7 @@ defmodule Parrot.Sipp.B2BUATest do
     end
 
     @impl true
-    def handle_leg_event(call, _leg_id, {:transfer_complete, _leg_id}) do
+    def handle_leg_event(call, leg_id, {:transfer_complete, leg_id}) do
       # Transfer successful - hang up A-leg
       {:ok, call |> hangup_leg(:a_leg)}
     end
@@ -258,11 +258,6 @@ defmodule Parrot.Sipp.B2BUATest do
   # Get scenario directory path
   defp scenario_dir do
     Path.expand("b2bua", __DIR__)
-  end
-
-  # Get umbrella root for parrot_sip scenarios
-  defp umbrella_root do
-    Path.expand("../../../..", __DIR__)
   end
 
   # ===========================================================================

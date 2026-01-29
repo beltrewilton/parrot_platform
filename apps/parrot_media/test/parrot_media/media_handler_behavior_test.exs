@@ -94,6 +94,21 @@ defmodule ParrotMedia.HandlerTest do
     def handle_play_complete(_file, state) do
       {:noreply, state}
     end
+
+    @impl true
+    def handle_session_start(_session_id, _opts, state) do
+      {:noreply, state}
+    end
+
+    @impl true
+    def handle_stream_start(_session_id, _stream_type, state) do
+      {:noreply, state}
+    end
+
+    @impl true
+    def handle_negotiation_complete(_session_id, _codec, _remote_info, state) do
+      {:noreply, state}
+    end
   end
 
   describe "init/1" do

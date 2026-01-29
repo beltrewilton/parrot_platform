@@ -56,10 +56,14 @@ defmodule Parrot.Examples.Registrar do
     require Logger
 
     @impl Parrot.RegistrationHandler
+    def get_password("dsl-test") do
+      # Test user for SIPp scenarios
+      {:ok, "test123"}
+    end
+
     def get_password(_username) do
-      # No authentication required for this simple registrar
-      # Return a dummy password that will always validate
-      {:ok, ""}
+      # Unknown users - reject registration
+      :error
     end
 
     @impl Parrot.RegistrationHandler

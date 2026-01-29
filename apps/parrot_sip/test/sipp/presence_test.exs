@@ -88,7 +88,6 @@ defmodule SippTest.PresenceTest do
       from = subscribe_msg.from
       to = subscribe_msg.to
       call_id = subscribe_msg.call_id
-      source = subscribe_msg.source
 
       # Create NOTIFY request
       # NOTIFY goes to the Contact from SUBSCRIBE, or back to the From address
@@ -131,26 +130,22 @@ defmodule SippTest.PresenceTest do
           body: String.trim(pidf_body)
         )
 
-      # Send via UA
+      # Send via callback if provided, otherwise log warning
       case args[:notify_callback] do
-        nil ->
-          # Use ParrotSip.UA to send the NOTIFY if available
-          try do
-            ParrotSip.UA.send_request(notify, target_host, target_port, :udp, %{
-              source: source
-            })
-          rescue
-            e ->
-              Logger.warning("[PresenceTestHandler] Failed to send NOTIFY: #{inspect(e)}")
-          end
-
         callback when is_function(callback) ->
           callback.(notify)
+
+        nil ->
+          # No callback provided - NOTIFY cannot be sent without proper transport setup
+          Logger.warning(
+            "[PresenceTestHandler] No notify_callback provided, cannot send NOTIFY to #{target_host}:#{target_port}"
+          )
       end
     end
 
     # Handle PUBLISH - respond with 200 OK
-    defp handle_publish(uas, sip_msg, args) do
+    @impl true
+    def handle_publish(uas, sip_msg, args) do
       update_stats(args, :publishes)
       Logger.debug("[PresenceTestHandler] Handling PUBLISH")
 
@@ -167,7 +162,8 @@ defmodule SippTest.PresenceTest do
     end
 
     # Handle NOTIFY from remote (as UAS)
-    defp handle_notify(uas, sip_msg, args) do
+    @impl true
+    def handle_notify(uas, sip_msg, args) do
       update_stats(args, :notifies)
       Logger.debug("[PresenceTestHandler] Handling NOTIFY")
 
@@ -263,7 +259,8 @@ defmodule SippTest.PresenceTest do
     @impl true
     def process_ack(_sip_msg, _args), do: :ok
 
-    defp handle_subscribe(uas, sip_msg, args) do
+    @impl true
+    def handle_subscribe(uas, sip_msg, args) do
       update_stats(args, :subscribes)
 
       response = Message.reply(sip_msg, 200, "OK")
@@ -272,7 +269,8 @@ defmodule SippTest.PresenceTest do
       :ok
     end
 
-    defp handle_publish(uas, sip_msg, args) do
+    @impl true
+    def handle_publish(uas, sip_msg, args) do
       update_stats(args, :publishes)
 
       response = Message.reply(sip_msg, 200, "OK")

@@ -144,7 +144,10 @@ defmodule ParrotSip.Auth.NonceStoreTest do
       nonce = NonceStore.generate_nonce(pid)
 
       # Wait for expiration and cleanup
-      Process.sleep(1600)
+      # TTL=1s, cleanup runs at t=500ms, t=1000ms, t=1500ms, t=2000ms
+      # At t=1500ms, cutoff = 0.5s, so nonces from t=0 are removed
+      # Wait 2100ms to ensure cleanup at t=2000ms has completed
+      Process.sleep(2100)
 
       # After cleanup, nonce should be completely gone
       assert NonceStore.validate_nonce(pid, nonce, "00000001") == {:error, :invalid_nonce}

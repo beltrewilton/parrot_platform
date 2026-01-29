@@ -210,7 +210,7 @@ defmodule ParrotSip.Presence.ServerTest do
 
       {:ok, notify_msg} = PresenceServer.build_notify(subscription_id, %{status: :open})
 
-      assert notify_msg.event != nil
+      # Verify Event header is present (accessing .event will fail if nil)
       assert notify_msg.event.event == "presence"
     end
 

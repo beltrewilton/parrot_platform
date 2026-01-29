@@ -190,9 +190,13 @@ defmodule Parrot.Call.Server do
       rescue
         # Handle race condition where registry is shutting down
         ArgumentError -> :ok
+        # Handle :noproc error raised as ErlangError when registry process is terminating
+        e in ErlangError ->
+          if e.original == :noproc, do: :ok, else: reraise(e, __STACKTRACE__)
       catch
         # Handle :noproc error when registry process is terminating
         :exit, {:noproc, _} -> :ok
+        :error, :noproc -> :ok
       end
     end
 

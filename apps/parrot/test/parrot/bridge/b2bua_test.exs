@@ -20,7 +20,6 @@ defmodule Parrot.Bridge.B2BUATest do
   use ExUnit.Case, async: true
 
   alias Parrot.Bridge.B2BUA
-  alias Parrot.Bridge.MediaBridge
   alias Parrot.Bridge.RingStrategy
   alias Parrot.Leg
 
@@ -124,7 +123,7 @@ defmodule Parrot.Bridge.B2BUATest do
     {:ok, %{pid: pid, tracker: tracker}}
   end
 
-  defp create_mock_leg(opts \\ []) do
+  defp create_mock_leg(opts) do
     Leg.new(opts)
   end
 
@@ -215,7 +214,7 @@ defmodule Parrot.Bridge.B2BUATest do
     end
 
     test "dispatches :trying event to handler" do
-      {:ok, %{pid: pid, tracker: tracker}} = start_b2bua()
+      {:ok, %{pid: pid, tracker: _tracker}} = start_b2bua()
       {:ok, media_pid} = start_mock_media()
 
       a_leg =
@@ -333,7 +332,7 @@ defmodule Parrot.Bridge.B2BUATest do
       assert legs[b_leg_id].state == :terminated
     end
 
-    test "dispatches event to handler", %{pid: pid, b_leg_id: b_leg_id, tracker: tracker} do
+    test "dispatches event to handler", %{pid: pid, b_leg_id: b_leg_id, tracker: _tracker} do
       # Must transition through :trying before :ringing
       :ok = B2BUA.handle_leg_event(pid, b_leg_id, :trying)
       :ok = B2BUA.handle_leg_event(pid, b_leg_id, :ringing)
@@ -372,7 +371,7 @@ defmodule Parrot.Bridge.B2BUATest do
     end
 
     test "connects two answered legs", %{pid: pid} do
-      assert {:ok, bridge} = B2BUA.connect(pid, :a_leg, :b_leg)
+      assert {:ok, _bridge} = B2BUA.connect(pid, :a_leg, :b_leg)
 
       assert B2BUA.get_active_bridge(pid) == {:a_leg, :b_leg}
     end

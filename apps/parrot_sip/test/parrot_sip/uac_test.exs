@@ -1,4 +1,4 @@
-defmodule ParrotSip.Transaction.ClientTest do
+defmodule ParrotSip.UacTest do
   use ExUnit.Case, async: true
 
   alias ParrotSip.{Message}

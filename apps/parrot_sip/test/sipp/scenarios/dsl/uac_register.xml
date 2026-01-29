@@ -1,23 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
-  UAC REGISTER Scenario
+  UAC REGISTER Scenario with Digest Authentication
 
-  Tests registration functionality using the DSL.
-  Simple registration without authentication.
+  Tests registration functionality using the DSL with proper RFC 3261 Digest auth.
 
   Flow:
   1. Send REGISTER to server
-  2. Receive 200 OK (registration accepted)
+  2. Receive 401 Unauthorized with WWW-Authenticate challenge
+  3. Send REGISTER with Authorization header
+  4. Receive 200 OK (registration accepted)
 
   This scenario verifies:
   - REGISTER request handling
+  - Digest authentication challenge/response
   - Contact binding
   - Expires header processing
 
   Reference: RFC 3261 Section 10 - Registrations
+             RFC 3261 Section 22 - Usage of HTTP Authentication
 -->
-<scenario name="UAC REGISTER">
-  <!-- Send REGISTER -->
+<scenario name="UAC REGISTER with Auth">
+  <!-- Send initial REGISTER without credentials -->
   <send retrans="500">
     <![CDATA[
 
@@ -30,6 +33,28 @@
       Contact: <sip:dsl-test@[local_ip]:[local_port]>
       Max-Forwards: 70
       Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Receive 401 Unauthorized with WWW-Authenticate -->
+  <recv response="401" auth="true" crlf="true"/>
+
+  <!-- Send REGISTER with Authorization -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:dsl-test@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:dsl-test@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:dsl-test@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Expires: 3600
+      [authentication username=dsl-test password=test123]
       Content-Length: 0
 
     ]]>

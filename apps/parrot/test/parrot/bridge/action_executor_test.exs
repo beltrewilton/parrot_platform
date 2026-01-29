@@ -93,7 +93,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: nil
       }
 
-      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
 
       # Should have sent a 200 OK response
       assert_receive {:response_sent, response}
@@ -158,7 +158,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         media_pid: nil
       }
 
-      {:ok, updated_call} = ActionExecutor.execute_reject(call, context, 486)
+      {:ok, _updated_call} = ActionExecutor.execute_reject(call, context, 486)
 
       assert_receive {:response_sent, response}
       assert response.status_code == 486
@@ -969,7 +969,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
 
-      assert_receive {:response_sent, response}
+      assert_receive {:response_sent, _response}
 
       # Contact may be nil when source doesn't have local address
       # This is acceptable behavior - the SIP stack will handle it

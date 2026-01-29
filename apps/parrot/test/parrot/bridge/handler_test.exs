@@ -515,7 +515,7 @@ defmodule Parrot.Bridge.HandlerTest do
 
   describe "uas_request fallback (US5 - T049)" do
     test "returns 501 Not Implemented for unhandled methods" do
-      test_pid = self()
+      _test_pid = self()
 
       # Create an INFO request (unhandled method)
       info_msg = %Message{
@@ -1494,7 +1494,7 @@ defmodule Parrot.Bridge.HandlerTest do
       # We verify this by checking that setup_media_session returns a valid PID,
       # which is then included in the context map at line 202 in handler.ex:
       #   context = %{... media_pid: media_pid ...}
-      test_pid = self()
+      _test_pid = self()
       unique_call_id = "context-integration-#{System.unique_integer([:positive])}@127.0.0.1"
 
       invite =

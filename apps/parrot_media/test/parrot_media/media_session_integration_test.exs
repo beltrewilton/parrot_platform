@@ -77,6 +77,20 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
     def handle_session_start(_id, _opts, state) do
       {:ok, state}
     end
+
+    @impl true
+    def handle_codec_negotiation(offered, supported, state) do
+      codec = Enum.find(offered, &(&1 in supported))
+      case codec do
+        nil -> {:error, :no_common_codec, state}
+        c -> {:ok, c, state}
+      end
+    end
+
+    @impl true
+    def handle_negotiation_complete(_session_id, _codec, _remote_info, state) do
+      {:noreply, state}
+    end
   end
 
   setup do

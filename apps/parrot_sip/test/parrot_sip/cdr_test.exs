@@ -288,9 +288,8 @@ defmodule ParrotSip.CDRTest do
 
       # Verify call was answered
       assert cdr.disposition == :answered
-      assert cdr.answered_at != nil
 
-      # Verify timing relationships
+      # Verify timing relationships (accessing answered_at verifies it's not nil)
       assert DateTime.compare(cdr.answered_at, cdr.invite_received_at) == :gt
       assert DateTime.compare(cdr.ended_at, cdr.answered_at) == :gt
 
@@ -341,7 +340,7 @@ defmodule ParrotSip.CDRTest do
         media_info: media_info
       }
 
-      assert cdr.media_info != nil
+      # Verify media_info is populated (accessing fields will fail if nil)
       assert cdr.media_info.codec == "PCMU"
       assert cdr.media_info.codec_payload_type == 0
       assert cdr.media_info.mos_score == 4.2

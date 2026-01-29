@@ -30,7 +30,7 @@ defmodule SippTest.UATest do
     # Inbound calls
 
     @impl true
-    def handle_incoming(ua, invite, entity, state) do
+    def handle_incoming(ua, _invite, entity, state) do
       send(state.test_pid, {:ua_event, :incoming, entity})
 
       # Auto-answer for tests
@@ -152,7 +152,7 @@ defmodule SippTest.UATest do
       handler = UA.get_handler(ua)
       {:ok, stack} = SipStackHelper.start_udp(handler, port: local_port)
 
-      {:ok, entity} = UA.dial(ua, "sip:test@127.0.0.1:#{sipp_port}", sdp: build_sdp())
+      {:ok, _entity} = UA.dial(ua, "sip:test@127.0.0.1:#{sipp_port}", sdp: build_sdp())
 
       # Wait for answer
       assert_receive {:ua_event, :answered, answered_entity}, 5_000
