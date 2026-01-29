@@ -279,7 +279,7 @@ defmodule ParrotSip.TransactionStatem do
               raise ArgumentError, "Unsupported transaction type: #{inspect(other)}"
           end
 
-        start_transaction([transaction, handler])
+        start_transaction([transaction, handler], sip_msg)
     end
   end
 
@@ -1171,11 +1171,10 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   # Server transaction initialization helper
+  # Note: Registration happens atomically via the :via tuple in start_link/1.
+  # No explicit Registry.register needed here - it would be redundant.
   defp init_server_transaction(transaction, handler) do
     %{request: sip_msg, id: transaction_id, branch: branch} = transaction
-    registry = ParrotSip.Registry
-
-    Registry.register(registry, transaction_id, nil)
 
     Logger.metadata(
       trans_id: transaction_id,
@@ -3165,7 +3164,7 @@ defmodule ParrotSip.TransactionStatem do
       end
 
     # Start the transaction which will handle the request through the normal flow
-    start_transaction([transaction, handler])
+    start_transaction([transaction, handler], sip_msg)
   end
 
   # Helper function to generate transaction ID for CANCEL requests
@@ -3183,9 +3182,22 @@ defmodule ParrotSip.TransactionStatem do
     Transaction.generate_id(invite_msg)
   end
 
-  defp start_transaction(args) do
+  # RFC 3261 Section 17.2.1: Retransmissions arriving during the spawn window
+  # must be forwarded to the existing transaction, not lost.
+  defp start_transaction(args, sip_msg) do
     case ParrotSip.Transaction.Supervisor.start_child(args) do
       {:ok, _} ->
+        :ok
+
+      {:error, {:already_started, pid}} ->
+        # Transaction already exists - this is a retransmission that arrived during
+        # the narrow window between find_server returning :error and start_child completing.
+        # Forward the message to the existing transaction.
+        Logger.debug(
+          "trans: forwarding retransmission to existing transaction pid=#{inspect(pid)}"
+        )
+
+        :gen_statem.cast(pid, {:received, sip_msg})
         :ok
 
       {:error, _} = error ->

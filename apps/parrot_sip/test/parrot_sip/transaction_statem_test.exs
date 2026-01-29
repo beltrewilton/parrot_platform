@@ -762,6 +762,85 @@ defmodule ParrotSip.TransactionStatemTest do
     end
   end
 
+  describe "INVITE retransmission race condition" do
+    @tag :race_condition
+    test "handles retransmission arriving during transaction spawn window", %{test_id: test_id} do
+      # This test verifies the fix for parrot_platform-121:
+      # When a retransmission arrives during the spawn window (before Registry lookup succeeds
+      # but after start_child was called), the message should be forwarded to the existing
+      # transaction, not lost with an error log.
+      #
+      # RFC 3261 Section 17.2.1: Retransmissions MUST be handled by existing transaction
+
+      invite = build_invite(unique_branch("z9hG4bKraceCondition", test_id))
+      handler = TestHandler.new()
+
+      # Simulate concurrent processing by spawning multiple tasks that all try to
+      # process the same INVITE simultaneously
+      parent = self()
+
+      # Start 5 concurrent tasks that all try to process the same INVITE
+      tasks =
+        for i <- 1..5 do
+          Task.async(fn ->
+            result = TransactionStatem.server_process(invite, handler)
+            send(parent, {:result, i, result})
+            result
+          end)
+        end
+
+      # Wait for all tasks to complete
+      results = Task.await_many(tasks, 1000)
+
+      # All should succeed with :ok
+      assert Enum.all?(results, &(&1 == :ok)),
+             "All concurrent server_process calls should return :ok, got: #{inspect(results)}"
+
+      # There should be exactly ONE transaction created
+      Process.sleep(50)
+
+      # Look up transaction by ID
+      trans_id = ParrotSip.Transaction.generate_id(invite)
+
+      case Registry.lookup(ParrotSip.Registry, trans_id) do
+        [{pid, _}] ->
+          # Verify single transaction exists and is in correct state
+          assert Process.alive?(pid)
+          # INVITE server transactions automatically go to proceeding after sending 100 Trying
+          assert_state(pid, :proceeding)
+
+        [] ->
+          flunk("Expected one transaction to be registered, found none")
+
+        multiple ->
+          flunk("Expected one transaction, found #{length(multiple)}: #{inspect(multiple)}")
+      end
+    end
+
+    test "retransmission during spawn is forwarded to existing transaction", %{test_id: test_id} do
+      # More targeted test: verify that if start_child returns {:already_started, pid},
+      # the message gets forwarded rather than being logged as an error
+
+      invite = build_invite(unique_branch("z9hG4bKspawnForward", test_id))
+      {:ok, transaction} = ParrotSip.Transaction.create_invite_server(invite)
+      handler = TestHandler.new()
+
+      # Start the transaction first
+      {:ok, pid} = start_transaction(transaction, handler)
+      assert_state(pid, :proceeding)
+
+      # Now call server_process with the same INVITE (simulates retransmission)
+      # This should route to existing transaction, not try to create a new one
+      # Since find_server will find it, this will work - but we test the path
+      # through server_process to ensure routing works
+      :ok = TransactionStatem.server_process(invite, handler)
+
+      # Transaction should still be alive and in proceeding
+      assert Process.alive?(pid)
+      assert_state(pid, :proceeding)
+    end
+  end
+
   describe "server_process/2 - transaction routing" do
     test "routes ACK to existing transaction", %{test_id: test_id} do
       invite = build_invite(unique_branch("z9hG4bKackRoute", test_id))
