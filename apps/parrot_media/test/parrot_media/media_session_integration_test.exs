@@ -5,7 +5,9 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
   alias ParrotMedia.MediaSession
 
   defmodule TestHandler do
-    @behaviour ParrotMedia.Handler
+    # Uses default implementations for handle_session_start, handle_codec_negotiation,
+    # handle_negotiation_complete, handle_stream_start - only override what we need
+    use ParrotMedia.Handler
 
     @impl true
     def init(args) do
@@ -65,30 +67,6 @@ defmodule ParrotMedia.MediaSessionIntegrationTest do
     @impl true
     def handle_info(_msg, state) do
       if state[:test_pid], do: send(state.test_pid, {:handler_processed, :unknown})
-      {:noreply, state}
-    end
-
-    @impl true
-    def handle_stream_start(_id, _dir, state) do
-      {:noreply, state}
-    end
-
-    @impl true
-    def handle_session_start(_id, _opts, state) do
-      {:ok, state}
-    end
-
-    @impl true
-    def handle_codec_negotiation(offered, supported, state) do
-      codec = Enum.find(offered, &(&1 in supported))
-      case codec do
-        nil -> {:error, :no_common_codec, state}
-        c -> {:ok, c, state}
-      end
-    end
-
-    @impl true
-    def handle_negotiation_complete(_session_id, _codec, _remote_info, state) do
       {:noreply, state}
     end
   end

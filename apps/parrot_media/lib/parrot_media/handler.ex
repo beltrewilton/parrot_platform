@@ -551,13 +551,144 @@ defmodule ParrotMedia.Handler do
 
   # Optional callbacks - all except init
   @optional_callbacks [
+    handle_session_start: 3,
     handle_session_stop: 3,
     handle_offer: 3,
     handle_answer: 3,
+    handle_codec_negotiation: 3,
+    handle_negotiation_complete: 4,
+    handle_stream_start: 3,
     handle_stream_stop: 3,
     handle_stream_error: 3,
     handle_play_complete: 2,
     handle_media_request: 2,
     handle_info: 2
   ]
+
+  @doc """
+  Provides default implementations for all optional callbacks.
+
+  When you `use ParrotMedia.Handler`, you get:
+
+  1. The `@behaviour ParrotMedia.Handler` annotation
+  2. Default implementations of all optional callbacks
+  3. Ability to override any callback with `defoverridable`
+
+  This means you only need to implement `init/1` and any callbacks
+  where you need custom behavior.
+
+  ## Example
+
+      defmodule MyApp.MediaHandler do
+        use ParrotMedia.Handler
+
+        @impl true
+        def init(args) do
+          {:ok, %{test_pid: args[:test_pid]}}
+        end
+
+        # Only override what you need
+        @impl true
+        def handle_info({:play_files, files, _opts}, state) do
+          {[{:play_sequence, files}], state}
+        end
+      end
+
+  ## Default Behaviors
+
+  - `handle_session_start/3` - Returns `{:ok, state}`
+  - `handle_codec_negotiation/3` - Picks first common codec from offered/supported
+  - `handle_negotiation_complete/4` - Returns `{:ok, state}` (acknowledges)
+  - `handle_stream_start/3` - Returns `{:noreply, state}`
+  - `handle_info/2` - Returns `{:noreply, state}` (ignores unknown messages)
+  - All other optional callbacks have sensible no-op defaults
+  """
+  defmacro __using__(_opts) do
+    quote do
+      @behaviour ParrotMedia.Handler
+
+      # Session lifecycle defaults
+      @impl ParrotMedia.Handler
+      def handle_session_start(_session_id, _opts, state) do
+        {:ok, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_session_stop(_session_id, _reason, state) do
+        {:ok, state}
+      end
+
+      # SDP negotiation defaults
+      @impl ParrotMedia.Handler
+      def handle_offer(_sdp, _direction, state) do
+        {:noreply, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_answer(_sdp, _direction, state) do
+        {:noreply, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_codec_negotiation(offered, supported, state) do
+        # Default: pick first codec that appears in both lists
+        codec = Enum.find(offered, &(&1 in supported))
+
+        case codec do
+          nil -> {:error, :no_common_codec, state}
+          c -> {:ok, c, state}
+        end
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_negotiation_complete(_local_sdp, _remote_sdp, _codec, state) do
+        {:ok, state}
+      end
+
+      # Stream lifecycle defaults
+      @impl ParrotMedia.Handler
+      def handle_stream_start(_session_id, _direction, state) do
+        {:noreply, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_stream_stop(_session_id, _reason, state) do
+        {:ok, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_stream_error(_session_id, _error, state) do
+        {:continue, state}
+      end
+
+      # Media control defaults
+      @impl ParrotMedia.Handler
+      def handle_play_complete(_file_path, state) do
+        {:noreply, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_media_request(_request, state) do
+        {:noreply, state}
+      end
+
+      @impl ParrotMedia.Handler
+      def handle_info(_msg, state) do
+        {:noreply, state}
+      end
+
+      defoverridable handle_session_start: 3,
+                     handle_session_stop: 3,
+                     handle_offer: 3,
+                     handle_answer: 3,
+                     handle_codec_negotiation: 3,
+                     handle_negotiation_complete: 4,
+                     handle_stream_start: 3,
+                     handle_stream_stop: 3,
+                     handle_stream_error: 3,
+                     handle_play_complete: 2,
+                     handle_media_request: 2,
+                     handle_info: 2
+    end
+  end
 end

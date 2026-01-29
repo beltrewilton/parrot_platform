@@ -2,7 +2,8 @@ defmodule ParrotMedia.HandlerTest do
   use ExUnit.Case, async: true
 
   defmodule TestMediaHandler do
-    @behaviour ParrotMedia.Handler
+    # Uses defaults for handle_session_start, handle_stream_start, handle_negotiation_complete
+    use ParrotMedia.Handler
 
     @impl true
     def init(args), do: {:ok, args}
@@ -69,7 +70,7 @@ defmodule ParrotMedia.HandlerTest do
       {:noreply, state}
     end
 
-    # Optional callbacks
+    # Custom codec negotiation - prefers opus when both lists have it
     @impl true
     def handle_codec_negotiation([:opus, :pcmu], [:pcmu, :opus], state) do
       {:ok, :opus, state}
@@ -85,6 +86,7 @@ defmodule ParrotMedia.HandlerTest do
       end
     end
 
+    # Custom play_complete - chains playback after menu.wav
     @impl true
     def handle_play_complete("menu.wav", state) do
       {{:play_sequence, ["option1.wav", "option2.wav"]}, state}
@@ -92,21 +94,6 @@ defmodule ParrotMedia.HandlerTest do
 
     @impl true
     def handle_play_complete(_file, state) do
-      {:noreply, state}
-    end
-
-    @impl true
-    def handle_session_start(_session_id, _opts, state) do
-      {:noreply, state}
-    end
-
-    @impl true
-    def handle_stream_start(_session_id, _stream_type, state) do
-      {:noreply, state}
-    end
-
-    @impl true
-    def handle_negotiation_complete(_session_id, _codec, _remote_info, state) do
       {:noreply, state}
     end
   end
