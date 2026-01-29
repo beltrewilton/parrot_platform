@@ -161,11 +161,28 @@ defmodule Parrot.Bridge.ActionExecutor do
     # This enables audio playback and recording operations
     start_media_if_present(context)
 
+    # Notify B2BUA of A-leg state change to :answered
+    # This enables B2BUA.connect() to succeed since it requires both legs in :answered state
+    notify_b2bua_answered(context, sdp_answer)
+
     # Update call state with dialog_id
     updated_call = %{call | state: :answered, __dialog_id__: dialog_id}
 
     {:ok, updated_call}
   end
+
+  # Notify B2BUA that A-leg has been answered
+  # Only called when b2bua_pid is present in context (B2BUA scenarios)
+  @spec notify_b2bua_answered(context(), String.t() | nil) :: :ok
+  defp notify_b2bua_answered(%{b2bua_pid: b2bua_pid}, sdp) when is_pid(b2bua_pid) do
+    Logger.debug("[ActionExecutor] Notifying B2BUA of A-leg answered state")
+    # Update A-leg state to :answered and set SDP if present
+    updates = if sdp, do: [state: :answered, sdp: sdp], else: [state: :answered]
+    B2BUA.update_leg(b2bua_pid, :a_leg, updates)
+    :ok
+  end
+
+  defp notify_b2bua_answered(_context, _sdp), do: :ok
 
   # Start media session if media_pid is present in context
   @spec start_media_if_present(context()) :: :ok

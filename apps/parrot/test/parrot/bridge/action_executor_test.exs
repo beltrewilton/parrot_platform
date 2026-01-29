@@ -977,6 +977,119 @@ defmodule Parrot.Bridge.ActionExecutorTest do
     end
   end
 
+  describe "execute_answer/3 B2BUA notification (T06-6ib)" do
+    test "notifies B2BUA of A-leg answered state when b2bua_pid is present" do
+      # Start a B2BUA instance
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up A-leg in trying state (what happens before answer)
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :trying)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      # Verify A-leg starts in trying state
+      {:ok, leg_before} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :a_leg)
+      assert leg_before.state == :trying
+
+      # Build context with b2bua_pid
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: "v=0\r\no=test 1 1 IN IP4 127.0.0.1\r\n",
+        b2bua_pid: b2bua_pid
+      }
+
+      call = Call.new()
+
+      # Execute answer - should notify B2BUA
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Verify A-leg state was updated to answered
+      {:ok, leg_after} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :a_leg)
+      assert leg_after.state == :answered
+
+      # Verify SDP was also set
+      assert leg_after.sdp == "v=0\r\no=test 1 1 IN IP4 127.0.0.1\r\n"
+
+      # Cleanup
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "B2BUA.connect() succeeds after A-leg answered via DSL and B-leg answered" do
+      # This test verifies the full state sync fix for issue 6ib
+      # Problem: DSL answer() wasn't updating B2BUA A-leg state
+      # Fix: execute_answer now calls B2BUA.update_leg with state: :answered
+
+      # Start a B2BUA instance
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up A-leg in trying state (incoming call before answer)
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :trying)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      # Create B-leg and progress it to answered state (simulating outbound call)
+      {:ok, :b_leg} =
+        Parrot.Bridge.B2BUA.originate(b2bua_pid, "sip:bob@example.com", as: :b_leg)
+
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :trying)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, :ringing)
+      :ok = Parrot.Bridge.B2BUA.handle_leg_event(b2bua_pid, :b_leg, {:answered, "v=0\r\n"})
+
+      # Answer A-leg via execute_answer (this is what the DSL answer() does)
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: "v=0\r\no=test 1 1 IN IP4 127.0.0.1\r\n",
+        b2bua_pid: b2bua_pid
+      }
+
+      call = Call.new()
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # CRITICAL: B2BUA.connect() should now succeed because both legs are answered
+      # Before the fix, this would fail with {:error, :leg_not_answered}
+      assert {:ok, _bridge} = Parrot.Bridge.B2BUA.connect(b2bua_pid, :a_leg, :b_leg)
+
+      # Verify the bridge was established
+      assert Parrot.Bridge.B2BUA.get_active_bridge(b2bua_pid) == {:a_leg, :b_leg}
+
+      # Cleanup
+      Parrot.Bridge.B2BUA.stop(b2bua_pid)
+    end
+
+    test "does not fail when b2bua_pid is nil" do
+      # Normal (non-B2BUA) flow should work fine
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: nil
+      }
+
+      call = Call.new()
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+      assert updated_call.state == :answered
+    end
+
+    test "does not fail when b2bua_pid is not in context" do
+      # Context without b2bua_pid at all
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      call = Call.new()
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+      assert updated_call.state == :answered
+    end
+  end
+
   describe "reject with options" do
     test "handles reject with options tuple" do
       # Manually create a reject operation with options

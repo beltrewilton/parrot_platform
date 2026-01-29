@@ -202,7 +202,8 @@ defmodule Parrot.Bridge.Handler do
       media_pid: media_pid,
       dialog_id: req_sip_msg.call_id,
       sdp_answer: sdp_answer,
-      response_fn: Map.get(args, :response_fn)
+      response_fn: Map.get(args, :response_fn),
+      b2bua_pid: Map.get(args, :b2bua_pid)
     }
 
     # Start Call.Server which will invoke handle_invite and execute operations

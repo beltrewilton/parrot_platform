@@ -547,7 +547,17 @@ defmodule Parrot.InviteHandler do
           fork: 3,
           fork_media: 2,
           fork_media: 3,
-          stop_fork_media: 2
+          stop_fork_media: 2,
+          # B2BUA operations
+          originate: 2,
+          originate: 3,
+          connect_legs: 3,
+          connect_legs: 4,
+          hold: 2,
+          resume: 2,
+          transfer: 3,
+          transfer: 4,
+          hangup_leg: 2
         ]
 
       @impl Parrot.InviteHandler

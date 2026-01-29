@@ -673,6 +673,21 @@ defmodule Parrot.Bridge.B2BUA do
       {:sdp, sdp}, acc ->
         Leg.set_sdp(acc, sdp)
 
+      # State transition with validation
+      {:state, new_state}, acc ->
+        case Leg.transition(acc, new_state) do
+          {:ok, updated_leg} ->
+            Logger.debug("[B2BUA] Leg #{acc.id} transitioned to #{new_state}")
+            updated_leg
+
+          {:error, :invalid_transition} ->
+            Logger.warning(
+              "[B2BUA] Invalid state transition for leg #{acc.id}: #{acc.state} -> #{new_state}"
+            )
+
+            acc
+        end
+
       _, acc ->
         acc
     end)
