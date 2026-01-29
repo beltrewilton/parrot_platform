@@ -409,6 +409,10 @@ defmodule Parrot.Bridge.HandlerTest do
       use Parrot.RegistrationHandler
 
       @impl true
+      def get_password("alice"), do: {:ok, "testpass"}
+      def get_password(_), do: :error
+
+      @impl true
       def authenticate(_credentials), do: :ok
 
       @impl true
@@ -425,7 +429,35 @@ defmodule Parrot.Bridge.HandlerTest do
       register(Parrot.Bridge.HandlerTest.TestRegistrationHandler)
     end
 
-    test "routes REGISTER to registered handler" do
+    setup do
+      # Ensure the global NonceStore is running (started by Parrot.Application)
+      nonce_store = Process.whereis(Parrot.NonceStore)
+
+      unless nonce_store do
+        {:ok, pid} = ParrotSip.Auth.NonceStore.start_link(name: Parrot.NonceStore, ttl: 300)
+        on_exit(fn -> GenServer.stop(pid) end)
+      end
+
+      :ok
+    end
+
+    test "routes REGISTER with auth to registered handler and returns 200 OK" do
+      test_pid = self()
+      nonce_store = Process.whereis(Parrot.NonceStore)
+      register_msg = create_authenticated_register(nonce_store)
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: RegisterRouter, response_fn: response_fn}
+
+      :ok = Handler.handle_register(uas, register_msg, args)
+
+      # Should receive 200 OK for successful registration with valid credentials
+      assert_receive {:sip_response, response}, 500
+      assert response.status_code == 200
+    end
+
+    test "routes REGISTER without auth and returns 401 challenge" do
       test_pid = self()
       register_msg = create_test_register()
 
@@ -435,9 +467,10 @@ defmodule Parrot.Bridge.HandlerTest do
 
       :ok = Handler.handle_register(uas, register_msg, args)
 
-      # Should receive 200 OK for successful registration
+      # Should receive 401 Unauthorized with WWW-Authenticate challenge
       assert_receive {:sip_response, response}, 500
-      assert response.status_code == 200
+      assert response.status_code == 401
+      assert response.reason_phrase == "Unauthorized"
     end
 
     test "returns 404 when no registration handler configured" do
@@ -601,6 +634,10 @@ defmodule Parrot.Bridge.HandlerTest do
       use Parrot.RegistrationHandler
 
       @impl true
+      def get_password("alice"), do: {:ok, "testpass"}
+      def get_password(_), do: :error
+
+      @impl true
       def authenticate(_credentials), do: :ok
 
       @impl true
@@ -623,9 +660,22 @@ defmodule Parrot.Bridge.HandlerTest do
       register(Parrot.Bridge.HandlerTest.RichBindingRegistrationHandler)
     end
 
+    setup do
+      # Ensure the global NonceStore is running (started by Parrot.Application)
+      nonce_store = Process.whereis(Parrot.NonceStore)
+
+      unless nonce_store do
+        {:ok, pid} = ParrotSip.Auth.NonceStore.start_link(name: Parrot.NonceStore, ttl: 300)
+        on_exit(fn -> GenServer.stop(pid) end)
+      end
+
+      :ok
+    end
+
     test "process_registration includes Contact header in 200 OK" do
       test_pid = self()
-      register_msg = create_test_register_with_contact()
+      nonce_store = Process.whereis(Parrot.NonceStore)
+      register_msg = create_authenticated_register_with_contact(nonce_store)
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
@@ -644,7 +694,8 @@ defmodule Parrot.Bridge.HandlerTest do
 
     test "Contact header has correct expires parameter" do
       test_pid = self()
-      register_msg = create_test_register_with_contact()
+      nonce_store = Process.whereis(Parrot.NonceStore)
+      register_msg = create_authenticated_register_with_contact(nonce_store)
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
@@ -667,7 +718,8 @@ defmodule Parrot.Bridge.HandlerTest do
 
     test "Contact URIs match the registered bindings" do
       test_pid = self()
-      register_msg = create_test_register_with_contact()
+      nonce_store = Process.whereis(Parrot.NonceStore)
+      register_msg = create_authenticated_register_with_contact(nonce_store)
 
       uas = :test_uas
       response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
@@ -679,8 +731,21 @@ defmodule Parrot.Bridge.HandlerTest do
 
       contacts = if is_list(response.contact), do: response.contact, else: [response.contact]
 
-      # Extract hosts from contacts
-      hosts = Enum.map(contacts, & &1.uri.host) |> Enum.sort()
+      # Extract hosts from contacts - URI may be a string or struct
+      hosts =
+        Enum.map(contacts, fn contact ->
+          case contact.uri do
+            %ParrotSip.Uri{host: host} -> host
+            uri when is_binary(uri) ->
+              # Parse the SIP URI string to extract host
+              case Regex.run(~r/@([^:;>]+)/, uri) do
+                [_, host] -> host
+                _ -> uri
+              end
+          end
+        end)
+        |> Enum.sort()
+
       assert hosts == ["192.168.1.100", "192.168.1.101"]
     end
   end
@@ -863,6 +928,52 @@ defmodule Parrot.Bridge.HandlerTest do
       body: "",
       source: %{ip: {127, 0, 0, 1}, port: 5080}
     }
+  end
+
+  # Creates a REGISTER message with valid Digest Authorization header
+  # This simulates a client that has received a 401 challenge and is responding
+  # with proper credentials. Uses test password "testpass" for user "alice".
+  defp create_authenticated_register(nonce_store) do
+    # Generate a valid nonce from the NonceStore
+    nonce = ParrotSip.Auth.NonceStore.generate_nonce(nonce_store)
+
+    # Create the challenge parameters
+    challenge = %{
+      realm: Application.get_env(:parrot, :sip_realm, "parrot"),
+      nonce: nonce,
+      algorithm: "MD5",
+      qop: "auth"
+    }
+
+    # Build authorization using Auth module
+    uri = "sip:127.0.0.1:5060"
+    auth = ParrotSip.Auth.create_authorization(:register, uri, challenge, "alice", "testpass")
+
+    # Format the Authorization header value
+    auth_header = ParrotSip.Auth.format_auth_header(auth)
+
+    # Build the REGISTER message with Authorization header
+    register = create_test_register()
+    ParrotSip.Message.put_header(register, "authorization", auth_header)
+  end
+
+  # Creates an authenticated REGISTER with Contact header for binding tests
+  defp create_authenticated_register_with_contact(nonce_store) do
+    nonce = ParrotSip.Auth.NonceStore.generate_nonce(nonce_store)
+
+    challenge = %{
+      realm: Application.get_env(:parrot, :sip_realm, "parrot"),
+      nonce: nonce,
+      algorithm: "MD5",
+      qop: "auth"
+    }
+
+    uri = "sip:127.0.0.1:5060"
+    auth = ParrotSip.Auth.create_authorization(:register, uri, challenge, "alice", "testpass")
+    auth_header = ParrotSip.Auth.format_auth_header(auth)
+
+    register = create_test_register_with_contact()
+    ParrotSip.Message.put_header(register, "authorization", auth_header)
   end
 
   # ===========================================================================

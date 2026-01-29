@@ -348,95 +348,45 @@ defmodule Parrot.Bridge.Handler do
     end
   end
 
-  # Process the registration request through the handler callbacks
+  # Process the registration request through the Registrar with Digest authentication
+  # RFC 3261 Section 22: HTTP Digest Authentication for REGISTER
   defp process_registration(handler_module, uas, req_sip_msg, args) do
-    # Extract registration data from SIP message
-    aor = extract_aor(req_sip_msg.to)
-    contact = extract_contact(req_sip_msg)
-    expires = extract_expires(req_sip_msg)
+    # Get authentication realm from config or use default
+    realm = Application.get_env(:parrot, :sip_realm, "parrot")
 
-    Logger.debug(
-      "[Bridge.Handler] Registration: AOR=#{aor}, Contact=#{contact}, Expires=#{expires}"
-    )
+    # Get the NonceStore server (started in application supervisor)
+    nonce_store = Process.whereis(Parrot.NonceStore)
 
-    # For now, skip authentication (no Authorization header check)
-    # Future: Check for Authorization header and validate digest
-    credentials = %{username: extract_username(req_sip_msg.from), realm: "parrot"}
+    if nonce_store == nil do
+      Logger.error("[Bridge.Handler] NonceStore not running - cannot authenticate")
+      error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
+      send_response(uas, error_response, args)
+      :ok
+    else
+      Logger.debug("[Bridge.Handler] Processing REGISTER with Digest authentication")
 
-    case handler_module.authenticate(credentials) do
-      :ok ->
-        # Store the binding
-        case handler_module.store_binding(aor, contact, expires) do
-          :ok ->
-            # Get all bindings for response
-            # RFC 3261 Section 10.3: Response MUST include Contact headers
-            # with expires parameter for each binding
-            bindings = handler_module.get_bindings(aor)
-            contact_headers = build_contact_headers(bindings)
+      # Use Registrar module for proper Digest authentication
+      case ParrotSip.Registrar.process_register(req_sip_msg, handler_module, realm, nonce_store) do
+        {:ok, response} ->
+          # Authentication successful, 200 OK with bindings
+          Logger.debug("[Bridge.Handler] Registration successful")
+          send_response(uas, response, args)
+          :ok
 
-            # Build and send 200 OK response with Contact headers
-            response =
-              Message.reply(req_sip_msg, 200, "OK")
-              |> Message.put_contact(contact_headers)
+        {:challenge, response} ->
+          # No credentials or stale nonce - send 401 Unauthorized with WWW-Authenticate
+          Logger.debug("[Bridge.Handler] Sending 401 challenge")
+          send_response(uas, response, args)
+          :ok
 
-            send_response(uas, response, args)
-            :ok
-
-          {:error, reason} ->
-            Logger.error("[Bridge.Handler] Failed to store binding: #{inspect(reason)}")
-            error_response = Message.reply(req_sip_msg, 500, "Internal Server Error")
-            send_response(uas, error_response, args)
-            :ok
-        end
-
-      :error ->
-        Logger.warning("[Bridge.Handler] Authentication failed")
-        forbidden = Message.reply(req_sip_msg, 403, "Forbidden")
-        send_response(uas, forbidden, args)
-        :ok
+        {:error, response} ->
+          # Authentication failed - send 403 Forbidden
+          Logger.warning("[Bridge.Handler] Registration authentication failed")
+          send_response(uas, response, args)
+          :ok
+      end
     end
   end
-
-  # Extract AOR (Address of Record) from To header
-  defp extract_aor(%{uri: %ParrotSip.Uri{} = uri}) do
-    ParrotSip.Uri.to_string(uri)
-  end
-
-  defp extract_aor(%{uri: uri}) when is_binary(uri), do: uri
-  defp extract_aor(_), do: "unknown"
-
-  # Extract Contact URI from message
-  # Handle single Contact struct (common case)
-  defp extract_contact(%{contact: %{uri: %ParrotSip.Uri{} = uri}}) do
-    ParrotSip.Uri.to_string(uri)
-  end
-
-  defp extract_contact(%{contact: %{uri: uri}}) when is_binary(uri), do: uri
-
-  # Handle Contact as a list (less common)
-  defp extract_contact(%{contact: [contact | _]}) when is_binary(contact), do: contact
-
-  defp extract_contact(%{contact: [%{uri: %ParrotSip.Uri{} = uri} | _]}) do
-    ParrotSip.Uri.to_string(uri)
-  end
-
-  defp extract_contact(%{contact: [%{uri: uri} | _]}) when is_binary(uri), do: uri
-  defp extract_contact(_), do: "unknown"
-
-  # Extract Expires value from message (header or Contact param)
-  defp extract_expires(%{expires: expires}) when is_integer(expires), do: expires
-
-  defp extract_expires(%{contact: [%{params: %{"expires" => exp}} | _]}) do
-    String.to_integer(exp)
-  rescue
-    _ -> 3600
-  end
-
-  defp extract_expires(_), do: 3600
-
-  # Extract username from From header
-  defp extract_username(%{uri: %ParrotSip.Uri{user: user}}) when is_binary(user), do: user
-  defp extract_username(_), do: "unknown"
 
   @doc """
   Builds Contact headers from registration bindings.

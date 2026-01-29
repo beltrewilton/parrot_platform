@@ -11,6 +11,9 @@ defmodule Parrot.Application do
     #
     # TTS services are started here so they're available to all Parrot applications
     children = [
+      # NonceStore for Digest authentication (RFC 3261 Section 22)
+      # Default TTL of 300 seconds for nonces
+      {ParrotSip.Auth.NonceStore, name: Parrot.NonceStore, ttl: 300},
       # TTS Cache (ETS backend) - must start before Synthesizer
       Parrot.TTS.Cache.ETS,
       # TTS Task Supervisor for provider calls - must start before Synthesizer
