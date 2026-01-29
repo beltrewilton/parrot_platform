@@ -17,8 +17,22 @@ defmodule ParrotTransport.WebsocketHandler do
   # ============================================================================
 
   @impl :cowboy_websocket
-  def init(req, state) do
-    # Upgrade to WebSocket
+  def init(req, {handler, listener_pid}) do
+    # Extract peer info while we have access to req
+    # :cowboy_req.peer/1 returns {ip_tuple, port}
+    remote_addr = :cowboy_req.peer(req)
+
+    # Get local socket address using :cowboy_req.sock/1
+    # This gives us the local IP and port the server is listening on
+    local_addr =
+      case :cowboy_req.sock(req) do
+        {ip, port} -> {ip, port}
+        # Fallback if sock/1 not available (older Cowboy versions)
+        _ -> {{0, 0, 0, 0}, 0}
+      end
+
+    # Pass addresses through state tuple to websocket_init/1
+    state = {handler, listener_pid, remote_addr, local_addr}
     {:cowboy_websocket, req, state}
   end
 
@@ -27,11 +41,7 @@ defmodule ParrotTransport.WebsocketHandler do
   # ============================================================================
 
   @impl :cowboy_websocket
-  def websocket_init({handler, listener_pid}) do
-    # Get connection info
-    remote_addr = get_peer_addr()
-    local_addr = get_local_addr()
-
+  def websocket_init({handler, listener_pid, remote_addr, local_addr}) do
     # Notify listener about new connection
     send(listener_pid, {:connection_accepted, self()})
 
@@ -92,29 +102,4 @@ defmodule ParrotTransport.WebsocketHandler do
     send(state.handler, {:incoming_packet, packet})
   end
 
-  defp get_peer_addr do
-    # Cowboy stores connection info in process dictionary
-    case :cowboy_req.peer(:cowboy_req) do
-      {ip, port} -> {ip, port}
-      _ -> {{0, 0, 0, 0}, 0}
-    end
-  rescue
-    _ -> {{0, 0, 0, 0}, 0}
-  end
-
-  defp get_local_addr do
-    # Get local socket info from process
-    case Process.get(:socket) do
-      nil ->
-        {{0, 0, 0, 0}, 0}
-
-      socket ->
-        case :inet.sockname(socket) do
-          {:ok, {ip, port}} -> {ip, port}
-          _ -> {{0, 0, 0, 0}, 0}
-        end
-    end
-  rescue
-    _ -> {{0, 0, 0, 0}, 0}
-  end
 end

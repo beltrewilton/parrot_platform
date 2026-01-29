@@ -81,6 +81,43 @@ defmodule ParrotTransport.WebsocketListenerTest do
       :gun.close(client)
     end
 
+    test "includes correct source addresses in incoming packet", %{port: port} do
+      # Fix for parrot_platform-1av: WebSocket source address bug
+      # Before fix: all packets had source 0.0.0.0:0
+      # After fix: packets contain correct remote and local addresses
+
+      {:ok, client} = :gun.open({127, 0, 0, 1}, port, %{protocols: [:http]})
+      {:ok, :http} = :gun.await_up(client)
+
+      stream_ref = :gun.ws_upgrade(client, "/")
+
+      receive do
+        {:gun_upgrade, ^client, ^stream_ref, [<<"websocket">>], _headers} ->
+          :ok
+      after
+        1000 -> flunk("WebSocket upgrade timeout")
+      end
+
+      message = "INVITE sip:test SIP/2.0\r\nContent-Length: 0\r\n\r\n"
+      :gun.ws_send(client, stream_ref, {:text, message})
+
+      assert_receive {:incoming_packet, %IncomingPacket{source: source}}, 1000
+
+      # Remote address should be 127.0.0.1 with non-zero port (client's port)
+      assert {remote_ip, remote_port} = source.remote_addr
+      assert remote_ip == {127, 0, 0, 1}, "Remote IP should be 127.0.0.1, got #{inspect(remote_ip)}"
+      assert remote_port > 0, "Remote port should be > 0, got #{remote_port}"
+
+      # Local address should be 127.0.0.1 with the listener's port
+      # Note: The exact local IP depends on how Cowboy binds (could be 0.0.0.0 or 127.0.0.1)
+      assert {local_ip, local_port} = source.local_addr
+      assert local_port == port, "Local port should be #{port}, got #{local_port}"
+      # Local IP could be 0.0.0.0 (any) or 127.0.0.1 depending on binding
+      assert local_ip != nil, "Local IP should not be nil"
+
+      :gun.close(client)
+    end
+
     test "handles binary frames", %{port: port} do
       {:ok, client} = :gun.open({127, 0, 0, 1}, port, %{protocols: [:http]})
       {:ok, :http} = :gun.await_up(client)
