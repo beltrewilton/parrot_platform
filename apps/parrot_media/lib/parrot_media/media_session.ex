@@ -69,6 +69,12 @@ defmodule ParrotMedia.MediaSession do
       :remote_rtp_address,
       # RTP socket (kept open until pipeline takes ownership)
       :rtp_socket,
+      # RTCP socket for receiving RTCP reports (RFC 3550)
+      :rtcp_socket,
+      # RTCP port (RTP port + 1)
+      :local_rtcp_port,
+      # RTCP receiver process PID
+      :rtcp_receiver_pid,
       # Membrane pipeline PID
       :pipeline_pid,
       # Monitor reference for pipeline
@@ -688,12 +694,18 @@ defmodule ParrotMedia.MediaSession do
 
     # Start media pipeline
     case start_media_pipeline(updated_data) do
-      {:ok, pipeline_pid, monitor_ref} ->
+      {:ok, pipeline_pid, monitor_ref, rtcp_receiver_pid} ->
         Logger.info(
           "MediaSession #{data.id}: Media pipeline started successfully with PID: #{inspect(pipeline_pid)}"
         )
 
-        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref}
+        final_data = %{
+          updated_data
+          | pipeline_pid: pipeline_pid,
+            pipeline_monitor: monitor_ref,
+            rtcp_receiver_pid: rtcp_receiver_pid
+        }
+
         {:next_state, :active, final_data, [{:reply, from, :ok}]}
 
       {:error, reason} = error ->
@@ -821,9 +833,16 @@ defmodule ParrotMedia.MediaSession do
 
     # Restart the pipeline
     case start_media_pipeline(updated_data) do
-      {:ok, pipeline_pid, monitor_ref} ->
+      {:ok, pipeline_pid, monitor_ref, rtcp_receiver_pid} ->
         Logger.info("MediaSession #{data.id}: Pipeline restarted successfully")
-        final_data = %{updated_data | pipeline_pid: pipeline_pid, pipeline_monitor: monitor_ref}
+
+        final_data = %{
+          updated_data
+          | pipeline_pid: pipeline_pid,
+            pipeline_monitor: monitor_ref,
+            rtcp_receiver_pid: rtcp_receiver_pid
+        }
+
         {:next_state, :active, final_data, [{:reply, from, :ok}]}
 
       {:error, reason} = error ->
@@ -1207,8 +1226,8 @@ defmodule ParrotMedia.MediaSession do
   defp get_pid(pid) when is_pid(pid), do: pid
 
   defp generate_sdp_offer(data) do
-    # Allocate local RTP port and keep socket open
-    {local_rtp_port, rtp_socket} = allocate_rtp_port()
+    # Allocate local RTP port and RTCP port, keep sockets open
+    {local_rtp_port, rtp_socket, rtcp_socket} = allocate_rtp_port()
 
     # Get the IP address to use in SDP
     sdp_ip = get_sdp_ip(data)
@@ -1225,7 +1244,9 @@ defmodule ParrotMedia.MediaSession do
           data
           | local_sdp: sdp_string,
             local_rtp_port: local_rtp_port,
-            rtp_socket: rtp_socket
+            local_rtcp_port: local_rtp_port + 1,
+            rtp_socket: rtp_socket,
+            rtcp_socket: rtcp_socket
         }
 
         {:ok, sdp_string, updated_data}
@@ -1245,7 +1266,7 @@ defmodule ParrotMedia.MediaSession do
          {:ok, remote_info} <- extract_remote_info(parsed_sdp, audio_media, data.id),
          {:ok, selected_codec, handler_state} <- negotiate_codec(audio_media, data) do
       data_with_handler_state = %{data | handler_state: handler_state}
-      {local_rtp_port, rtp_socket} = get_or_allocate_rtp_port(data_with_handler_state)
+      {local_rtp_port, rtp_socket, rtcp_socket} = get_or_allocate_rtp_port(data_with_handler_state)
 
       # Extract ALL dynamic payload types from SDP (RFC 3551: PTs 96-127)
       # This gives us a map like %{"telephone-event" => 96, "no-op" => 97}
@@ -1284,6 +1305,7 @@ defmodule ParrotMedia.MediaSession do
               selected_codec,
               local_rtp_port,
               rtp_socket,
+              rtcp_socket,
               sdp_answer,
               pipeline_module,
               negotiated_dyn_pts
@@ -1364,16 +1386,18 @@ defmodule ParrotMedia.MediaSession do
     end
   end
 
-  defp get_or_allocate_rtp_port(%{local_rtp_port: port, rtp_socket: socket, id: session_id})
+  defp get_or_allocate_rtp_port(
+         %{local_rtp_port: port, rtp_socket: socket, rtcp_socket: rtcp_socket, id: session_id}
+       )
        when not is_nil(port) do
     Logger.info("MediaSession #{session_id}: Using pre-allocated local RTP port: #{port}")
-    {port, socket}
+    {port, socket, rtcp_socket}
   end
 
   defp get_or_allocate_rtp_port(%{id: session_id}) do
-    {port, socket} = allocate_rtp_port()
+    {port, rtp_socket, rtcp_socket} = allocate_rtp_port()
     Logger.info("MediaSession #{session_id}: Allocated new local RTP port: #{port}")
-    {port, socket}
+    {port, rtp_socket, rtcp_socket}
   end
 
   defp build_session_data(
@@ -1383,6 +1407,7 @@ defmodule ParrotMedia.MediaSession do
          selected_codec,
          local_rtp_port,
          rtp_socket,
+         rtcp_socket,
          sdp_answer,
          pipeline_module,
          dynamic_payload_types
@@ -1392,7 +1417,9 @@ defmodule ParrotMedia.MediaSession do
       | local_sdp: sdp_answer,
         remote_sdp: sdp_offer,
         local_rtp_port: local_rtp_port,
+        local_rtcp_port: local_rtp_port + 1,
         rtp_socket: rtp_socket,
+        rtcp_socket: rtcp_socket,
         remote_rtp_port: remote_info.port,
         remote_rtp_address: remote_info.address,
         selected_codec: selected_codec,
@@ -1523,8 +1550,8 @@ defmodule ParrotMedia.MediaSession do
     max_attempts = Map.get(config, :max_port_attempts, 100)
 
     case find_available_port(min_port, max_port, max_attempts) do
-      {:ok, port, socket} ->
-        {port, socket}
+      {:ok, port, rtp_socket, rtcp_socket} ->
+        {port, rtp_socket, rtcp_socket}
 
       {:error, :no_ports_available} ->
         # Fallback to random port as last resort
@@ -1533,10 +1560,13 @@ defmodule ParrotMedia.MediaSession do
         )
 
         port = min_port + :rand.uniform(max_port - min_port)
-        # Try to open socket for the fallback port
-        case :gen_udp.open(port, [:binary, {:active, false}]) do
-          {:ok, socket} -> {port, socket}
-          {:error, _} -> {port, nil}
+
+        # Try to open sockets for the fallback port
+        with {:ok, rtp_socket} <- :gen_udp.open(port, [:binary, {:active, false}]),
+             {:ok, rtcp_socket} <- :gen_udp.open(port + 1, [:binary, {:active, false}]) do
+          {port, rtp_socket, rtcp_socket}
+        else
+          {:error, _} -> {port, nil, nil}
         end
     end
   end
@@ -1550,13 +1580,11 @@ defmodule ParrotMedia.MediaSession do
       rtp_port = if rem(candidate_port, 2) == 0, do: candidate_port, else: candidate_port - 1
 
       # Verify both RTP port and RTCP port (RTP+1) are available
-      # Keep RTP socket open to maintain port reservation
+      # Keep both sockets open - RTP for pipeline, RTCP for receiving reports
       with {:ok, rtp_socket} <- :gen_udp.open(rtp_port, [:binary, {:active, false}]),
            {:ok, rtcp_socket} <- :gen_udp.open(rtp_port + 1, [:binary, {:active, false}]) do
-        # Close RTCP socket - only need to reserve RTP port
-        :gen_udp.close(rtcp_socket)
-        # Return with socket kept open for port reservation
-        {:ok, rtp_port, rtp_socket}
+        # Return with both sockets open for RTP streaming and RTCP reception
+        {:ok, rtp_port, rtp_socket, rtcp_socket}
       else
         {:error, :eaddrinuse} ->
           {:error, :in_use}
@@ -1566,7 +1594,7 @@ defmodule ParrotMedia.MediaSession do
       end
     end)
     |> Enum.find({:error, :no_ports_available}, fn
-      {:ok, _port, _socket} -> true
+      {:ok, _port, _rtp_socket, _rtcp_socket} -> true
       _ -> false
     end)
   end
@@ -1621,7 +1649,11 @@ defmodule ParrotMedia.MediaSession do
         )
 
         monitor_ref = Process.monitor(pipeline_pid)
-        {:ok, pipeline_pid, monitor_ref}
+
+        # Start RTCP receiver if we have an RTCP socket
+        rtcp_receiver_pid = maybe_start_rtcp_receiver(data)
+
+        {:ok, pipeline_pid, monitor_ref, rtcp_receiver_pid}
 
       {:ok, _supervisor_pid, pipeline_pid} ->
         # Membrane.Pipeline.start_link returns {ok, supervisor_pid, pipeline_pid}
@@ -1630,7 +1662,11 @@ defmodule ParrotMedia.MediaSession do
         )
 
         monitor_ref = Process.monitor(pipeline_pid)
-        {:ok, pipeline_pid, monitor_ref}
+
+        # Start RTCP receiver if we have an RTCP socket
+        rtcp_receiver_pid = maybe_start_rtcp_receiver(data)
+
+        {:ok, pipeline_pid, monitor_ref, rtcp_receiver_pid}
 
       {:error, reason} = error ->
         Logger.error(
@@ -1640,6 +1676,34 @@ defmodule ParrotMedia.MediaSession do
         error
     end
   end
+
+  # Starts RTCP receiver if we have an RTCP socket
+  defp maybe_start_rtcp_receiver(%{rtcp_socket: nil}), do: nil
+
+  defp maybe_start_rtcp_receiver(%{rtcp_socket: rtcp_socket, id: session_id} = data) do
+    # Get clock rate from selected codec
+    clock_rate = get_clock_rate(data.selected_codec)
+
+    case ParrotMedia.RTCP.Receiver.start_link(
+           rtcp_socket: rtcp_socket,
+           session_id: session_id,
+           clock_rate: clock_rate
+         ) do
+      {:ok, pid} ->
+        Logger.info("[MediaSession] Started RTCP receiver for session #{session_id}")
+        pid
+
+      {:error, reason} ->
+        Logger.warning("[MediaSession] Failed to start RTCP receiver: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  defp get_clock_rate(:pcma), do: 8000
+  defp get_clock_rate(:pcmu), do: 8000
+  defp get_clock_rate(:g711), do: 8000
+  defp get_clock_rate(:opus), do: 48000
+  defp get_clock_rate(_), do: 8000
 
   defp process_media_action({:play, file_path}, data) do
     process_media_action({:play, file_path, []}, data)
@@ -1816,8 +1880,13 @@ defmodule ParrotMedia.MediaSession do
       data_after_stop = stop_media_pipeline(data)
 
       case start_media_pipeline(data_after_stop) do
-        {:ok, new_pipeline_pid, monitor_ref} ->
-          %{data_after_stop | pipeline_pid: new_pipeline_pid, pipeline_monitor: monitor_ref}
+        {:ok, new_pipeline_pid, monitor_ref, rtcp_receiver_pid} ->
+          %{
+            data_after_stop
+            | pipeline_pid: new_pipeline_pid,
+              pipeline_monitor: monitor_ref,
+              rtcp_receiver_pid: rtcp_receiver_pid
+          }
 
         {:error, reason} ->
           Logger.error("MediaSession #{data.id}: Failed to restart pipeline: #{inspect(reason)}")

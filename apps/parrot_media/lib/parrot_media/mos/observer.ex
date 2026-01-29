@@ -197,15 +197,14 @@ defmodule ParrotMedia.MOS.Observer do
   end
 
   defp send_metrics_to_calculator(state) do
-    # Build metrics map
-    # For now, we use buffer_count as a proxy for packet count
-    # In the future, this can be extended with RTCP stats
+    # Build metrics map with packet counts from RTP stream observation
+    # Jitter and delay are provided separately by RTCP.Receiver when RTCP reports arrive
+    # The Calculator merges these metrics for MOS calculation
     metrics = %{
       packets_received: state.buffer_count,
       packets_expected: state.buffer_count,
-      # Default jitter - can be calculated from timestamp deltas in future
+      # Placeholder values - real values come from RTCP.Receiver via {:rtcp_metrics, _}
       jitter_ms: 0.0,
-      # Default delay - can be extracted from RTCP in future
       delay_ms: 0.0
     }
 

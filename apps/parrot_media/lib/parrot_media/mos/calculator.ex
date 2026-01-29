@@ -327,6 +327,25 @@ defmodule ParrotMedia.MOS.Calculator do
     {:reply, :ok, state}
   end
 
+  # RTCP metrics provide more accurate jitter/delay from network reports
+  # These are fire-and-forget updates from the RTCP.Sink
+  @impl true
+  def handle_cast({:rtcp_metrics, metrics}, %{status: :active} = state) do
+    # Update current interval with RTCP-sourced metrics
+    # RTCP provides more accurate values than local estimation
+    updated_interval =
+      state.current_interval
+      |> maybe_update_jitter(metrics)
+      |> maybe_update_delay(metrics)
+
+    {:noreply, %{state | current_interval: updated_interval}}
+  end
+
+  def handle_cast({:rtcp_metrics, _metrics}, state) do
+    # Ignore RTCP metrics in non-active states
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(:interval_tick, %{status: :active} = state) do
     # Complete current interval and calculate score
@@ -387,6 +406,24 @@ defmodule ParrotMedia.MOS.Calculator do
     # No direction specified - backward compatible, don't track direction
     {0, 0}
   end
+
+  # Updates interval jitter with RTCP-sourced value if available.
+  # RTCP jitter is more accurate than local estimation.
+  defp maybe_update_jitter(interval, %{jitter_ms: jitter}) when is_number(jitter) do
+    %{interval | jitter_sum: jitter, jitter_count: 1}
+  end
+
+  defp maybe_update_jitter(interval, _metrics), do: interval
+
+  # Updates interval delay with RTCP-sourced RTT (one-way delay ≈ RTT/2).
+  # RTCP RTT provides actual network delay measurement.
+  defp maybe_update_delay(interval, %{rtt_ms: rtt}) when is_number(rtt) and rtt > 0 do
+    # One-way delay is approximately half the round-trip time
+    delay = rtt / 2
+    %{interval | delay_sum: delay, delay_count: 1}
+  end
+
+  defp maybe_update_delay(interval, _metrics), do: interval
 
   defp complete_interval(state) do
     completed = Interval.complete(state.current_interval)
