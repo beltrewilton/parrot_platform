@@ -77,26 +77,26 @@ echo "Lines:    $(wc -l < "$LOG_FILE" | tr -d ' ')"
 echo ""
 
 # Count errors and warnings (case-insensitive)
-ERROR_COUNT=$(grep -ci '\[error\]' "$LOG_FILE" 2>/dev/null || echo "0")
-WARNING_COUNT=$(grep -ci '\[warning\]' "$LOG_FILE" 2>/dev/null || echo "0")
-CRASH_COUNT=$(grep -ci 'crash\|exception\|** (.*Error)' "$LOG_FILE" 2>/dev/null || echo "0")
+ERROR_COUNT=$(grep -ci '\[error\]' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+WARNING_COUNT=$(grep -ci '\[warning\]' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+CRASH_COUNT=$(grep -ci 'crash\|exception\|** (.*Error)' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
 
 # Count SIP events
-INVITE_COUNT=$(grep -ci 'INVITE' "$LOG_FILE" 2>/dev/null || echo "0")
-BYE_COUNT=$(grep -ci 'BYE' "$LOG_FILE" 2>/dev/null || echo "0")
-ACK_COUNT=$(grep -ci 'ACK' "$LOG_FILE" 2>/dev/null || echo "0")
-RESPONSE_200=$(grep -c '200 OK\|SIP/2.0 200' "$LOG_FILE" 2>/dev/null || echo "0")
-RESPONSE_4XX=$(grep -cE 'SIP/2\.0 4[0-9]{2}|[[:space:]]4[0-9]{2}[[:space:]]' "$LOG_FILE" 2>/dev/null || echo "0")
-RESPONSE_5XX=$(grep -cE 'SIP/2\.0 5[0-9]{2}|[[:space:]]5[0-9]{2}[[:space:]]' "$LOG_FILE" 2>/dev/null || echo "0")
+INVITE_COUNT=$(grep -ci 'INVITE' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+BYE_COUNT=$(grep -ci 'BYE' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+ACK_COUNT=$(grep -ci 'ACK' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+RESPONSE_200=$(grep -c '200 OK\|SIP/2.0 200' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+RESPONSE_4XX=$(grep -cE 'SIP/2\.0 4[0-9]{2}|[[:space:]]4[0-9]{2}[[:space:]]' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+RESPONSE_5XX=$(grep -cE 'SIP/2\.0 5[0-9]{2}|[[:space:]]5[0-9]{2}[[:space:]]' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
 
 # Check for media events
-MEDIA_START=$(grep -ci 'media.*start\|start.*media\|pipeline.*start' "$LOG_FILE" 2>/dev/null || echo "0")
-MEDIA_STOP=$(grep -ci 'media.*stop\|stop.*media\|pipeline.*stop' "$LOG_FILE" 2>/dev/null || echo "0")
-DTMF_COUNT=$(grep -ci 'dtmf\|digit' "$LOG_FILE" 2>/dev/null || echo "0")
+MEDIA_START=$(grep -ci 'media.*start\|start.*media\|pipeline.*start' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+MEDIA_STOP=$(grep -ci 'media.*stop\|stop.*media\|pipeline.*stop' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+DTMF_COUNT=$(grep -ci 'dtmf\|digit' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
 
 # Check for specific success/failure patterns
-SERVER_STARTED=$(grep -ci 'listening\|started\|server.*port' "$LOG_FILE" 2>/dev/null || echo "0")
-CALL_COMPLETED=$(grep -ci 'call.*completed\|dialog.*terminated\|call.*ended' "$LOG_FILE" 2>/dev/null || echo "0")
+SERVER_STARTED=$(grep -ci 'listening\|started\|server.*port' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
+CALL_COMPLETED=$(grep -ci 'call.*completed\|dialog.*terminated\|call.*ended' "$LOG_FILE" 2>/dev/null | head -1 || echo "0")
 
 echo "========================================"
 echo "Error/Warning Summary"
