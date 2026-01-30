@@ -59,9 +59,14 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_hangup, 1} in callbacks
     end
 
-    test "defines all 16 expected callbacks" do
+    test "defines handle_fork_media_error/3 callback" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 16
+      assert {:handle_fork_media_error, 3} in callbacks
+    end
+
+    test "defines all 17 expected callbacks" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert length(callbacks) == 17
     end
 
     # T038: Unit test for handle_media_started/1 callback definition
@@ -142,7 +147,14 @@ defmodule Parrot.InviteHandlerTest do
       call = Call.new()
 
       assert {:noreply, ^call} =
-               MinimalHandler.handle_fork_media_connected("wss://service.com", call)
+               MinimalHandler.handle_fork_media_connected("fork-abc123", call)
+    end
+
+    test "provides default handle_fork_media_error/3 implementation" do
+      call = Call.new()
+
+      assert {:noreply, ^call} =
+               MinimalHandler.handle_fork_media_error("fork-abc123", :connection_refused, call)
     end
 
     test "provides default handle_hangup/1 implementation" do
@@ -496,8 +508,38 @@ defmodule Parrot.InviteHandlerTest do
         |> answer()
       end
 
-      def handle_fork_media_connected(url, call) do
-        {:noreply, %{call | assigns: Map.put(call.assigns, :ai_stream, url)}}
+      def handle_fork_media_connected(fork_id, call) do
+        {:noreply, %{call | assigns: Map.put(call.assigns, :active_fork, fork_id)}}
+      end
+
+      def handle_fork_media_error(fork_id, reason, call) do
+        new_assigns =
+          call.assigns
+          |> Map.put(:fork_error, {fork_id, reason})
+          |> Map.put(:fork_error_count, Map.get(call.assigns, :fork_error_count, 0) + 1)
+
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+    end
+
+    defmodule MediaForkRetryHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Retry with backup service on first failure
+      def handle_fork_media_error(_fork_id, _reason, %{assigns: %{retry_attempted: true}} = call) do
+        # Already retried, give up
+        {:noreply, %{call | assigns: Map.put(call.assigns, :fork_failed, true)}}
+      end
+
+      def handle_fork_media_error(_fork_id, _reason, call) do
+        # First failure - retry with backup
+        call
+        |> assign(:retry_attempted, true)
+        |> fork_media("wss://backup-transcription.example.com/audio")
       end
     end
 
@@ -505,9 +547,66 @@ defmodule Parrot.InviteHandlerTest do
       call = Call.new()
 
       {:noreply, result} =
-        MediaForkHandler.handle_fork_media_connected("wss://ai-service.com/stream", call)
+        MediaForkHandler.handle_fork_media_connected("fork-abc123", call)
 
-      assert result.assigns.ai_stream == "wss://ai-service.com/stream"
+      assert result.assigns.active_fork == "fork-abc123"
+    end
+
+    test "tracks media fork errors" do
+      call = Call.new()
+
+      {:noreply, result} =
+        MediaForkHandler.handle_fork_media_error("fork-abc123", :connection_refused, call)
+
+      assert result.assigns.fork_error == {"fork-abc123", :connection_refused}
+      assert result.assigns.fork_error_count == 1
+    end
+
+    test "accumulates fork error count across multiple errors" do
+      call = Call.new(assigns: %{fork_error_count: 2})
+
+      {:noreply, result} =
+        MediaForkHandler.handle_fork_media_error("fork-xyz", :timeout, call)
+
+      assert result.assigns.fork_error_count == 3
+    end
+
+    test "handle_fork_media_error can queue retry operations" do
+      call = Call.new()
+
+      result = MediaForkRetryHandler.handle_fork_media_error("fork-abc123", :timeout, call)
+
+      # First failure should retry
+      assert result.assigns.retry_attempted == true
+      operations = Call.get_operations(result)
+      assert [{:fork_media, "wss://backup-transcription.example.com/audio", []}] = operations
+    end
+
+    test "handle_fork_media_error stops retrying after max attempts" do
+      call = Call.new(assigns: %{retry_attempted: true})
+
+      {:noreply, result} =
+        MediaForkRetryHandler.handle_fork_media_error("fork-abc123", :timeout, call)
+
+      assert result.assigns.fork_failed == true
+    end
+
+    test "handle_fork_media_error receives various error types" do
+      call = Call.new()
+
+      errors = [
+        :connection_refused,
+        :timeout,
+        {:ws_error, 1006},
+        {:http_error, 503},
+        :dns_resolution_failed,
+        {:network_error, :econnrefused}
+      ]
+
+      for error <- errors do
+        {:noreply, result} = MediaForkHandler.handle_fork_media_error("fork-1", error, call)
+        assert result.assigns.fork_error == {"fork-1", error}
+      end
     end
   end
 

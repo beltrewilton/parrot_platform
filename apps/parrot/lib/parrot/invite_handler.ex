@@ -99,7 +99,8 @@ defmodule Parrot.InviteHandler do
   - `handle_record_complete/3` - Called when recording finishes
   - `handle_conference_join/2` - Called when joining a conference
   - `handle_conference_leave/3` - Called when leaving a conference
-  - `handle_fork_media_connected/2` - Called when media fork establishes
+  - `handle_fork_media_connected/2` - Called when media fork connects
+  - `handle_fork_media_error/3` - Called when media fork fails
   - `handle_hangup/1` - Called when the call ends
   - `handle_sdp_error/2` - Called when SDP negotiation fails
   - `handle_media_started/1` - Called when media stream starts
@@ -240,12 +241,54 @@ defmodule Parrot.InviteHandler do
   @doc """
   Called when a media fork connection is established.
 
+  This callback is invoked when a media fork successfully connects to its
+  destination (WebSocket URL or RTP endpoint). Use this for logging, telemetry,
+  or updating call state.
+
   ## Arguments
 
-  - `url` - The URL of the connected media service
+  - `fork_id` - The fork identifier (may be auto-generated if not specified)
   - `call` - The current call state
+
+  ## Example
+
+      def handle_fork_media_connected(fork_id, call) do
+        Logger.info("Media fork \#{fork_id} connected")
+        {:noreply, %{call | assigns: Map.put(call.assigns, :fork_active, true)}}
+      end
   """
-  @callback handle_fork_media_connected(url :: String.t(), call :: Call.t()) ::
+  @callback handle_fork_media_connected(fork_id :: String.t(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
+  Called when a media fork fails to connect or encounters an error.
+
+  This callback is invoked when a media fork cannot connect to its destination
+  or encounters an error during streaming. Use this for error handling, fallback
+  logic, or retry mechanisms.
+
+  ## Arguments
+
+  - `fork_id` - The fork identifier
+  - `reason` - The error reason (e.g., `:connection_refused`, `:timeout`, `{:ws_error, code}`)
+  - `call` - The current call state
+
+  ## Example
+
+      def handle_fork_media_error(fork_id, reason, call) do
+        Logger.warning("Media fork \#{fork_id} failed: \#{inspect(reason)}")
+        # Optionally retry with a different endpoint
+        {:noreply, call}
+      end
+
+      # Retry with fallback transcription service
+      def handle_fork_media_error(fork_id, _reason, %{assigns: %{retry_count: n}} = call) when n < 3 do
+        call
+        |> assign(:retry_count, n + 1)
+        |> fork_media("wss://backup-transcription.example.com/audio", fork_id: fork_id)
+      end
+  """
+  @callback handle_fork_media_error(fork_id :: String.t(), reason :: term(), call :: Call.t()) ::
               {:noreply, Call.t()} | Call.t()
 
   @doc """
@@ -601,7 +644,12 @@ defmodule Parrot.InviteHandler do
       end
 
       @impl Parrot.InviteHandler
-      def handle_fork_media_connected(_url, call) do
+      def handle_fork_media_connected(_fork_id, call) do
+        {:noreply, call}
+      end
+
+      @impl Parrot.InviteHandler
+      def handle_fork_media_error(_fork_id, _reason, call) do
         {:noreply, call}
       end
 
@@ -655,6 +703,7 @@ defmodule Parrot.InviteHandler do
                      handle_conference_join: 2,
                      handle_conference_leave: 3,
                      handle_fork_media_connected: 2,
+                     handle_fork_media_error: 3,
                      handle_hangup: 1,
                      handle_sdp_error: 2,
                      handle_tts_error: 3,
