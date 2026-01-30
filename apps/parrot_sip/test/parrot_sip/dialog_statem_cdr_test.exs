@@ -628,4 +628,293 @@ defmodule ParrotSip.DialogStatemCdrTest do
       assert DialogStatem.get_state(pid) == :confirmed
     end
   end
+
+  # ===========================================================================
+  # T07: CDR Generation with MOS Integration Tests
+  # ===========================================================================
+
+  # Test handler module that forwards CDRs to a test process
+  defmodule TestCDRHandler do
+    @behaviour ParrotSip.CDR.Handler
+
+    @impl true
+    def init(opts) do
+      {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid)}}
+    end
+
+    @impl true
+    def handle_cdr(cdr, %{test_pid: test_pid}) do
+      send(test_pid, {:cdr_received, cdr})
+      :ok
+    end
+  end
+
+  describe "CDR generation includes MOS summary" do
+    setup do
+      # Register the test handler to capture generated CDRs
+      test_pid = self()
+      :ok = ParrotSip.CDR.register_handler(TestCDRHandler, test_pid: test_pid)
+
+      on_exit(fn ->
+        ParrotSip.CDR.unregister_handler(TestCDRHandler)
+      end)
+
+      :ok
+    end
+
+    test "CDR includes MOS summary when fetcher provided" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "cdr-mos-test-#{:erlang.unique_integer([:positive])}"
+
+      # Create MOS fetcher that returns full MOS summary
+      mos_fetcher = fn ^session_id ->
+        %{
+          min_mos: 3.5,
+          max_mos: 4.4,
+          avg_mos: 3.9,
+          total_packets: 1500,
+          total_lost: 20,
+          overall_loss_percent: 1.33,
+          status: :good,
+          quality_events: []
+        }
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog via BYE - transitions to :terminated state
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop (any unhandled event in :terminated state triggers stop)
+      send(pid, :trigger_stop)
+
+      # Wait for process to die and terminate callback to run
+      Process.sleep(50)
+
+      # Wait for CDR to be received
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify MOS summary is included in CDR
+      assert cdr.media_info != nil, "CDR should have media_info"
+      assert cdr.media_info.mos_summary != nil, "CDR should have mos_summary"
+      assert cdr.media_info.mos_summary.avg_mos == 3.9
+      assert cdr.media_info.mos_summary.min_mos == 3.5
+      assert cdr.media_info.mos_summary.max_mos == 4.4
+      assert cdr.media_info.mos_summary.status == :good
+      assert cdr.media_info.mos_summary.total_packets == 1500
+      assert cdr.media_info.mos_summary.total_lost == 20
+    end
+
+    test "CDR has nil media_info when fetcher returns nil" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "cdr-nil-mos-#{:erlang.unique_integer([:positive])}"
+
+      # Create MOS fetcher that returns nil
+      mos_fetcher = fn _session_id -> nil end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop
+      send(pid, :trigger_stop)
+      Process.sleep(50)
+
+      # Wait for CDR
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify media_info is nil when fetcher returns nil
+      assert cdr.media_info == nil, "CDR should have nil media_info when fetcher returns nil"
+    end
+
+    test "CDR has nil media_info when no mos_fetcher provided" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      # No mos_fetcher in opts
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop
+      send(pid, :trigger_stop)
+      Process.sleep(50)
+
+      # Wait for CDR
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify media_info is nil when no fetcher configured
+      assert cdr.media_info == nil, "CDR should have nil media_info when no mos_fetcher"
+    end
+
+    test "CDR has nil media_info when no media_session_id set" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      # mos_fetcher provided but no media_session_id
+      mos_fetcher = fn _session_id ->
+        %{avg_mos: 4.0, min_mos: 3.8, max_mos: 4.2, status: :good,
+          total_packets: 1000, total_lost: 5, overall_loss_percent: 0.5,
+          quality_events: []}
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher
+        # No media_session_id!
+      })
+
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop
+      send(pid, :trigger_stop)
+      Process.sleep(50)
+
+      # Wait for CDR
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify media_info is nil when no session ID is set
+      assert cdr.media_info == nil, "CDR should have nil media_info when no media_session_id"
+    end
+
+    test "CDR generated even if mos_fetcher crashes" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "cdr-crash-mos-#{:erlang.unique_integer([:positive])}"
+
+      # Create MOS fetcher that raises an error
+      mos_fetcher = fn _session_id ->
+        raise "Simulated MOS fetch failure"
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      assert_state(pid, :confirmed)
+
+      # Terminate the dialog
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop
+      send(pid, :trigger_stop)
+      Process.sleep(50)
+
+      # CDR should still be generated despite fetcher crash
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify CDR was generated but without media_info (due to fetcher crash)
+      assert cdr != nil, "CDR should be generated even if fetcher crashes"
+      assert cdr.media_info == nil, "CDR should have nil media_info when fetcher crashes"
+    end
+
+    test "CDR includes derived packet counts from MOS summary" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "cdr-packets-#{:erlang.unique_integer([:positive])}"
+
+      # MOS summary with packet data
+      mos_fetcher = fn ^session_id ->
+        %{
+          min_mos: 4.0,
+          max_mos: 4.5,
+          avg_mos: 4.2,
+          total_packets: 5000,
+          total_lost: 50,
+          overall_loss_percent: 1.0,
+          status: :excellent,
+          quality_events: []
+        }
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop
+      send(pid, :trigger_stop)
+      Process.sleep(50)
+
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify packet counts are derived from MOS summary
+      assert cdr.media_info.packets_sent == 5000
+      assert cdr.media_info.packets_received == 4950  # total_packets - total_lost
+    end
+
+    test "CDR includes jitter extracted from quality events" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "cdr-jitter-#{:erlang.unique_integer([:positive])}"
+
+      # MOS summary with quality events containing jitter
+      mos_fetcher = fn ^session_id ->
+        %{
+          min_mos: 3.8,
+          max_mos: 4.2,
+          avg_mos: 4.0,
+          total_packets: 1000,
+          total_lost: 10,
+          overall_loss_percent: 1.0,
+          status: :good,
+          quality_events: [
+            %{jitter: 10.0, mos: 4.0, type: :sample},
+            %{jitter: 20.0, mos: 3.9, type: :sample},
+            %{jitter: 15.0, mos: 4.1, type: :sample}
+          ]
+        }
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      bye = build_bye_message()
+      :gen_statem.call(pid, {:uas_request, bye})
+
+      # Trigger the gen_statem to stop
+      send(pid, :trigger_stop)
+      Process.sleep(50)
+
+      assert_receive {:cdr_received, cdr}, 1000
+
+      # Verify jitter is extracted as average of quality events
+      # Average of 10.0, 20.0, 15.0 = 15.0
+      assert cdr.media_info.jitter_ms == 15.0
+    end
+  end
 end

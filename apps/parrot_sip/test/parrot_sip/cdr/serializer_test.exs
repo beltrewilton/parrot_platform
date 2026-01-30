@@ -2,7 +2,7 @@ defmodule ParrotSip.CDR.SerializerTest do
   use ExUnit.Case, async: true
 
   alias ParrotSip.CDR
-  alias ParrotSip.CDR.{Serializer, TerminationCause}
+  alias ParrotSip.CDR.{Serializer, TerminationCause, MediaInfo}
 
   # Shared test fixtures
   @invite_time ~U[2026-01-10 10:00:00Z]
@@ -81,6 +81,61 @@ defmodule ParrotSip.CDR.SerializerTest do
       ring_duration_ms: nil,
       talk_duration_ms: nil,
       termination_cause: nil
+    }
+  end
+
+  defp build_cdr_with_mos_summary do
+    %CDR{
+      id: "mos-cdr-001",
+      correlation_id: "mos-corr-001",
+      call_id: "mos-call@example.com",
+      caller_uri: "sip:alice@example.com",
+      caller_display_name: "Alice",
+      caller_tag: "from-tag-mos",
+      callee_uri: "sip:bob@example.com",
+      callee_display_name: "Bob",
+      callee_tag: "to-tag-mos",
+      disposition: :answered,
+      termination_cause: %TerminationCause{
+        party: :caller,
+        sip_code: 200,
+        reason: "BYE",
+        method: :bye
+      },
+      invite_received_at: @invite_time,
+      answered_at: @answer_time,
+      ended_at: @end_time,
+      ring_duration_ms: 5000,
+      talk_duration_ms: 120_000,
+      direction: :inbound,
+      transport: :udp,
+      dialog_id: "dialog-mos-001",
+      media_info: %MediaInfo{
+        codec: "PCMU",
+        codec_payload_type: 0,
+        packets_sent: 1500,
+        packets_received: 1480,
+        jitter_ms: 5.5,
+        mos_summary: %{
+          min_mos: 3.5,
+          max_mos: 4.4,
+          avg_mos: 3.9,
+          total_packets: 1500,
+          total_lost: 20,
+          overall_loss_percent: 1.33,
+          status: :good,
+          quality_events: [
+            %{
+              timestamp: ~U[2026-01-10 10:01:00Z],
+              mos: 3.5,
+              type: :degradation,
+              jitter: 25.0,
+              loss_percent: 2.5
+            }
+          ]
+        }
+      },
+      custom_fields: %{}
     }
   end
 
@@ -611,6 +666,168 @@ defmodule ParrotSip.CDR.SerializerTest do
       assert map["caller_uri"] == "sip:alice@example.com"
       assert map["disposition"] == "answered"
       assert map["termination_party"] == "caller"
+    end
+  end
+
+  # ===========================================================================
+  # T07: MOS Summary Serialization Tests
+  # ===========================================================================
+  describe "MOS summary JSON serialization" do
+    test "JSON contains nested media_info with mos_summary" do
+      cdr = build_cdr_with_mos_summary()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      assert is_map(decoded["media_info"])
+      assert decoded["media_info"]["codec"] == "PCMU"
+      assert decoded["media_info"]["codec_payload_type"] == 0
+      assert decoded["media_info"]["packets_sent"] == 1500
+      assert decoded["media_info"]["packets_received"] == 1480
+      assert decoded["media_info"]["jitter_ms"] == 5.5
+    end
+
+    test "JSON mos_summary contains all MOS metrics" do
+      cdr = build_cdr_with_mos_summary()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      mos_summary = decoded["media_info"]["mos_summary"]
+
+      assert mos_summary["min_mos"] == 3.5
+      assert mos_summary["max_mos"] == 4.4
+      assert mos_summary["avg_mos"] == 3.9
+      assert mos_summary["total_packets"] == 1500
+      assert mos_summary["total_lost"] == 20
+      assert mos_summary["overall_loss_percent"] == 1.33
+      assert mos_summary["status"] == "good"
+    end
+
+    test "JSON mos_summary contains quality_events array" do
+      cdr = build_cdr_with_mos_summary()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      events = decoded["media_info"]["mos_summary"]["quality_events"]
+
+      assert is_list(events)
+      assert length(events) == 1
+
+      [event] = events
+      assert event["timestamp"] == "2026-01-10T10:01:00Z"
+      assert event["mos"] == 3.5
+      assert event["type"] == "degradation"
+      assert event["jitter"] == 25.0
+      assert event["loss_percent"] == 2.5
+    end
+
+    test "JSON handles nil media_info" do
+      cdr = build_complete_cdr()
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      assert decoded["media_info"] == nil
+    end
+
+    test "JSON handles media_info with nil mos_summary" do
+      cdr = %CDR{
+        build_complete_cdr()
+        | media_info: %MediaInfo{
+            codec: "PCMU",
+            codec_payload_type: 0,
+            mos_summary: nil
+          }
+      }
+
+      {:ok, json} = Serializer.to_json(cdr)
+      {:ok, decoded} = Jason.decode(json)
+
+      assert decoded["media_info"]["codec"] == "PCMU"
+      assert decoded["media_info"]["mos_summary"] == nil
+    end
+  end
+
+  describe "MOS summary CSV serialization" do
+    test "CSV row contains MOS metrics in correct columns" do
+      cdr = build_cdr_with_mos_summary()
+      row = Serializer.to_csv_row(cdr)
+      headers = Serializer.csv_headers()
+
+      # Build a map for easier assertions
+      map = Enum.zip(headers, row) |> Map.new()
+
+      assert map["codec"] == "PCMU"
+      assert map["mos_avg"] == "3.9"
+      assert map["mos_min"] == "3.5"
+      assert map["mos_max"] == "4.4"
+      assert map["mos_status"] == "good"
+    end
+
+    test "CSV handles nil media_info with empty strings" do
+      cdr = build_complete_cdr()
+      row = Serializer.to_csv_row(cdr)
+      headers = Serializer.csv_headers()
+
+      map = Enum.zip(headers, row) |> Map.new()
+
+      assert map["codec"] == ""
+      assert map["mos_avg"] == ""
+      assert map["mos_min"] == ""
+      assert map["mos_max"] == ""
+      assert map["mos_status"] == ""
+    end
+
+    test "CSV handles media_info with nil mos_summary" do
+      cdr = %CDR{
+        build_complete_cdr()
+        | media_info: %MediaInfo{
+            codec: "PCMU",
+            codec_payload_type: 0,
+            mos_summary: nil
+          }
+      }
+
+      row = Serializer.to_csv_row(cdr)
+      headers = Serializer.csv_headers()
+      map = Enum.zip(headers, row) |> Map.new()
+
+      # Codec should be present
+      assert map["codec"] == "PCMU"
+      # MOS fields should be empty when mos_summary is nil
+      assert map["mos_avg"] == ""
+      assert map["mos_min"] == ""
+      assert map["mos_max"] == ""
+      assert map["mos_status"] == ""
+    end
+  end
+
+  describe "to_map MOS summary handling" do
+    test "to_map includes media_info with mos_summary" do
+      cdr = build_cdr_with_mos_summary()
+      map = Serializer.to_map(cdr)
+
+      assert map.media_info.codec == "PCMU"
+      assert map.media_info.mos_summary.avg_mos == 3.9
+      assert map.media_info.mos_summary.min_mos == 3.5
+      assert map.media_info.mos_summary.max_mos == 4.4
+      assert map.media_info.mos_summary.status == "good"
+    end
+
+    test "to_map handles atom keys in mos_summary" do
+      cdr = build_cdr_with_mos_summary()
+      map = Serializer.to_map(cdr)
+
+      # The original mos_summary has atom keys, to_map should handle them
+      assert is_float(map.media_info.mos_summary.avg_mos)
+      assert is_float(map.media_info.mos_summary.overall_loss_percent)
+    end
+
+    test "to_map converts quality event atoms to strings" do
+      cdr = build_cdr_with_mos_summary()
+      map = Serializer.to_map(cdr)
+
+      [event] = map.media_info.mos_summary.quality_events
+      assert event.type == "degradation"
+      assert event.timestamp == "2026-01-10T10:01:00Z"
     end
   end
 end
