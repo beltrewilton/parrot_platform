@@ -190,6 +190,8 @@ defmodule ParrotSip.Method do
   def requires_contact?(:subscribe), do: true
   def requires_contact?(:notify), do: true
   def requires_contact?(:refer), do: true
+  # RFC 3311 Section 5.1: UPDATE MUST contain a Contact header
+  def requires_contact?(:update), do: true
   def requires_contact?(_), do: false
 
   @doc """

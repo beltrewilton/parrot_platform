@@ -283,7 +283,12 @@ defmodule ParrotSip.Transaction do
   # Request-specific validation (RFC 3261 Section 8.1.1)
   defp validate_request_specific(%{type: :request, method: :register} = message) do
     # REGISTER requests must have Contact header (RFC 3261 Section 10.2)
-    validate_contact_header_present(message)
+    validate_contact_header_present(message, "REGISTER")
+  end
+
+  # RFC 3311 Section 5.1: UPDATE MUST contain a Contact header
+  defp validate_request_specific(%{type: :request, method: :update} = message) do
+    validate_contact_header_present(message, "UPDATE")
   end
 
   defp validate_request_specific(%{type: :request, method: method, request_uri: uri})
@@ -306,10 +311,11 @@ defmodule ParrotSip.Transaction do
   defp validate_response_specific(_), do: :ok
 
   # Contact header validation helper
-  defp validate_contact_header_present(%{contact: contact}) when not is_nil(contact), do: :ok
+  defp validate_contact_header_present(%{contact: contact}, _method) when not is_nil(contact),
+    do: :ok
 
-  defp validate_contact_header_present(_),
-    do: {:error, "REGISTER request must have Contact header"}
+  defp validate_contact_header_present(_, method),
+    do: {:error, "#{method} request must have Contact header"}
 
   defstruct [
     :id,

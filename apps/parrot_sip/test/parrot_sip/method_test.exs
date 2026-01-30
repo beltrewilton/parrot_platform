@@ -17,6 +17,8 @@ defmodule ParrotSip.MethodTest do
       assert Enum.member?(methods, :notify)
       assert Enum.member?(methods, :publish)
       assert Enum.member?(methods, :message)
+      # RFC 3311: UPDATE method
+      assert Enum.member?(methods, :update)
     end
   end
 
@@ -105,6 +107,8 @@ defmodule ParrotSip.MethodTest do
       assert Method.requires_contact?(:invite)
       assert Method.requires_contact?(:register)
       assert Method.requires_contact?(:subscribe)
+      # RFC 3311 Section 5.1: UPDATE requires Contact
+      assert Method.requires_contact?(:update)
       assert not Method.requires_contact?(:options)
       assert not Method.requires_contact?(:ack)
     end
@@ -113,9 +117,35 @@ defmodule ParrotSip.MethodTest do
       assert Method.can_cancel?(:invite)
       assert Method.can_cancel?(:subscribe)
       assert Method.can_cancel?(:register)
+      # RFC 3311: UPDATE can be canceled
+      assert Method.can_cancel?(:update)
       assert not Method.can_cancel?(:ack)
       assert not Method.can_cancel?(:bye)
       assert not Method.can_cancel?(:cancel)
+    end
+  end
+
+  describe "UPDATE method (RFC 3311)" do
+    test "UPDATE is a standard method" do
+      assert Method.is_standard?(:update)
+    end
+
+    test "UPDATE parses correctly" do
+      assert {:ok, :update} = Method.parse("UPDATE")
+      assert {:ok, :update} = Method.parse("update")
+    end
+
+    test "UPDATE converts to string correctly" do
+      assert "UPDATE" = Method.to_string(:update)
+    end
+
+    test "UPDATE requires Contact header" do
+      assert Method.requires_contact?(:update)
+    end
+
+    test "UPDATE does not create a dialog" do
+      # UPDATE is used within existing dialogs, it does not create them
+      assert not Method.creates_dialog?(:update)
     end
   end
 end

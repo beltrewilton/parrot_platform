@@ -1405,4 +1405,74 @@ defmodule ParrotSip.TransactionTest do
       other_headers: %{}
     }
   end
+
+  # Build UPDATE request helper - RFC 3311
+  defp build_update_request(branch, opts \\ []) do
+    has_contact = Keyword.get(opts, :contact, true)
+
+    base_msg = %Message{
+      type: :request,
+      method: :update,
+      request_uri: "sip:bob@192.168.1.100",
+      version: "SIP/2.0",
+      via: [
+        %Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "192.168.1.50",
+          port: 5060,
+          parameters: %{"branch" => branch}
+        }
+      ],
+      from: %Headers.From{
+        display_name: "Alice",
+        uri: "sip:alice@atlanta.com",
+        parameters: %{"tag" => "from-tag-123"}
+      },
+      to: %Headers.To{
+        display_name: nil,
+        uri: "sip:bob@biloxi.com",
+        parameters: %{"tag" => "to-tag-456"}
+      },
+      call_id: "update-call-id@192.168.1.50",
+      cseq: %Headers.CSeq{
+        number: 2,
+        method: :update
+      },
+      max_forwards: 70,
+      body: "v=0\r\no=- 123 456 IN IP4 192.168.1.50\r\n...",
+      other_headers: %{"content-type" => "application/sdp"}
+    }
+
+    if has_contact do
+      %{
+        base_msg
+        | contact: %Headers.Contact{
+            display_name: nil,
+            uri: "sip:alice@192.168.1.50:5060",
+            parameters: %{}
+          }
+      }
+    else
+      base_msg
+    end
+  end
+
+  describe "UPDATE request validation (RFC 3311)" do
+    test "validates UPDATE with Contact header" do
+      update = build_update_request("z9hG4bK-update-1")
+      assert {:ok, ^update} = Transaction.validate_message(update)
+    end
+
+    test "returns error when UPDATE missing Contact header" do
+      update = build_update_request("z9hG4bK-update-2", contact: false)
+      assert {:error, "UPDATE request must have Contact header"} = Transaction.validate_message(update)
+    end
+
+    test "UPDATE is a non-INVITE server transaction type" do
+      update = build_update_request("z9hG4bK-update-3")
+      assert Transaction.determine_transaction_type(update) == :non_invite_server
+    end
+  end
 end
