@@ -29,6 +29,7 @@ defmodule Parrot.Bridge.ActionExecutor do
   require Logger
 
   alias Parrot.Bridge.B2BUA
+  alias Parrot.Bridge.RingStrategy
   alias Parrot.Call
   alias ParrotMedia.WsBidirectional
   alias ParrotMedia.WsBidirectional.Config, as: WsConfig
@@ -970,6 +971,13 @@ defmodule Parrot.Bridge.ActionExecutor do
     end
   end
 
+  defp execute_operation({:fork, destinations, opts}, call, context) do
+    case execute_fork(call, context, destinations, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
   defp execute_operation({:originate, destination, opts}, call, context) do
     case execute_originate(call, context, destination, opts) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
@@ -1408,6 +1416,95 @@ defmodule Parrot.Bridge.ActionExecutor do
         Logger.error("[ActionExecutor] Bridge originate failed: #{inspect(reason)}")
         {:error, {:bridge_failed, reason}}
     end
+  end
+
+  @doc """
+  Execute the `:fork` operation.
+
+  Creates a B2BUA session and originates to multiple destinations.
+  First answer wins (for :simultaneous strategy).
+
+  ## Options
+
+  - `:strategy` - Ring strategy: `:simultaneous` (default), `:sequential`, `:delayed`
+  - `:timeout` - Ring timeout in milliseconds (default: 30_000)
+  - `:delay` - Delay between rings for :delayed strategy (default: 5_000)
+
+  ## Flow
+
+  1. Verify call is in :answered state
+  2. Get B2BUA session from context
+  3. Call B2BUA.fork to create legs for all destinations
+  4. Store fork leg IDs and strategy in call assigns
+  """
+  @spec execute_fork(Call.t(), context(), [String.t()], keyword()) :: execute_result()
+  def execute_fork(%Call{state: state}, _context, _destinations, _opts)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_fork(_call, %{b2bua_pid: nil}, _destinations, _opts) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_fork(_call, context, _destinations, _opts) when not is_map_key(context, :b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_fork(_call, %{b2bua_pid: b2bua_pid}, _destinations, _opts)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_fork(_call, _context, [], _opts) do
+    {:error, :no_destinations}
+  end
+
+  def execute_fork(call, %{b2bua_pid: b2bua_pid}, destinations, opts) do
+    Logger.debug("[ActionExecutor] Executing fork to #{length(destinations)} destinations")
+
+    strategy_atom = Keyword.get(opts, :strategy, :simultaneous)
+    timeout = Keyword.get(opts, :timeout, 30_000)
+
+    # Convert atom strategy to RingStrategy struct
+    ring_strategy = build_ring_strategy(strategy_atom, timeout, opts)
+
+    # Call B2BUA.fork to create all legs at once
+    case B2BUA.fork(b2bua_pid, destinations, strategy: ring_strategy) do
+      {:ok, leg_ids} ->
+        # Store fork state in call assigns
+        updated_call =
+          call
+          |> Call.assign(:__fork_strategy__, strategy_atom)
+          |> Call.assign(:__fork_legs__, leg_ids)
+
+        {:ok, updated_call}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Fork failed: #{inspect(reason)}")
+        {:error, {:fork_failed, reason}}
+    end
+  end
+
+  # Convert atom strategy to RingStrategy struct
+  defp build_ring_strategy(:simultaneous, timeout, _opts) do
+    RingStrategy.simultaneous(timeout: timeout)
+  end
+
+  defp build_ring_strategy(:sequential, timeout, opts) do
+    ring_timeout = Keyword.get(opts, :ring_timeout, 15_000)
+    RingStrategy.sequential(timeout: timeout, ring_timeout: ring_timeout)
+  end
+
+  defp build_ring_strategy(:delayed, timeout, opts) do
+    delay = Keyword.get(opts, :delay, 5_000)
+    RingStrategy.delayed(timeout: timeout, delay: delay)
+  end
+
+  defp build_ring_strategy(strategy, timeout, _opts) when is_atom(strategy) do
+    # Fallback to simultaneous for unknown strategies
+    Logger.warning("[ActionExecutor] Unknown fork strategy #{inspect(strategy)}, using :simultaneous")
+    RingStrategy.simultaneous(timeout: timeout)
   end
 
   @doc """
