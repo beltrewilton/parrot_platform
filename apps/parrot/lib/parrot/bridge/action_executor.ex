@@ -39,6 +39,7 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   @type operation ::
           {:answer, keyword()}
+          | {:early_media, keyword()}
           | {:reject, integer()}
           | {:reject, integer(), keyword()}
           | {:hangup, keyword()}
@@ -124,10 +125,49 @@ defmodule Parrot.Bridge.ActionExecutor do
   2. Send via `ParrotSip.Transaction.Server.response/2`
   3. Update call state to `:answered`
 
+  When early media is active (state is :early), the media session is already
+  running. In this case, we only send 200 OK and confirm the media session,
+  skipping the media startup since it's already flowing.
+
   Note: MediaSession startup is handled separately after ACK is received.
   """
   @spec execute_answer(Call.t(), context(), keyword()) :: execute_result()
   def execute_answer(_call, %{uas: nil}, _opts), do: {:error, :no_uas}
+
+  # Handle answer when early media is active
+  # Media is already flowing from 183, just send 200 OK and confirm
+  def execute_answer(
+        %Call{state: :early, assigns: %{__early_media__: true}} = call,
+        %{sip_msg: sip_msg} = context,
+        _opts
+      ) do
+    Logger.debug("[ActionExecutor] Executing answer operation (early media active)")
+
+    sdp_answer = Map.get(context, :sdp_answer)
+    local_contact = build_local_contact(sip_msg.source)
+
+    response =
+      Message.reply(sip_msg, 200, "OK")
+      |> Message.put_contact(local_contact)
+      |> put_sdp_body(sdp_answer)
+
+    {:ok, final_response} = send_response(context, response)
+
+    dialog_id = compute_dialog_id(sip_msg, final_response)
+    Logger.debug("[ActionExecutor] Dialog established (early->answered): #{dialog_id}")
+
+    # Confirm the media session (transition from early to active)
+    confirm_media_if_present(context)
+
+    # Notify B2BUA of A-leg state change to :answered
+    notify_b2bua_answered(context, sdp_answer)
+
+    # Update call state: :early -> :answered, clear early_media flag
+    updated_assigns = Map.delete(call.assigns, :__early_media__)
+    updated_call = %{call | state: :answered, __dialog_id__: dialog_id, assigns: updated_assigns}
+
+    {:ok, updated_call}
+  end
 
   def execute_answer(call, %{sip_msg: sip_msg} = context, _opts) do
     Logger.debug("[ActionExecutor] Executing answer operation")
@@ -223,6 +263,65 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   defp start_media_if_present(_context), do: :ok
+
+  # Confirm media session when transitioning from early to active state
+  @spec confirm_media_if_present(context()) :: :ok
+  defp confirm_media_if_present(%{media_pid: media_pid}) when is_pid(media_pid) do
+    Logger.debug("[ActionExecutor] Confirming media session #{inspect(media_pid)}")
+    ParrotMedia.MediaSession.confirm_media(media_pid)
+    :ok
+  end
+
+  defp confirm_media_if_present(_context), do: :ok
+
+  @doc """
+  Execute the `:early_media` operation.
+
+  Sends 183 Session Progress with SDP and starts media in early state.
+  This allows UAS to play prompts or IVR before answering the call.
+
+  RFC 3261 Section 13.2.2.4 - Early Dialog
+
+  1. Create SDP offer for 183 response
+  2. Build and send 183 Session Progress with SDP
+  3. Start media session in early state
+  4. Mark call state as :early and set __early_media__ flag
+  """
+  @spec execute_early_media(Call.t(), context(), keyword()) :: execute_result()
+  def execute_early_media(_call, %{uas: nil}, _opts), do: {:error, :no_uas}
+  def execute_early_media(_call, %{media_pid: nil}, _opts), do: {:error, :no_media_session}
+
+  def execute_early_media(call, %{sip_msg: sip_msg, media_pid: media_pid} = context, opts) do
+    Logger.debug("[ActionExecutor] Executing early_media operation")
+
+    # 1. Create early SDP offer (may include direction options)
+    case ParrotMedia.MediaSession.create_early_offer(media_pid, opts) do
+      {:ok, early_sdp} ->
+        # 2. Build 183 Session Progress with SDP
+        local_contact = build_local_contact(sip_msg.source)
+
+        response =
+          Message.reply(sip_msg, 183, "Session Progress")
+          |> Message.put_contact(local_contact)
+          |> put_sdp_body(early_sdp)
+
+        # 3. Send the 183 response
+        send_response(context, response)
+
+        # 4. Start media session (which will be in early state)
+        ParrotMedia.MediaSession.start_media(media_pid)
+
+        # 5. Update call state to :early and set early_media flag
+        updated_assigns = Map.put(call.assigns, :__early_media__, true)
+        updated_call = %{call | state: :early, assigns: updated_assigns}
+
+        {:ok, updated_call}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Failed to create early offer: #{inspect(reason)}")
+        {:error, {:early_offer_failed, reason}}
+    end
+  end
 
   @doc """
   Execute the `:reject` operation.
@@ -751,6 +850,14 @@ defmodule Parrot.Bridge.ActionExecutor do
   defp execute_operation({:answer, opts}, call, context) do
     case execute_answer(call, context, opts) do
       # Answer continues so subsequent operations (play, collect_dtmf) can execute
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:early_media, opts}, call, context) do
+    case execute_early_media(call, context, opts) do
+      # Early media continues so subsequent operations (play, etc.) can execute
       {:ok, updated_call} -> {:ok, updated_call, :continue}
       error -> error
     end

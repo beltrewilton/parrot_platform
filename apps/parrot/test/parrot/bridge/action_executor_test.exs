@@ -3934,4 +3934,264 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       assert updated_call.state == :answered
     end
   end
+
+  # ===========================================================================
+  # Early Media Operations (183 Session Progress)
+  # RFC 3261 Section 13.2.2.4 - Early Dialog
+  # ===========================================================================
+
+  describe "execute_early_media/3" do
+    # Mock MediaSession for early media tests
+    defmodule MockMediaSessionEarly do
+      @behaviour :gen_statem
+
+      def callback_mode, do: :state_functions
+
+      def start_link(test_pid), do: :gen_statem.start_link(__MODULE__, test_pid, [])
+
+      def init(test_pid), do: {:ok, :ready, test_pid}
+
+      # Handle create_early_offer call - returns the SDP for 183
+      def ready({:call, from}, {:create_early_offer, opts}, test_pid) do
+        send(test_pid, {:create_early_offer_called, opts})
+
+        early_sdp =
+          "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=Test\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 30000 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\na=sendonly\r\n"
+
+        {:keep_state, test_pid, [{:reply, from, {:ok, early_sdp}}]}
+      end
+
+      # Handle start_media call
+      def ready({:call, from}, :start_media, test_pid) do
+        send(test_pid, {:start_media_called})
+        {:next_state, :early, test_pid, [{:reply, from, :ok}]}
+      end
+
+      def ready(:cast, _msg, test_pid), do: {:keep_state, test_pid}
+      def ready(:info, _msg, test_pid), do: {:keep_state, test_pid}
+
+      def early({:call, from}, :get_state, test_pid) do
+        {:keep_state, test_pid, [{:reply, from, %{state: :early}}]}
+      end
+
+      def early({:call, from}, :confirm_media, test_pid) do
+        send(test_pid, {:confirm_media_called})
+        {:next_state, :active, test_pid, [{:reply, from, :ok}]}
+      end
+
+      def early(:cast, _msg, test_pid), do: {:keep_state, test_pid}
+      def early(:info, _msg, test_pid), do: {:keep_state, test_pid}
+
+      def active({:call, from}, :get_state, test_pid) do
+        {:keep_state, test_pid, [{:reply, from, %{state: :active}}]}
+      end
+
+      def active(:cast, _msg, test_pid), do: {:keep_state, test_pid}
+      def active(:info, _msg, test_pid), do: {:keep_state, test_pid}
+    end
+
+    test "sends 183 Session Progress with SDP" do
+      {:ok, media_pid} = MockMediaSessionEarly.start_link(self())
+      call = Call.new()
+      sip_msg = build_invite_message_with_source()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: media_pid,
+        sdp_answer:
+          "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=Test\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 30000 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\n"
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_early_media(call, context, [])
+
+      # Should have sent 183 response
+      assert_receive {:response_sent, response}
+      assert response.status_code == 183
+      assert response.reason_phrase == "Session Progress"
+      assert response.body =~ "v=0"
+      assert response.content_type == "application/sdp"
+
+      # Should have called create_early_offer
+      assert_receive {:create_early_offer_called, _opts}
+
+      # Should have started media
+      assert_receive {:start_media_called}
+
+      # Call state should be :early
+      assert updated_call.state == :early
+
+      # early_media flag should be set
+      assert updated_call.assigns[:__early_media__] == true
+
+      :gen_statem.stop(media_pid)
+    end
+
+    test "returns error when UAS is nil" do
+      {:ok, media_pid} = MockMediaSessionEarly.start_link(self())
+      call = Call.new()
+
+      context = %{
+        uas: nil,
+        sip_msg: build_invite_message(),
+        media_pid: media_pid
+      }
+
+      assert {:error, :no_uas} = ActionExecutor.execute_early_media(call, context, [])
+
+      :gen_statem.stop(media_pid)
+    end
+
+    test "returns error when media_pid is nil" do
+      call = Call.new()
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      assert {:error, :no_media_session} = ActionExecutor.execute_early_media(call, context, [])
+    end
+  end
+
+  describe "execute_answer/3 with early media" do
+    test "when early media is active, sends 200 OK and confirms media" do
+      # Call is already in early state with media flowing
+      {:ok, media_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionEarly.start_link(self())
+
+      # Transition mock to early state
+      :gen_statem.call(media_pid, {:create_early_offer, []})
+      :gen_statem.call(media_pid, :start_media)
+
+      call = %{Call.new() | state: :early, assigns: %{__early_media__: true}}
+      sip_msg = build_invite_message_with_source()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: media_pid,
+        sdp_answer:
+          "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=Test\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 30000 RTP/AVP 8\r\n"
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Should have sent 200 OK
+      assert_receive {:response_sent, response}
+      assert response.status_code == 200
+
+      # Should have confirmed media session
+      assert_receive {:confirm_media_called}
+
+      # Call state should be :answered
+      assert updated_call.state == :answered
+
+      # early_media flag should be cleared
+      refute updated_call.assigns[:__early_media__]
+
+      :gen_statem.stop(media_pid)
+    end
+
+    test "when early media is active without media_pid, still sends 200 OK" do
+      # Edge case: early media active but media_pid is nil
+      call = %{Call.new() | state: :early, assigns: %{__early_media__: true}}
+      sip_msg = build_invite_message_with_source()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        sdp_answer: "v=0\r\n"
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Should have sent 200 OK
+      assert_receive {:response_sent, response}
+      assert response.status_code == 200
+
+      # Call state should be :answered
+      assert updated_call.state == :answered
+
+      # early_media flag should be cleared
+      refute updated_call.assigns[:__early_media__]
+    end
+  end
+
+  describe "execute/3 with early_media operation" do
+    test "executes early_media operation in pipeline" do
+      {:ok, media_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionEarly.start_link(self())
+
+      call =
+        Call.new()
+        |> Call.early_media()
+
+      operations = Call.get_operations(call)
+      sip_msg = build_invite_message_with_source()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: media_pid,
+        sdp_answer: "v=0\r\n"
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Should have sent 183
+      assert_receive {:response_sent, response}
+      assert response.status_code == 183
+
+      # Call state should be :early
+      assert updated_call.state == :early
+
+      :gen_statem.stop(media_pid)
+    end
+
+    test "early_media followed by answer works correctly" do
+      {:ok, media_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionEarly.start_link(self())
+
+      call =
+        Call.new()
+        |> Call.early_media()
+
+      # Execute early_media first
+      operations = Call.get_operations(call)
+      sip_msg = build_invite_message_with_source()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: media_pid,
+        sdp_answer: "v=0\r\n"
+      }
+
+      {:ok, early_call} = ActionExecutor.execute(operations, call, context)
+
+      # Clear operations before adding new ones (simulating real workflow)
+      early_call_cleared = %{early_call | __operations__: []}
+
+      # Now execute answer on the early call
+      answer_call = Call.answer(early_call_cleared)
+      answer_ops = Call.get_operations(answer_call)
+
+      {:ok, final_call} = ActionExecutor.execute(answer_ops, answer_call, context)
+
+      # Should have sent 183, then 200
+      assert_receive {:response_sent, %{status_code: 183}}
+      assert_receive {:response_sent, %{status_code: 200}}
+
+      # Call should be answered
+      assert final_call.state == :answered
+
+      # Should have confirmed media
+      assert_receive {:confirm_media_called}
+
+      :gen_statem.stop(media_pid)
+    end
+  end
 end
