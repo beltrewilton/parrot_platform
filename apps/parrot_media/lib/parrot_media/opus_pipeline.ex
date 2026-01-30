@@ -28,6 +28,8 @@ defmodule ParrotMedia.OpusPipeline do
   alias ParrotMedia.Elements.TelephoneEventParser
   alias ParrotMedia.MOS.Observer
 
+  @type direction :: :sendrecv | :sendonly | :recvonly | :inactive
+
   @impl true
   def handle_init(_ctx, opts) do
     Logger.info("OpusPipeline: Starting for session #{opts.session_id}")
@@ -167,7 +169,13 @@ defmodule ParrotMedia.OpusPipeline do
        # Per RFC 3551, PTs 96-127 are dynamically assigned via SDP
        pt_to_encoding: pt_to_encoding,
        # Optional MediaSession PID for forwarding events
-       media_session_pid: Map.get(opts, :media_session_pid)
+       media_session_pid: Map.get(opts, :media_session_pid),
+       # Media direction for hold/resume support
+       # :sendrecv - Normal bidirectional audio (default)
+       # :sendonly - We send, remote on hold (mute local playback)
+       # :recvonly - We receive, we're on hold (send silence)
+       # :inactive - Completely muted
+       direction: :sendrecv
      }}
   end
 
@@ -439,6 +447,31 @@ defmodule ParrotMedia.OpusPipeline do
         # This will automatically unlink and clean up the pad connection
         {[remove_children: [{:fork_sink, fork_id}]], %{state | active_forks: updated_forks}}
     end
+  end
+
+  # Handle direction change for hold/resume support
+  # The direction affects whether we send/receive audio
+  @impl true
+  def handle_info({:set_direction, direction}, _ctx, state)
+      when direction in [:sendrecv, :sendonly, :recvonly, :inactive] do
+    Logger.info("OpusPipeline #{state.session_id}: Setting direction to #{direction}")
+
+    # Store the new direction in state
+    # Note: Actual muting/unmuting of pipeline elements would be implemented here
+    # For now, we just track the direction for future pipeline control
+    # TODO: Implement actual audio path muting based on direction:
+    # - :sendonly - mute receive path (don't play incoming audio)
+    # - :recvonly - mute send path (send silence instead of audio)
+    # - :inactive - mute both paths
+
+    {[], %{state | direction: direction}}
+  end
+
+  # Handle get_direction request for testing/debugging
+  @impl true
+  def handle_info({:get_direction, from}, _ctx, state) do
+    send(from, {:direction, state.direction})
+    {[], state}
   end
 
   @impl true
