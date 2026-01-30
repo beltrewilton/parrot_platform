@@ -275,4 +275,52 @@ defmodule ParrotMedia.MOS.CallSummary do
   defp calculate_loss_percent(total_packets, total_lost) do
     total_lost / total_packets * 100.0
   end
+
+  @doc """
+  Converts a CallSummary struct to a plain map for cross-app boundary transfer.
+
+  This is useful when passing CallSummary data across application boundaries
+  (e.g., from parrot_media to parrot_sip for CDR generation) where struct
+  references may not be available.
+
+  Converts:
+  - The struct itself to a map
+  - Status atom to string for JSON compatibility
+  - Quality events to plain maps with string status
+
+  ## Examples
+
+      iex> {:ok, summary} = CallSummary.new(session_id: "test", min_mos: 3.5, max_mos: 4.0, avg_mos: 3.8, total_packets: 1000, total_lost: 50, intervals_calculated: 5, duration_ms: 25000, status: :complete)
+      iex> map = CallSummary.to_map(summary)
+      iex> map.status
+      "complete"
+      iex> is_map(map)
+      true
+  """
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = summary) do
+    %{
+      session_id: summary.session_id,
+      min_mos: summary.min_mos,
+      max_mos: summary.max_mos,
+      avg_mos: summary.avg_mos,
+      total_packets: summary.total_packets,
+      total_lost: summary.total_lost,
+      overall_loss_percent: summary.overall_loss_percent,
+      quality_events: Enum.map(summary.quality_events, &quality_event_to_map/1),
+      intervals_calculated: summary.intervals_calculated,
+      duration_ms: summary.duration_ms,
+      status: to_string(summary.status)
+    }
+  end
+
+  # Convert a quality event map, ensuring atoms are converted for JSON compat
+  defp quality_event_to_map(event) when is_map(event) do
+    event
+    |> Map.new(fn
+      {:type, val} when is_atom(val) -> {:type, to_string(val)}
+      {:direction, val} when is_atom(val) -> {:direction, to_string(val)}
+      {k, v} -> {k, v}
+    end)
+  end
 end

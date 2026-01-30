@@ -106,14 +106,49 @@ defmodule Parrot.Bridge.Handler do
   Called when an ACK is received for a 2xx response.
 
   This signals that the call is established and media can begin.
+  Also wires up the MOS fetcher for CDR generation.
   """
   @impl true
   @spec process_ack(Message.t(), term()) :: :ok
-  def process_ack(_sip_msg, _args) do
+  def process_ack(sip_msg, _args) do
     Logger.debug("[Bridge.Handler] Received ACK")
-    # Future: Signal call establishment to Call.Server
-    # Future: Start media pipeline
+
+    # Wire up MOS fetcher for CDR generation when dialog terminates
+    call_id = sip_msg.call_id
+    session_id = "call_#{call_id}"
+
+    # Look up dialog and configure MOS fetching
+    case ParrotSip.DialogStatem.uas_find(sip_msg) do
+      {:ok, dialog_pid} ->
+        Logger.debug("[Bridge.Handler] Wiring MOS fetcher for dialog #{call_id}")
+
+        # Set the media session ID
+        ParrotSip.DialogStatem.set_media_session_id(dialog_pid, session_id)
+
+        # Create and set the MOS fetcher
+        mos_fetcher = create_mos_fetcher()
+        ParrotSip.DialogStatem.set_mos_fetcher(dialog_pid, mos_fetcher)
+
+      :not_found ->
+        Logger.debug("[Bridge.Handler] No dialog found for ACK, skipping MOS setup")
+    end
+
     :ok
+  end
+
+  # Creates a MOS fetcher function that retrieves CallSummary from parrot_media
+  # and converts it to a plain map for CDR integration.
+  @spec create_mos_fetcher() :: (String.t() -> map() | nil)
+  defp create_mos_fetcher do
+    fn session_id ->
+      case ParrotMedia.MOS.call_summary(session_id) do
+        {:ok, %ParrotMedia.MOS.CallSummary{} = summary} ->
+          ParrotMedia.MOS.CallSummary.to_map(summary)
+
+        {:error, _reason} ->
+          nil
+      end
+    end
   end
 
   # ============================================================================

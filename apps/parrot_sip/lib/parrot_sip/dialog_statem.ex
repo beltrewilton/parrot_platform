@@ -919,6 +919,30 @@ defmodule ParrotSip.DialogStatem do
   end
 
   @doc """
+  Sets the MOS fetcher function for this dialog.
+
+  The MOS fetcher is called during CDR generation to retrieve MOS data
+  from the media session. This allows late binding of the fetcher function.
+
+  ## Parameters
+    - `pid` - The dialog process
+    - `fetcher` - Function `(session_id) -> mos_summary_map | nil`
+
+  ## Returns
+    - `:ok` on success
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      fetcher = fn session_id -> ParrotMedia.MOS.call_summary(session_id) end
+      :ok = DialogStatem.set_mos_fetcher(pid, fetcher)
+  """
+  @spec set_mos_fetcher(pid(), (String.t() -> map() | nil)) :: :ok
+  def set_mos_fetcher(pid, fetcher) when is_pid(pid) and is_function(fetcher, 1) do
+    :gen_statem.call(pid, {:set_mos_fetcher, fetcher})
+  end
+
+  @doc """
   Returns the full dialog data for recovery purposes.
 
   This returns all dialog fields needed for cluster failover recovery,
@@ -952,6 +976,11 @@ defmodule ParrotSip.DialogStatem do
 
   def early({:call, from}, {:set_media_session_id, session_id}, data) do
     new_data = %{data | media_session_id: session_id}
+    {:keep_state, new_data, [{:reply, from, :ok}]}
+  end
+
+  def early({:call, from}, {:set_mos_fetcher, fetcher}, data) do
+    new_data = %{data | mos_fetcher: fetcher}
     {:keep_state, new_data, [{:reply, from, :ok}]}
   end
 
@@ -996,6 +1025,11 @@ defmodule ParrotSip.DialogStatem do
 
   def confirmed({:call, from}, {:set_media_session_id, session_id}, data) do
     new_data = %{data | media_session_id: session_id}
+    {:keep_state, new_data, [{:reply, from, :ok}]}
+  end
+
+  def confirmed({:call, from}, {:set_mos_fetcher, fetcher}, data) do
+    new_data = %{data | mos_fetcher: fetcher}
     {:keep_state, new_data, [{:reply, from, :ok}]}
   end
 
