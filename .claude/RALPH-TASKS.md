@@ -1,17 +1,33 @@
-# Ralph Loop: Production Release Tasks
+# Ralph Loop: Beads Task Workflow
 
 ## Instructions
 
-You are working through the P1 blocking tasks for production release. Follow this workflow:
+You are working through tasks tracked in bd/beads. Follow this workflow to process tasks by priority.
 
 ### 1. Check Current State
 ```bash
+# Check ready tasks (no blockers) - filter by priority if needed
+bd ready
 bd ready --priority 1
+
+# Check what's blocked and why
 bd blocked
+
+# List open tasks by priority
+bd list --status open --priority 1
+bd list --status open --priority 2
 ```
 
-### 2. Claim Next Unblocked Task
-Pick the first unblocked P1 task and view its full details:
+### 2. Find Next Task to Work
+
+**Priority order:** P1 > P2 > P3
+
+For epics, check their children:
+```bash
+bd show <epic-id>  # Shows children with status
+```
+
+Pick the first **unblocked, open task** (not epic) and view full details:
 ```bash
 bd show <task-id>
 ```
@@ -42,13 +58,26 @@ bd sync
 ### 6. Check for Newly Unblocked Tasks
 After closing a task, check if any blocked tasks are now ready:
 ```bash
-bd ready --priority 1
+bd ready
+bd blocked
 ```
 
 ### 7. Completion Signal
-When ALL P1 tasks are closed, output:
+The completion condition depends on what was requested. Examples:
+
+**All P1 tasks complete:**
 ```
 <promise>ALL P1 TASKS COMPLETE</promise>
+```
+
+**All tasks complete:**
+```
+<promise>ALL TASKS COMPLETE</promise>
+```
+
+**Specific epic complete:**
+```
+<promise>EPIC <epic-id> COMPLETE</promise>
 ```
 
 If you cannot complete a task (stuck, needs clarification), output:
@@ -171,16 +200,4 @@ If you cannot complete a task (stuck, needs clarification), output:
 4. Code is committed
 5. OTP best practices are followed
 
-**DO NOT skip tasks** - work them in dependency order.
-
-## Current Priority Order
-
-Work tasks in this order (respecting dependencies):
-1. `parrot_platform-121` - INVITE Retransmission Race (UNBLOCKS: 6ib)
-2. `parrot_platform-e6p` - ACK SDP Answer Bodies
-3. `parrot_platform-0np` - RTCP Report Processing
-4. `parrot_platform-1av` - WebSocket Source Address Bug
-5. `parrot_platform-7u3` - REGISTER Digest Authentication
-6. `parrot_platform-6ib` - B2BUA State Sync (BLOCKED BY: 121)
-
-After 6ib completes, P2 tasks become available.
+**DO NOT skip tasks** - work them in dependency order as shown by `bd blocked`.
