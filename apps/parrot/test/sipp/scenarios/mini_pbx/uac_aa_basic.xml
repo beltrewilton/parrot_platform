@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Mini PBX Auto-Attendant Basic Call Scenario
+
+  Tests that calling 100 (auto-attendant) receives 200 OK.
+  The call is established, waits briefly, then sends BYE.
+-->
+<scenario name="Mini PBX Auto-Attendant Basic Call">
+  <!-- Send INVITE to auto-attendant (100) -->
+  <send>
+    <![CDATA[
+    INVITE sip:100@[remote_ip]:[remote_port] SIP/2.0
+    Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+    From: <sip:1001@pbx.local>;tag=[call_number]
+    To: <sip:100@[remote_ip]:[remote_port]>
+    Call-ID: [call_id]
+    CSeq: 1 INVITE
+    Contact: <sip:1001@[local_ip]:[local_port]>
+    Content-Type: application/sdp
+    Max-Forwards: 70
+    Content-Length: [len]
+
+    v=0
+    o=- 53655765 2353687637 IN IP[local_ip_type] [local_ip]
+    s=-
+    t=0 0
+    c=IN IP[media_ip_type] [media_ip]
+    m=audio [media_port] RTP/AVP 0
+    a=rtpmap:0 PCMU/8000
+    ]]>
+  </send>
+
+  <!-- Optional 100 Trying -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Optional 180 Ringing -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK - auto-attendant answers -->
+  <recv response="200">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+    ACK sip:100@[remote_ip]:[remote_port] SIP/2.0
+    Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+    From: <sip:1001@pbx.local>;tag=[call_number]
+    To: <sip:100@[remote_ip]:[remote_port]>[peer_tag_param]
+    Call-ID: [call_id]
+    CSeq: 1 ACK
+    Contact: <sip:1001@[local_ip]:[local_port]>
+    Max-Forwards: 70
+    Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Wait for greeting/menu to play -->
+  <pause milliseconds="2000"/>
+
+  <!-- Send BYE to end the call -->
+  <send retrans="500">
+    <![CDATA[
+    BYE sip:100@[remote_ip]:[remote_port] SIP/2.0
+    Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+    From: <sip:1001@pbx.local>;tag=[call_number]
+    To: <sip:100@[remote_ip]:[remote_port]>[peer_tag_param]
+    Call-ID: [call_id]
+    CSeq: 2 BYE
+    Contact: <sip:1001@[local_ip]:[local_port]>
+    Max-Forwards: 70
+    Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>

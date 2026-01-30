@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  Mini PBX UAC scenario: REGISTER with Digest Authentication
+
+  Flow:
+  1. Send REGISTER without Authorization
+  2. Receive 401 Unauthorized with WWW-Authenticate
+  3. Send REGISTER with Authorization (digest response)
+  4. Receive 200 OK
+
+  Uses Mini PBX demo credentials:
+  - Username: 1001
+  - Password: 1001 (same as extension number)
+-->
+<scenario name="Mini PBX UAC REGISTER with Auth">
+  <!-- Step 1: Send initial REGISTER without Authorization -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:1001@pbx.local>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:1001@pbx.local>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:1001@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Step 2: Receive 401 Unauthorized with challenge -->
+  <recv response="401" auth="true" crlf="true">
+    <!-- SIPp will extract WWW-Authenticate header for computing auth response -->
+  </recv>
+
+  <!-- Step 3: Send REGISTER with Authorization using Mini PBX demo credentials -->
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:1001@pbx.local>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:1001@pbx.local>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:1001@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Expires: 3600
+      [authentication username=1001 password=1001]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Step 4: Receive 200 OK -->
+  <recv response="200" crlf="true"/>
+
+</scenario>
