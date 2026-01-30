@@ -152,6 +152,34 @@ defmodule ParrotSip.UA do
   end
 
   @doc """
+  Send UPDATE request within an established dialog.
+
+  RFC 3311 - The Session Initiation Protocol (SIP) UPDATE Method
+
+  UPDATE allows modifying session parameters mid-call without affecting the
+  dialog state. Common use cases include:
+  - Changing codecs or media parameters (with SDP)
+  - Refreshing session timers (without SDP)
+  - Updating session description during early dialog
+
+  ## Options
+  - `:sdp` - SDP body for the UPDATE (optional)
+  - `:headers` - Additional headers map (optional)
+
+  ## Examples
+
+      # UPDATE with new SDP offer
+      :ok = ParrotSip.UA.send_update(ua, entity, sdp: new_sdp)
+
+      # Session timer refresh (no SDP)
+      :ok = ParrotSip.UA.send_update(ua, entity, headers: %{"Session-Expires" => "1800"})
+  """
+  @spec send_update(pid(), Entity.t(), keyword()) :: :ok | {:error, term()}
+  def send_update(ua, %Entity{} = entity, opts \\ []) do
+    GenServer.call(ua, {:send_update, entity.id, opts})
+  end
+
+  @doc """
   Register with a SIP registrar.
 
   ## Options
@@ -411,6 +439,40 @@ defmodule ParrotSip.UA do
     {:reply, {:ok, reg_id}, %{state | registrations: registrations}}
   end
 
+  # RFC 3311: Send UPDATE request within dialog
+  def handle_call({:send_update, entity_id, opts}, _from, state) do
+    case Map.get(state.entities, entity_id) do
+      nil ->
+        {:reply, {:error, :entity_not_found}, state}
+
+      %Entity{state: entity_state} when entity_state not in [:confirmed, :early] ->
+        # UPDATE can be sent in confirmed or early dialog state
+        {:reply, {:error, :invalid_state}, state}
+
+      entity ->
+        # Increment CSeq per RFC 3261 Section 12.2.1.1
+        next_seq = entity.local_seq + 1
+        sdp = Keyword.get(opts, :sdp)
+        headers = Keyword.get(opts, :headers, %{})
+
+        # Build and send UPDATE
+        update = build_update(entity, next_seq, sdp, headers, state)
+
+        ua_pid = self()
+
+        {:uac_id, _trans} =
+          Client.request(update, fn result ->
+            GenServer.cast(ua_pid, {:update_response, entity_id, result})
+          end)
+
+        # Update entity's local_seq
+        entity = %{entity | local_seq: next_seq}
+        entities = Map.put(state.entities, entity_id, entity)
+
+        {:reply, :ok, %{state | entities: entities}}
+    end
+  end
+
   # ============================================================================
   # GenServer handle_cast
   # ============================================================================
@@ -624,6 +686,55 @@ defmodule ParrotSip.UA do
     {:noreply, state}
   end
 
+  # UPDATE response - 2xx Success (RFC 3311 Section 5.3)
+  def handle_cast(
+        {:update_response, entity_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
+      when code >= 200 and code < 300 do
+    case Map.get(state.entities, entity_id) do
+      nil ->
+        {:noreply, state}
+
+      entity ->
+        # Call user handler
+        {:ok, new_handler_state} =
+          state.handler_module.handle_update_complete(self(), response, entity, state.handler_state)
+
+        {:noreply, %{state | handler_state: new_handler_state}}
+    end
+  end
+
+  # UPDATE response - 4xx-6xx Failure (RFC 3311 Section 5.3)
+  def handle_cast(
+        {:update_response, entity_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
+      when code >= 400 do
+    case Map.get(state.entities, entity_id) do
+      nil ->
+        {:noreply, state}
+
+      entity ->
+        # Call user handler
+        {:ok, new_handler_state} =
+          state.handler_module.handle_update_failed(
+            self(),
+            code,
+            response,
+            entity,
+            state.handler_state
+          )
+
+        {:noreply, %{state | handler_state: new_handler_state}}
+    end
+  end
+
+  # UPDATE response - Other (1xx, timeout, etc.)
+  def handle_cast({:update_response, _entity_id, _result}, state) do
+    {:noreply, state}
+  end
+
   # ============================================================================
   # GenServer handle_info
   # ============================================================================
@@ -704,6 +815,60 @@ defmodule ParrotSip.UA do
       max_forwards: 70,
       content_type: if(sdp != "", do: "application/sdp", else: nil),
       body: sdp,
+      source: %Source{
+        local: {local_ip, state.port},
+        remote: {dest_ip, dest_port},
+        transport: state.transport
+      }
+    }
+  end
+
+  # Build UPDATE with proper CSeq tracking per RFC 3311
+  # Note: extra_headers parameter reserved for future use (Session-Expires, etc.)
+  defp build_update(entity, cseq_number, sdp, _extra_headers, state) do
+    dest_uri = ParrotSip.Uri.parse!(entity.remote_uri)
+    {:ok, dest_ip} = :inet.parse_address(String.to_charlist(dest_uri.host))
+    dest_port = dest_uri.port || 5060
+    {:ok, local_ip} = :inet.parse_address(String.to_charlist(state.local_host))
+
+    # RFC 3311 Section 5.1: UPDATE MUST contain Contact header
+    %Message{
+      type: :request,
+      method: :update,
+      request_uri: entity.remote_uri,
+      version: "SIP/2.0",
+      from: %From{
+        display_name: nil,
+        uri: entity.local_uri,
+        parameters: %{"tag" => entity.local_tag}
+      },
+      to: %To{
+        display_name: nil,
+        uri: entity.remote_uri,
+        parameters: %{"tag" => entity.remote_tag}
+      },
+      call_id: entity.call_id,
+      cseq: %CSeq{number: cseq_number, method: :update},
+      contact: [
+        %Contact{
+          display_name: nil,
+          uri: "sip:user@#{state.local_host}:#{state.port}",
+          parameters: %{}
+        }
+      ],
+      via: [
+        %Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: state.transport,
+          host: state.local_host,
+          port: state.port,
+          parameters: %{}
+        }
+      ],
+      max_forwards: 70,
+      content_type: if(sdp, do: "application/sdp", else: nil),
+      body: sdp || "",
       source: %Source{
         local: {local_ip, state.port},
         remote: {dest_ip, dest_port},

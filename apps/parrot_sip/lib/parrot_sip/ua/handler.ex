@@ -83,6 +83,31 @@ defmodule ParrotSip.UA.Handler do
   @callback handle_registration_failed(ua :: pid(), response :: map(), reg_id :: term(), state()) ::
               {:ok, state()}
 
+  # UPDATE (RFC 3311)
+  @doc """
+  Called when an outgoing UPDATE request succeeds (200 OK received).
+
+  Use this to process the SDP answer and update media parameters.
+  """
+  @callback handle_update_complete(ua :: pid(), response :: map(), entity(), state()) ::
+              {:ok, state()}
+
+  @doc """
+  Called when an outgoing UPDATE request fails (4xx-6xx response).
+
+  Common failure codes:
+  - 488 Not Acceptable Here - Media parameters not acceptable
+  - 491 Request Pending - Another request is being processed
+  """
+  @callback handle_update_failed(
+              ua :: pid(),
+              status :: integer(),
+              response :: map(),
+              entity(),
+              state()
+            ) ::
+              {:ok, state()}
+
   @optional_callbacks [
     handle_ringing: 4,
     handle_rejected: 4,
@@ -90,7 +115,9 @@ defmodule ParrotSip.UA.Handler do
     handle_hangup: 4,
     handle_cancel: 3,
     handle_registered: 4,
-    handle_registration_failed: 4
+    handle_registration_failed: 4,
+    handle_update_complete: 4,
+    handle_update_failed: 5
   ]
 
   defmacro __using__(_opts) do
@@ -123,13 +150,21 @@ defmodule ParrotSip.UA.Handler do
       @impl true
       def handle_registration_failed(_ua, _response, _reg_id, state), do: {:ok, state}
 
+      @impl true
+      def handle_update_complete(_ua, _response, _entity, state), do: {:ok, state}
+
+      @impl true
+      def handle_update_failed(_ua, _status, _response, _entity, state), do: {:ok, state}
+
       defoverridable handle_ringing: 4,
                      handle_rejected: 4,
                      handle_redirect: 5,
                      handle_hangup: 4,
                      handle_cancel: 3,
                      handle_registered: 4,
-                     handle_registration_failed: 4
+                     handle_registration_failed: 4,
+                     handle_update_complete: 4,
+                     handle_update_failed: 5
     end
   end
 end
