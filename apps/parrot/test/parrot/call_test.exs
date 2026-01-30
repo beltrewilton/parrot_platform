@@ -382,18 +382,39 @@ defmodule Parrot.CallTest do
   end
 
   describe "fork_media/2" do
-    test "adds fork_media operation with destination" do
+    test "adds fork_media operation with host:port destination" do
       call = %Call{} |> Call.fork_media("192.168.1.100:5000")
 
       assert [operation] = call.__operations__
       assert operation == {:fork_media, "192.168.1.100:5000", []}
     end
 
-    test "parses host:port destination" do
+    test "adds fork_media operation with hostname:port destination" do
       call = %Call{} |> Call.fork_media("transcription.example.com:8080")
 
       assert [operation] = call.__operations__
       assert operation == {:fork_media, "transcription.example.com:8080", []}
+    end
+
+    test "adds fork_media operation with WebSocket URL" do
+      call = %Call{} |> Call.fork_media("wss://transcription.example.com/audio")
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "wss://transcription.example.com/audio", []}
+    end
+
+    test "adds fork_media operation with ws:// URL" do
+      call = %Call{} |> Call.fork_media("ws://localhost:8080/audio")
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "ws://localhost:8080/audio", []}
+    end
+
+    test "adds fork_media operation with IP tuple" do
+      call = %Call{} |> Call.fork_media({{192, 168, 1, 100}, 5004})
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, {{192, 168, 1, 100}, 5004}, []}
     end
   end
 
@@ -405,11 +426,32 @@ defmodule Parrot.CallTest do
       assert operation == {:fork_media, "192.168.1.100:5000", [fork_id: "transcription"]}
     end
 
-    test "adds fork_media operation with transport option" do
-      call = %Call{} |> Call.fork_media("192.168.1.100:5000", transport: :rtp)
+    test "adds fork_media operation with direction option" do
+      call = %Call{} |> Call.fork_media("wss://example.com/audio", direction: :rx)
 
       assert [operation] = call.__operations__
-      assert operation == {:fork_media, "192.168.1.100:5000", [transport: :rtp]}
+      assert operation == {:fork_media, "wss://example.com/audio", [direction: :rx]}
+    end
+
+    test "adds fork_media operation with label option" do
+      call = %Call{} |> Call.fork_media("wss://example.com/audio", label: "transcription")
+
+      assert [operation] = call.__operations__
+      assert operation == {:fork_media, "wss://example.com/audio", [label: "transcription"]}
+    end
+
+    test "adds fork_media operation with IP tuple and options" do
+      call =
+        %Call{}
+        |> Call.fork_media({{192, 168, 1, 100}, 5004},
+          direction: :both,
+          label: "recording"
+        )
+
+      assert [operation] = call.__operations__
+
+      assert operation ==
+               {:fork_media, {{192, 168, 1, 100}, 5004}, [direction: :both, label: "recording"]}
     end
 
     test "adds fork_media operation with all options" do
@@ -417,13 +459,16 @@ defmodule Parrot.CallTest do
         %Call{}
         |> Call.fork_media("192.168.1.100:5000",
           fork_id: "transcription",
-          transport: :rtp
+          direction: :rx,
+          label: "asr",
+          format: :pcma
         )
 
       assert [operation] = call.__operations__
 
       assert operation ==
-               {:fork_media, "192.168.1.100:5000", [fork_id: "transcription", transport: :rtp]}
+               {:fork_media, "192.168.1.100:5000",
+                [fork_id: "transcription", direction: :rx, label: "asr", format: :pcma]}
     end
   end
 
@@ -433,6 +478,18 @@ defmodule Parrot.CallTest do
 
       assert [operation] = call.__operations__
       assert operation == {:stop_fork_media, "transcription"}
+    end
+
+    test "chains with fork_media operation" do
+      call =
+        %Call{}
+        |> Call.fork_media("wss://example.com/audio")
+        |> Call.stop_fork_media("fork-abc123")
+
+      assert Call.get_operations(call) == [
+               {:fork_media, "wss://example.com/audio", []},
+               {:stop_fork_media, "fork-abc123"}
+             ]
     end
   end
 

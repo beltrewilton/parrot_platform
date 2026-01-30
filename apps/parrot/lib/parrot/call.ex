@@ -736,29 +736,53 @@ defmodule Parrot.Call do
   # Media Forking Operations
   # ---------------------------------------------------------------------------
 
+  @typedoc """
+  Media fork destination.
+
+  Can be one of:
+  - WebSocket URL: `"wss://example.com/audio"` or `"ws://example.com/audio"`
+  - RTP host:port string: `"192.168.1.100:5000"`
+  - IP tuple with port: `{{192, 168, 1, 100}, 5004}`
+  """
+  @type fork_destination :: String.t() | {tuple(), pos_integer()}
+
   @doc """
   Forks media to an external service for processing.
 
   Media forking allows streaming a copy of the call's audio to an external
-  destination via RTP. Common use cases include:
+  destination. Common use cases include:
 
-  - Real-time transcription services
-  - Call recording servers
+  - Real-time transcription services (via WebSocket)
+  - Call recording servers (via RTP)
   - Audio analysis systems
   - AI-powered conversation analysis
 
   ## Arguments
 
-  - `destination` - The destination in "host:port" format (e.g., "192.168.1.100:5000")
+  - `destination` - The destination, which can be:
+    - WebSocket URL: `"wss://example.com/audio"` or `"ws://example.com/audio"`
+    - RTP host:port: `"192.168.1.100:5000"`
+    - IP tuple: `{{192, 168, 1, 100}, 5004}`
 
   ## Examples
 
+      # WebSocket destination
+      call |> fork_media("wss://transcription.example.com/audio")
+
+      # RTP destination with host:port string
       call |> fork_media("192.168.1.100:5000")
-      call |> fork_media("transcription.example.com:8080")
+
+      # RTP destination with IP tuple
+      call |> fork_media({{192, 168, 1, 100}, 5004})
 
   """
-  @spec fork_media(t(), String.t()) :: t()
+  @spec fork_media(t(), fork_destination()) :: t()
   def fork_media(%__MODULE__{} = call, destination) when is_binary(destination) do
+    add_operation(call, {:fork_media, destination, []})
+  end
+
+  def fork_media(%__MODULE__{} = call, {ip, port} = destination)
+      when is_tuple(ip) and is_integer(port) and port > 0 do
     add_operation(call, {:fork_media, destination, []})
   end
 
@@ -768,17 +792,30 @@ defmodule Parrot.Call do
   ## Options
 
   * `:fork_id` - Unique identifier for this fork (used for stopping later)
-  * `:transport` - Transport type (currently only `:rtp` is supported)
+  * `:direction` - Which direction to fork: `:rx` (inbound), `:tx` (outbound), or `:both` (default)
+  * `:label` - Human-readable label for this fork
+  * `:format` - Audio format: `:pcma`, `:pcmu`, `:opus` (default depends on negotiated codec)
 
   ## Examples
 
+      # WebSocket with direction
+      call |> fork_media("wss://example.com/audio", direction: :rx)
+
+      # RTP with fork_id
       call |> fork_media("192.168.1.100:5000", fork_id: "transcription")
-      call |> fork_media("192.168.1.100:5000", fork_id: "recording", transport: :rtp)
+
+      # IP tuple with label
+      call |> fork_media({{192, 168, 1, 100}, 5004}, label: "recording", direction: :both)
 
   """
-  @spec fork_media(t(), String.t(), keyword()) :: t()
+  @spec fork_media(t(), fork_destination(), keyword()) :: t()
   def fork_media(%__MODULE__{} = call, destination, opts)
       when is_binary(destination) and is_list(opts) do
+    add_operation(call, {:fork_media, destination, opts})
+  end
+
+  def fork_media(%__MODULE__{} = call, {ip, port} = destination, opts)
+      when is_tuple(ip) and is_integer(port) and port > 0 and is_list(opts) do
     add_operation(call, {:fork_media, destination, opts})
   end
 
