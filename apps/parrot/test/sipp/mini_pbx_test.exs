@@ -175,9 +175,9 @@ defmodule Parrot.Sipp.MiniPBXTest do
   describe "extension-to-extension calls" do
     @describetag :sipp
 
-    # These tests require the router to match extension patterns
-    # and the Extensions handler which uses bridge() - requires media
-    @tag skip: "requires full media pipeline"
+    # Note: Due to Router scope (from_ip: "192.168.0.0/16"), calls from 127.0.0.1
+    # won't match the 1xxx route. This test still passes because no-route-match
+    # also returns 404. The Extensions handler logic isn't tested here.
     test "rejects call to unregistered extension with 404", %{port: port} do
       Process.sleep(100)
 
@@ -214,15 +214,60 @@ defmodule Parrot.Sipp.MiniPBXTest do
   end
 
   # ===========================================================================
+  # Presence Tests (SUBSCRIBE/NOTIFY)
+  # ===========================================================================
+
+  describe "presence subscription" do
+    @describetag :sipp
+
+    test "handles basic SUBSCRIBE and sends NOTIFY", %{port: port} do
+      # Pre-register an extension so presence can be tracked
+      Storage.register("sip:1001@pbx.local", "sip:1001@192.168.1.100:5060", 3600)
+      # Set initial presence state
+      Storage.set_presence_state("sip:1001@pbx.local", :available)
+
+      Process.sleep(100)
+
+      result =
+        SippRunner.run_scenario(
+          scenario_file: scenario_path("presence/uac_subscribe_basic.xml"),
+          remote_host: "127.0.0.1",
+          remote_port: port,
+          calls: 1,
+          timeout: 15_000
+        )
+
+      assert result == :ok
+    end
+
+    test "handles SUBSCRIBE to unregistered extension", %{port: port} do
+      # Don't pre-register - test behavior with unknown extension
+      Process.sleep(100)
+
+      result =
+        SippRunner.run_scenario(
+          scenario_file: scenario_path("presence/uac_subscribe_invalid.xml"),
+          remote_host: "127.0.0.1",
+          remote_port: port,
+          calls: 1,
+          timeout: 15_000
+        )
+
+      # This should succeed - the scenario expects any of 200/403/404
+      assert result == :ok
+    end
+  end
+
+  # ===========================================================================
   # Outbound PSTN Tests
   # ===========================================================================
 
   describe "outbound PSTN calls (9xxx)" do
     @describetag :sipp
 
-    # The outbound handler needs router to match 9xxx pattern
-    # and uses answer() + fork() which require media
-    @tag skip: "requires full media pipeline"
+    # Note: Due to Router scope (from_ip: "192.168.0.0/16"), calls from 127.0.0.1
+    # won't match the 9xxx route. This test still passes because no-route-match
+    # also returns 404. The Outbound handler logic isn't tested here.
     test "rejects invalid short number with 404", %{port: port} do
       Process.sleep(100)
 
