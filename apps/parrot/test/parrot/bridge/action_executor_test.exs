@@ -4194,4 +4194,148 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       :gen_statem.stop(media_pid)
     end
   end
+
+  # ===========================================================================
+  # Call-level Hold/Resume/Update Operations (RFC 3311, Task 849.9)
+  # ===========================================================================
+
+  describe "call-level hold operation" do
+    @describetag :update_ops
+
+    test "sends direction change to media session" do
+      call = Call.new() |> Call.hold()
+      operations = Call.get_operations(call)
+
+      # Use self() as mock media_pid to receive messages
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Should have sent set_direction message to media_pid
+      assert_receive {:set_direction, :sendonly}
+    end
+
+    test "tracks hold_pending in assigns" do
+      call = Call.new() |> Call.hold()
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Should track pending hold in assigns
+      assert updated_call.assigns[:hold_pending] == true
+    end
+
+    test "returns error when media_pid is nil" do
+      call = Call.new() |> Call.hold()
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil
+      }
+
+      result = ActionExecutor.execute(operations, call, context)
+      assert {:error, :no_media_session} = result
+    end
+  end
+
+  describe "call-level resume operation" do
+    @describetag :update_ops
+
+    test "sends direction change to media session" do
+      call = Call.new() |> Call.resume()
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Should have sent set_direction message to media_pid
+      assert_receive {:set_direction, :sendrecv}
+    end
+
+    test "clears hold_pending in assigns" do
+      call =
+        Call.new()
+        |> Call.assign(:hold_pending, true)
+        |> Call.resume()
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Should clear hold_pending
+      assert updated_call.assigns[:hold_pending] == nil
+    end
+  end
+
+  describe "call-level update operation" do
+    @describetag :update_ops
+
+    test "sends custom direction to media session" do
+      call = Call.new() |> Call.update(direction: :recvonly)
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      # Should have sent set_direction message with specified direction
+      assert_receive {:set_direction, :recvonly}
+    end
+
+    test "sends inactive direction" do
+      call = Call.new() |> Call.update(direction: :inactive)
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+
+      assert_receive {:set_direction, :inactive}
+    end
+
+    test "handles update without direction" do
+      call = Call.new() |> Call.update()
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self()
+      }
+
+      # Should succeed without sending direction if not specified
+      {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
+    end
+  end
 end

@@ -977,6 +977,40 @@ defmodule Parrot.Bridge.ActionExecutor do
     end
   end
 
+  # ===========================================================================
+  # Call-level Mid-Session Modification (RFC 3311 UPDATE)
+  # These match first because they use keyword list opts, not atom/string leg_id
+  # ===========================================================================
+
+  # Call-level hold with direction option (sends UPDATE with sendonly)
+  defp execute_operation({:hold, opts}, call, context) when is_list(opts) do
+    case execute_call_hold(call, context, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  # Call-level resume with direction option (sends UPDATE with sendrecv)
+  defp execute_operation({:resume, opts}, call, context) when is_list(opts) do
+    case execute_call_resume(call, context, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  # Custom UPDATE operation
+  defp execute_operation({:update, opts}, call, context) when is_list(opts) do
+    case execute_update(call, context, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  # ===========================================================================
+  # B2BUA Leg Operations
+  # These match leg_id (atom or string) for specific leg control
+  # ===========================================================================
+
   defp execute_operation({:hold, leg_id}, call, context) do
     case execute_hold(call, context, leg_id) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
@@ -1399,6 +1433,109 @@ defmodule Parrot.Bridge.ActionExecutor do
   @spec execute_hold(Call.t(), context(), leg_id()) :: execute_result()
   def execute_hold(_call, %{b2bua_pid: nil}, _leg_id) do
     {:error, :no_b2bua}
+  end
+
+  # ===========================================================================
+  # Call-level Mid-Session Modification (RFC 3311 UPDATE)
+  # ===========================================================================
+
+  @doc """
+  Execute call-level `:hold` operation.
+
+  Puts the call on hold by changing media direction to sendonly.
+  RFC 3311 Section 5.1 - Using UPDATE for Hold.
+
+  1. Verify media_pid is available
+  2. Send direction change message to MediaSession
+  3. Track hold_pending in assigns
+
+  ## Options
+
+  - `:direction` - Media direction (default: :sendonly)
+  """
+  @spec execute_call_hold(Call.t(), context(), keyword()) :: execute_result()
+  def execute_call_hold(_call, %{media_pid: nil}, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_call_hold(call, %{media_pid: media_pid}, opts) do
+    direction = Keyword.get(opts, :direction, :sendonly)
+    Logger.debug("[ActionExecutor] Executing call-level hold with direction #{direction}")
+
+    # Send direction change to media session
+    send(media_pid, {:set_direction, direction})
+
+    # Track pending hold in assigns
+    updated_call = Call.assign(call, :hold_pending, true)
+
+    {:ok, updated_call}
+  end
+
+  @doc """
+  Execute call-level `:resume` operation.
+
+  Resumes the call from hold by changing media direction to sendrecv.
+  RFC 3311 Section 5.1 - Using UPDATE for Resume.
+
+  1. Verify media_pid is available
+  2. Send direction change message to MediaSession
+  3. Clear hold_pending in assigns
+  """
+  @spec execute_call_resume(Call.t(), context(), keyword()) :: execute_result()
+  def execute_call_resume(_call, %{media_pid: nil}, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_call_resume(call, %{media_pid: media_pid}, opts) do
+    direction = Keyword.get(opts, :direction, :sendrecv)
+    Logger.debug("[ActionExecutor] Executing call-level resume with direction #{direction}")
+
+    # Send direction change to media session
+    send(media_pid, {:set_direction, direction})
+
+    # Clear hold_pending from assigns
+    updated_assigns = Map.delete(call.assigns, :hold_pending)
+    updated_call = %{call | assigns: updated_assigns}
+
+    {:ok, updated_call}
+  end
+
+  @doc """
+  Execute `:update` operation.
+
+  Sends a custom SIP UPDATE to modify session parameters.
+  RFC 3311 - The Session Initiation Protocol (SIP) UPDATE Method.
+
+  ## Options
+
+  - `:direction` - Media direction to set (:sendrecv, :sendonly, :recvonly, :inactive)
+  - `:sdp` - Custom SDP body (optional)
+  - `:headers` - Additional SIP headers (optional)
+  """
+  @spec execute_update(Call.t(), context(), keyword()) :: execute_result()
+  def execute_update(call, context, opts) do
+    Logger.debug("[ActionExecutor] Executing UPDATE with opts: #{inspect(opts)}")
+
+    # If direction is specified, send to media session
+    case Keyword.get(opts, :direction) do
+      nil ->
+        # No direction specified - just return success
+        {:ok, call}
+
+      direction when direction in [:sendrecv, :sendonly, :recvonly, :inactive] ->
+        case Map.get(context, :media_pid) do
+          nil ->
+            {:error, :no_media_session}
+
+          media_pid ->
+            send(media_pid, {:set_direction, direction})
+            {:ok, call}
+        end
+
+      invalid_direction ->
+        Logger.warning("[ActionExecutor] Invalid direction: #{inspect(invalid_direction)}")
+        {:error, {:invalid_direction, invalid_direction}}
+    end
   end
 
   def execute_hold(_call, %{b2bua_pid: b2bua_pid}, _leg_id)
