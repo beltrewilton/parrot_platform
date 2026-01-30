@@ -138,7 +138,48 @@ defmodule Parrot.Bridge.HandlerTest do
 
   describe "process_ack/2" do
     test "returns :ok for ACK messages" do
-      ack_msg = %{type: :request, method: :ack}
+      # Create a proper ACK message with call_id for dialog lookup
+      ack_msg = %Message{
+        type: :request,
+        method: :ack,
+        call_id: "ack-test-#{System.unique_integer([:positive])}@127.0.0.1",
+        via: [
+          %ParrotSip.Headers.Via{
+            protocol: "SIP",
+            version: "2.0",
+            transport: :udp,
+            host: "127.0.0.1",
+            port: 5080,
+            parameters: %{"branch" => "z9hG4bK-ack-test"}
+          }
+        ],
+        from: %ParrotSip.Headers.From{
+          uri: %ParrotSip.Uri{
+            scheme: "sip",
+            user: "alice",
+            host: "127.0.0.1",
+            port: 5080,
+            host_type: :ipv4,
+            parameters: %{},
+            headers: %{}
+          },
+          parameters: %{"tag" => "from-tag"}
+        },
+        to: %ParrotSip.Headers.To{
+          uri: %ParrotSip.Uri{
+            scheme: "sip",
+            user: "bob",
+            host: "127.0.0.1",
+            port: 5060,
+            host_type: :ipv4,
+            parameters: %{},
+            headers: %{}
+          },
+          parameters: %{"tag" => "to-tag"}
+        },
+        cseq: %ParrotSip.Headers.CSeq{number: 1, method: :ack}
+      }
+
       args = %{router: TestRouter}
 
       assert :ok = Handler.process_ack(ack_msg, args)
@@ -2391,6 +2432,129 @@ defmodule Parrot.Bridge.HandlerTest do
       expires: 3600,
       body: nil,
       source: %{ip: {127, 0, 0, 1}, port: 5080}
+    }
+  end
+
+  # ===========================================================================
+  # INVITE Retransmission Handling Tests (parrot_platform-0vd)
+  # ===========================================================================
+
+  describe "setup_media_session/2 with retransmissions" do
+    # Tests for INVITE retransmission handling where MediaSession may already exist
+    # due to race conditions in transaction Registry registration timing.
+
+    test "handles existing MediaSession by reusing it" do
+      # Create a unique call_id for this test
+      call_id = "retrans-test-#{System.unique_integer([:positive])}"
+      session_id = "call_#{call_id}"
+
+      # First, manually create a MediaSession to simulate first INVITE processing
+      media_opts = [
+        id: session_id,
+        dialog_id: call_id,
+        role: :uas,
+        media_handler: Parrot.DSL.MediaHandler,
+        handler_args: %{call_id: call_id},
+        audio_source: :silence,
+        audio_sink: :none,
+        supported_codecs: [:pcma]
+      ]
+
+      {:ok, first_media_pid} = ParrotMedia.MediaSessionSupervisor.start_session(media_opts)
+      assert Process.alive?(first_media_pid)
+
+      # Now simulate a retransmission hitting setup_media_session
+      # The function should find the existing MediaSession and reuse it
+      sip_msg = create_invite_with_call_id(call_id)
+      args = %{router: TestRouter}
+
+      result = Handler.setup_media_session(sip_msg, args)
+
+      # Should succeed with the existing pid
+      assert {:ok, ^first_media_pid, _sdp_answer} = result
+
+      # Cleanup
+      ParrotMedia.MediaSessionSupervisor.stop_session(first_media_pid)
+    end
+
+    test "creates new MediaSession when none exists" do
+      call_id = "new-session-test-#{System.unique_integer([:positive])}"
+      sip_msg = create_invite_with_call_id(call_id)
+      args = %{router: TestRouter}
+
+      result = Handler.setup_media_session(sip_msg, args)
+
+      # Should succeed with a new pid
+      assert {:ok, media_pid, _sdp_answer} = result
+      assert Process.alive?(media_pid)
+
+      # Cleanup
+      ParrotMedia.MediaSessionSupervisor.stop_session(media_pid)
+    end
+  end
+
+  # Helper to create an INVITE with a specific call_id and SDP body
+  defp create_invite_with_call_id(call_id) do
+    sdp_body = """
+    v=0
+    o=- 0 0 IN IP4 127.0.0.1
+    s=-
+    c=IN IP4 127.0.0.1
+    t=0 0
+    m=audio 10000 RTP/AVP 8
+    a=rtpmap:8 PCMA/8000
+    """
+
+    %Message{
+      type: :request,
+      method: :invite,
+      request_uri: "sip:100@127.0.0.1:5060",
+      version: "SIP/2.0",
+      via: [
+        %ParrotSip.Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: :udp,
+          host: "127.0.0.1",
+          port: 5080,
+          parameters: %{"branch" => "z9hG4bK-retrans-test-#{System.unique_integer([:positive])}"}
+        }
+      ],
+      from: %ParrotSip.Headers.From{
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "alice",
+          host: "127.0.0.1",
+          port: 5080,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{"tag" => "from-tag-#{System.unique_integer([:positive])}"}
+      },
+      to: %ParrotSip.Headers.To{
+        uri: %ParrotSip.Uri{
+          scheme: "sip",
+          user: "bob",
+          host: "127.0.0.1",
+          port: 5060,
+          host_type: :ipv4,
+          parameters: %{},
+          headers: %{}
+        },
+        parameters: %{}
+      },
+      call_id: call_id,
+      cseq: %ParrotSip.Headers.CSeq{number: 1, method: :invite},
+      max_forwards: 70,
+      content_type: "application/sdp",
+      content_length: byte_size(sdp_body),
+      body: sdp_body,
+      source: %ParrotSip.Source{
+        transport: :udp,
+        local: {{127, 0, 0, 1}, 5060},
+        remote: {{127, 0, 0, 1}, 5080}
+      }
     }
   end
 end

@@ -884,6 +884,9 @@ defmodule Parrot.Bridge.Handler do
   end
 
   # Actual implementation of setup_media_session
+  # Handles INVITE retransmissions by checking for existing MediaSession first.
+  # Per RFC 3261 Section 17.2.1, INVITE retransmissions should be absorbed by the
+  # transaction layer, but due to Registry registration timing, they may reach here.
   defp setup_media_session_impl(sip_msg, _args) do
     case extract_sdp_offer(sip_msg) do
       {:ok, sdp_offer} ->
@@ -891,43 +894,92 @@ defmodule Parrot.Bridge.Handler do
         session_id = "call_#{sip_msg.call_id}"
         dialog_id = sip_msg.call_id
 
-        media_opts = [
-          id: session_id,
-          dialog_id: dialog_id,
-          role: :uas,
-          media_handler: Parrot.DSL.MediaHandler,
-          handler_args: %{call_id: sip_msg.call_id},
-          audio_source: :silence,
-          audio_sink: :none,
-          supported_codecs: [:pcma]
-        ]
+        # Check if MediaSession already exists (INVITE retransmission case)
+        # This can happen when a retransmission arrives during the race window
+        # between transaction Registry lookup and process registration.
+        case ParrotMedia.MediaSessionSupervisor.find_session(session_id) do
+          {:ok, existing_pid} ->
+            # MediaSession already exists - this is a retransmission
+            Logger.debug(
+              "[Bridge.Handler] MediaSession #{session_id} already exists (retransmission), reusing pid=#{inspect(existing_pid)}"
+            )
 
-        Logger.debug("[Bridge.Handler] Creating MediaSession for call #{sip_msg.call_id}")
-
-        case ParrotMedia.MediaSessionSupervisor.start_session(media_opts) do
-          {:ok, media_pid} ->
-            # Call process_offer to get SDP answer (FR-003)
-            case ParrotMedia.MediaSession.process_offer(media_pid, sdp_offer) do
+            # Re-run SDP negotiation to get the answer
+            # The MediaSession should return the same answer for the same offer
+            case ParrotMedia.MediaSession.process_offer(existing_pid, sdp_offer) do
               {:ok, sdp_answer} ->
-                Logger.debug("[Bridge.Handler] SDP negotiation successful")
-                {:ok, media_pid, sdp_answer}
+                Logger.debug("[Bridge.Handler] SDP negotiation successful (retransmission)")
+                {:ok, existing_pid, sdp_answer}
 
               {:error, reason} ->
-                Logger.error("[Bridge.Handler] SDP negotiation failed: #{inspect(reason)}")
-                # Stop the media session on failure
-                send(media_pid, {:stop_media})
+                # This might happen if the session state has changed
+                Logger.warning(
+                  "[Bridge.Handler] SDP negotiation failed on retransmission: #{inspect(reason)}"
+                )
+
                 {:error, reason}
             end
 
-          {:error, reason} ->
-            Logger.error("[Bridge.Handler] Failed to create MediaSession: #{inspect(reason)}")
-            {:error, :media_session_error}
+          {:error, :not_found} ->
+            # No existing session - create new one
+            create_new_media_session(session_id, dialog_id, sip_msg, sdp_offer)
         end
 
       {:error, :no_sdp} ->
         # No SDP in INVITE - late-offer flow, defer to ACK
         Logger.debug("[Bridge.Handler] No SDP in INVITE - late-offer flow")
         :no_sdp
+    end
+  end
+
+  # Creates a new MediaSession for a fresh INVITE
+  defp create_new_media_session(session_id, dialog_id, sip_msg, sdp_offer) do
+    media_opts = [
+      id: session_id,
+      dialog_id: dialog_id,
+      role: :uas,
+      media_handler: Parrot.DSL.MediaHandler,
+      handler_args: %{call_id: sip_msg.call_id},
+      audio_source: :silence,
+      audio_sink: :none,
+      supported_codecs: [:pcma]
+    ]
+
+    Logger.debug("[Bridge.Handler] Creating MediaSession for call #{sip_msg.call_id}")
+
+    case ParrotMedia.MediaSessionSupervisor.start_session(media_opts) do
+      {:ok, media_pid} ->
+        # Call process_offer to get SDP answer (FR-003)
+        case ParrotMedia.MediaSession.process_offer(media_pid, sdp_offer) do
+          {:ok, sdp_answer} ->
+            Logger.debug("[Bridge.Handler] SDP negotiation successful")
+            {:ok, media_pid, sdp_answer}
+
+          {:error, reason} ->
+            Logger.error("[Bridge.Handler] SDP negotiation failed: #{inspect(reason)}")
+            # Stop the media session on failure
+            send(media_pid, {:stop_media})
+            {:error, reason}
+        end
+
+      {:error, {:already_started, existing_pid}} ->
+        # Another race condition - MediaSession was started between our check and start_session
+        # Use the existing session
+        Logger.debug(
+          "[Bridge.Handler] MediaSession created concurrently, using existing pid=#{inspect(existing_pid)}"
+        )
+
+        case ParrotMedia.MediaSession.process_offer(existing_pid, sdp_offer) do
+          {:ok, sdp_answer} ->
+            {:ok, existing_pid, sdp_answer}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        Logger.error("[Bridge.Handler] Failed to create MediaSession: #{inspect(reason)}")
+        {:error, :media_session_error}
     end
   end
 
