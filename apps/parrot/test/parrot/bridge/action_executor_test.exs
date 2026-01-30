@@ -4569,4 +4569,225 @@ defmodule Parrot.Bridge.ActionExecutorTest do
                ActionExecutor.execute_bridge(call, context, "", [])
     end
   end
+
+  # ===========================================================================
+  # execute_fork Tests (TDD for vap.5)
+  # ===========================================================================
+
+  describe "execute_fork/4 state validation" do
+    @describetag :fork_ops
+
+    test "returns {:error, :invalid_state} when call not answered" do
+      call = %Call{state: :incoming, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: self()
+      }
+
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_fork(call, context, destinations, [])
+    end
+
+    test "returns {:error, :invalid_state} when call is ringing" do
+      call = %Call{state: :ringing, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: self()
+      }
+
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_fork(call, context, destinations, [])
+    end
+
+    test "returns {:error, :no_b2bua} when b2bua_pid is nil" do
+      call = %Call{state: :answered, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: nil
+      }
+
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_fork(call, context, destinations, [])
+    end
+
+    test "returns {:error, :no_b2bua} when b2bua_pid not in context" do
+      call = %Call{state: :answered, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_fork(call, context, destinations, [])
+    end
+
+    test "returns {:error, :no_destinations} when destinations empty" do
+      call = %Call{state: :answered, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: self()
+      }
+
+      assert {:error, :no_destinations} =
+               ActionExecutor.execute_fork(call, context, [], [])
+    end
+  end
+
+  describe "execute_fork/4 with B2BUA (simultaneous strategy)" do
+    @describetag :fork_ops
+
+    setup do
+      # Start a real B2BUA instance
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up A-leg
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      call = %Call{
+        id: "fork-test-#{:rand.uniform(100_000)}",
+        state: :answered,
+        handler: __MODULE__,
+        from: "sip:caller@example.com",
+        to: "sip:callee@example.com",
+        assigns: %{}
+      }
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        sdp_answer: "v=0\r\no=test 1 1 IN IP4 127.0.0.1\r\n",
+        b2bua_pid: b2bua_pid
+      }
+
+      on_exit(fn ->
+        if Process.alive?(b2bua_pid), do: Parrot.Bridge.B2BUA.stop(b2bua_pid)
+      end)
+
+      %{call: call, context: context, b2bua_pid: b2bua_pid}
+    end
+
+    test "originates to all destinations", %{call: call, context: context, b2bua_pid: b2bua_pid} do
+      destinations = ["sip:a@example.com", "sip:b@example.com", "sip:c@example.com"]
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_fork(call, context, destinations, [])
+
+      # Verify legs were created
+      fork_legs = updated_call.assigns[:__fork_legs__]
+      assert length(fork_legs) == 3
+
+      # Verify each leg exists in B2BUA
+      for leg_id <- fork_legs do
+        assert {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, leg_id)
+        assert leg.direction == :outbound
+      end
+    end
+
+    test "stores fork leg IDs in call assigns", %{call: call, context: context} do
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_fork(call, context, destinations, [])
+
+      assert is_list(updated_call.assigns[:__fork_legs__])
+      assert length(updated_call.assigns[:__fork_legs__]) == 2
+    end
+
+    test "stores fork strategy in call assigns", %{call: call, context: context} do
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_fork(call, context, destinations, strategy: :simultaneous)
+
+      assert updated_call.assigns[:__fork_strategy__] == :simultaneous
+    end
+
+    test "defaults to :simultaneous strategy", %{call: call, context: context} do
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_fork(call, context, destinations, [])
+
+      assert updated_call.assigns[:__fork_strategy__] == :simultaneous
+    end
+
+    test "passes timeout option to B2BUA.fork", %{call: call, context: context} do
+      destinations = ["sip:a@example.com", "sip:b@example.com"]
+
+      {:ok, updated_call} =
+        ActionExecutor.execute_fork(call, context, destinations, timeout: 45_000)
+
+      # Verify fork was created (timeout is handled by B2BUA)
+      assert is_list(updated_call.assigns[:__fork_legs__])
+    end
+  end
+
+  describe "execute/3 with fork operation pipeline" do
+    @describetag :fork_ops
+
+    setup do
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      on_exit(fn ->
+        if Process.alive?(b2bua_pid), do: Parrot.Bridge.B2BUA.stop(b2bua_pid)
+      end)
+
+      %{b2bua_pid: b2bua_pid}
+    end
+
+    test "fork operation in pipeline returns continue", %{b2bua_pid: b2bua_pid} do
+      # Create call with answer + fork operations
+      call =
+        Call.new()
+        |> Call.answer()
+        |> Call.fork(["sip:a@example.com", "sip:b@example.com"])
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      # Should succeed - fork returns :continue
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+      assert updated_call.state == :answered
+      assert is_list(updated_call.assigns[:__fork_legs__])
+    end
+  end
 end
