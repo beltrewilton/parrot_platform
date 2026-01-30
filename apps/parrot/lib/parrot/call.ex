@@ -188,6 +188,53 @@ defmodule Parrot.Call do
   end
 
   @doc """
+  Sends 183 Session Progress with SDP and starts media.
+
+  Use this to play prompts or IVR before answering the call.
+  This allows interaction with the caller while saving answer supervision
+  costs on toll-free numbers.
+
+  ## Examples
+
+      # Play a prompt before answering
+      def handle_invite(invite) do
+        invite
+        |> early_media()
+        |> play("please-wait.wav")
+        |> answer()
+      end
+
+      # IVR menu before answer
+      def handle_invite(invite) do
+        invite
+        |> early_media()
+        |> say("Press 1 for sales, 2 for support")
+        |> collect_dtmf(max: 1)
+        # ... handle DTMF, then answer or route
+      end
+  """
+  @spec early_media(t()) :: t()
+  def early_media(%__MODULE__{} = call) do
+    add_operation(call, {:early_media, []})
+  end
+
+  @doc """
+  Sends 183 Session Progress with SDP and custom options.
+
+  ## Options
+
+  * `:codecs` - List of codecs to offer in the SDP
+
+  ## Examples
+
+      call |> early_media(codecs: [:pcma])
+  """
+  @spec early_media(t(), keyword()) :: t()
+  def early_media(%__MODULE__{} = call, opts) when is_list(opts) do
+    add_operation(call, {:early_media, opts})
+  end
+
+  @doc """
   Rejects the call with the given SIP status code.
 
   ## Examples

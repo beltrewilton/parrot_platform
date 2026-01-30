@@ -84,6 +84,36 @@ defmodule Parrot.CallTest do
     end
   end
 
+  describe "early_media/1" do
+    test "adds early_media operation with no options" do
+      call = %Call{} |> Call.early_media()
+
+      assert [operation] = call.__operations__
+      assert operation == {:early_media, []}
+    end
+
+    test "chains with other operations like play and answer" do
+      call =
+        %Call{}
+        |> Call.early_media()
+        |> Call.play("please-wait.wav")
+        |> Call.answer()
+
+      assert length(call.__operations__) == 3
+      # Operations are stored in reverse order (LIFO)
+      assert [{:answer, []}, {:play, "please-wait.wav", []}, {:early_media, []}] = call.__operations__
+    end
+  end
+
+  describe "early_media/2" do
+    test "adds early_media operation with SDP options" do
+      call = %Call{} |> Call.early_media(codecs: [:pcma])
+
+      assert [operation] = call.__operations__
+      assert operation == {:early_media, [codecs: [:pcma]]}
+    end
+  end
+
   describe "reject/2" do
     test "adds reject operation with status code" do
       call = %Call{} |> Call.reject(486)
