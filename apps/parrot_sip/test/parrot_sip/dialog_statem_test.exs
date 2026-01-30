@@ -1146,6 +1146,30 @@ defmodule ParrotSip.DialogStatemTest do
       assert info.state == :early
     end
 
+    test "creates early dialog with 183 Session Progress response" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_sdp(183, "Session Progress", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      assert_state(pid, :early)
+      info = get_dialog_info(pid)
+      assert info.state == :early
+    end
+
+    test "183 with SDP transitions to early dialog for UAC" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_sdp(183, "Session Progress", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, response})
+
+      assert_state(pid, :early)
+      info = get_dialog_info(pid)
+      assert info.state == :early
+    end
+
     test "transitions early to confirmed on 2xx response" do
       call_id = unique_call_id()
       invite = build_invite_with_call_id(call_id)
@@ -1179,6 +1203,49 @@ defmodule ParrotSip.DialogStatemTest do
 
       # Dialog should still be alive and handle subsequent requests
       assert Process.alive?(pid)
+    end
+
+    test "early dialog can receive UPDATE request (RFC 3311)" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      response = build_response_with_call_id(180, "Ringing", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Verify we're in early state
+      assert_state(pid, :early)
+
+      # Send UPDATE request in early state
+      update = build_update_with_call_id(call_id)
+      result = :gen_statem.call(pid, {:uas_request, update})
+
+      # UPDATE should be accepted in early state - returns :process when successful
+      assert result == :process
+      assert Process.alive?(pid)
+      # Should remain in early state
+      assert_state(pid, :early)
+    end
+
+    test "early dialog transitions to confirmed and handles subsequent requests" do
+      call_id = unique_call_id()
+      invite = build_invite_with_call_id(call_id)
+      provisional = build_response_with_call_id(183, "Session Progress", call_id)
+
+      {:ok, pid} = DialogStatem.start_link({:uas, provisional, invite})
+      assert_state(pid, :early)
+
+      # Send 200 OK to transition to confirmed
+      final = build_response_with_call_id(200, "OK", call_id)
+      :gen_statem.cast(pid, {:uas_response, final, invite})
+      :timer.sleep(20)
+
+      # Verify transitioned to confirmed
+      assert_state(pid, :confirmed)
+
+      # Now can receive BYE - returns :process when successful
+      bye = build_bye_with_call_id(call_id)
+      result = :gen_statem.call(pid, {:uas_request, bye})
+      assert result == :process
     end
   end
 
@@ -1283,6 +1350,105 @@ defmodule ParrotSip.DialogStatemTest do
       },
       call_id: call_id,
       cseq: %CSeq{number: 1, method: :ack},
+      other_headers: %{},
+      body: ""
+    }
+  end
+
+  defp build_response_with_sdp(status, reason, call_id) do
+    %Message{
+      type: :response,
+      method: nil,
+      request_uri: nil,
+      version: "SIP/2.0",
+      status_code: status,
+      reason_phrase: reason,
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 1, method: :invite},
+      other_headers: %{},
+      body: "v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
+    }
+  end
+
+  defp build_update_with_call_id(call_id) do
+    %Message{
+      type: :request,
+      method: :update,
+      request_uri: "sip:target@example.com",
+      version: "SIP/2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-update-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 2, method: :update},
+      contact: %Contact{
+        uri: "sip:test@127.0.0.1:5060",
+        parameters: %{}
+      },
+      other_headers: %{},
+      body: "v=0\r\no=- 789 012 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
+    }
+  end
+
+  defp build_bye_with_call_id(call_id) do
+    %Message{
+      type: :request,
+      method: :bye,
+      request_uri: "sip:target@example.com",
+      version: "SIP/2.0",
+      via: %Via{
+        protocol: "SIP",
+        version: "2.0",
+        transport: :udp,
+        host: "127.0.0.1",
+        port: 5060,
+        parameters: %{"branch" => "z9hG4bK-bye-#{call_id}"}
+      },
+      from: %From{
+        display_name: "Test User",
+        uri: "sip:test@example.com",
+        parameters: %{"tag" => "test-from-tag"}
+      },
+      to: %To{
+        display_name: "Target User",
+        uri: "sip:target@example.com",
+        parameters: %{"tag" => "test-to-tag"}
+      },
+      call_id: call_id,
+      cseq: %CSeq{number: 3, method: :bye},
       other_headers: %{},
       body: ""
     }
