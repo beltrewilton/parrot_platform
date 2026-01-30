@@ -5,7 +5,9 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandlerTest do
   The LoggingHandler is an example CDR handler that logs CDR events
   using Elixir's Logger. It demonstrates the CDR.Handler behaviour.
   """
-  use ExUnit.Case, async: true
+  # async: false because integration tests use the global CDR.Registry
+  # which would interfere with other tests running in parallel
+  use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
 
@@ -252,8 +254,9 @@ defmodule ParrotSip.CDR.Handlers.LoggingHandlerTest do
 
   describe "integration with CDR system" do
     setup do
-      # Clear handlers before each test - no on_exit needed since each test
-      # starts fresh and ensure_registry_started handles restarts
+      # Ensure application is started (CDR.Registry needs to be running)
+      Application.ensure_all_started(:parrot_sip)
+      # Clear handlers before each test
       CDR.clear_handlers()
       :ok
     end

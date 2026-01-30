@@ -146,6 +146,8 @@ defmodule ParrotSip.CDR.HandlerTest do
   # ===========================================================================
 
   setup do
+    # Ensure application is started (CDR.Registry needs to be running)
+    Application.ensure_all_started(:parrot_sip)
     # Clear handlers before each test
     CDR.clear_handlers()
     :ok

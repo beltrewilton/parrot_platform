@@ -1,5 +1,7 @@
 defmodule ParrotMedia.MOS.TelemetryTest do
-  use ExUnit.Case, async: true
+  # async: false because tests attach global telemetry handlers that would
+  # interfere with each other when running in parallel
+  use ExUnit.Case, async: false
 
   alias ParrotMedia.MOS.Telemetry
   alias ParrotMedia.MOS.Score

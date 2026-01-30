@@ -899,7 +899,9 @@ defmodule ParrotSip.TransactionStatemTest do
       :ok = TransactionStatem.server_process(bye, handler)
       Process.sleep(50)
 
-      assert TransactionStatem.count() == initial_count + 1
+      # Use >= instead of == because other tests running concurrently may create
+      # transactions, but we know at least one was created by our BYE request
+      assert TransactionStatem.count() >= initial_count + 1
     end
   end
 
