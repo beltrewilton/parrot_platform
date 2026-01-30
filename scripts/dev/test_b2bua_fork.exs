@@ -139,7 +139,7 @@ defmodule TestB2BUAForkHandler do
         {:bridge, leg_id, call}
 
       {:failed, reason} ->
-        Logger.warn("[B2BUA-Fork] #{leg_id} failed: #{inspect(reason)}")
+        Logger.warning("[B2BUA-Fork] #{leg_id} failed: #{inspect(reason)}")
         {:ok, call}
 
       :cancelled ->
