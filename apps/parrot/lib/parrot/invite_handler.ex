@@ -107,6 +107,9 @@ defmodule Parrot.InviteHandler do
   - `handle_media_stopped/2` - Called when media stream stops
   - `handle_tts_error/3` - Called when TTS synthesis fails
   - `handle_leg_event/3` - Called when a B2BUA leg event occurs (ringing, answered, failed, bye, etc.)
+  - `handle_update/2` - Called when an UPDATE request is received (RFC 3311)
+  - `handle_update_complete/2` - Called when an outgoing UPDATE succeeds
+  - `handle_update_failed/3` - Called when an outgoing UPDATE fails
   """
 
   alias Parrot.Call
@@ -442,6 +445,109 @@ defmodule Parrot.InviteHandler do
               {:noreply, Call.t()} | Call.t()
 
   @doc """
+  Called when an UPDATE request is received (RFC 3311).
+
+  UPDATE allows a UAC to modify session parameters mid-call without affecting
+  the overall dialog state. This is commonly used for:
+  - Changing codecs or media parameters
+  - Modifying session timers
+  - Updating session description during early dialog
+
+  ## Arguments
+
+  - `request` - The UPDATE request (map with `:method`, `:body`, etc.)
+  - `call` - The current call state
+
+  ## Return Values
+
+  - `{:noreply, call}` - Accept the UPDATE (will send 200 OK with SDP answer)
+  - `{:reject, status_code, call}` - Reject the UPDATE with specified status code
+
+  ## Example
+
+      # Accept UPDATE and track the new SDP offer
+      def handle_update(request, call) do
+        Logger.info("Received UPDATE with SDP: \#{inspect(request[:body])}")
+        {:noreply, %{call | assigns: Map.put(call.assigns, :pending_sdp, request[:body])}}
+      end
+
+      # Reject UPDATE if another request is pending
+      def handle_update(_request, %{assigns: %{request_pending: true}} = call) do
+        {:reject, 491, call}  # Request Pending
+      end
+  """
+  @callback handle_update(request :: map(), call :: Call.t()) ::
+              {:noreply, Call.t()} | {:reject, status_code :: integer(), Call.t()}
+
+  @doc """
+  Called when an outgoing UPDATE request succeeds (RFC 3311).
+
+  This callback is invoked when a 200 OK response is received for an UPDATE
+  request that your application initiated. Use this to process the SDP answer
+  and update media parameters.
+
+  ## Arguments
+
+  - `response` - The 200 OK response (map with `:status`, `:body`, etc.)
+  - `call` - The current call state
+
+  ## Example
+
+      def handle_update_complete(response, call) do
+        Logger.info("UPDATE successful, got SDP answer: \#{inspect(response[:body])}")
+        # Process the SDP answer and update media parameters
+        {:noreply, %{call | assigns: Map.put(call.assigns, :media_updated, true)}}
+      end
+  """
+  @callback handle_update_complete(response :: map(), call :: Call.t()) ::
+              {:noreply, Call.t()}
+
+  @doc """
+  Called when an outgoing UPDATE request fails (RFC 3311).
+
+  This callback is invoked when an UPDATE request initiated by your application
+  receives a failure response (4xx, 5xx, or 6xx). Use this to handle the failure
+  appropriately (e.g., retry, fall back, or terminate).
+
+  ## Arguments
+
+  - `status` - The failure status code (e.g., 488, 491, 500)
+  - `response` - The failure response (map with `:status`, `:reason`, etc.)
+  - `call` - The current call state
+
+  ## Common Failure Codes
+
+  - 488 Not Acceptable Here - Media parameters not acceptable
+  - 491 Request Pending - Another request is being processed
+  - 500 Server Internal Error - Server-side failure
+  - 503 Service Unavailable - Service temporarily unavailable
+
+  ## Example
+
+      def handle_update_failed(488, _response, call) do
+        # Media parameters not acceptable, maybe try different codecs
+        Logger.warning("UPDATE rejected: codec mismatch")
+        {:noreply, call}
+      end
+
+      def handle_update_failed(491, _response, call) do
+        # Request pending, maybe retry later
+        Logger.warning("UPDATE rejected: request pending")
+        {:noreply, %{call | assigns: Map.put(call.assigns, :retry_update, true)}}
+      end
+
+      def handle_update_failed(status, response, call) do
+        Logger.error("UPDATE failed with \#{status}: \#{response[:reason]}")
+        {:noreply, call}
+      end
+  """
+  @callback handle_update_failed(
+              status :: integer(),
+              response :: map(),
+              call :: Call.t()
+            ) :: {:noreply, Call.t()}
+
+  @doc """
   Called when a leg event occurs in a B2BUA scenario (T07).
 
   This callback is invoked when a leg (outbound call) experiences a state change
@@ -694,6 +800,24 @@ defmodule Parrot.InviteHandler do
         {:ok, call}
       end
 
+      @impl Parrot.InviteHandler
+      def handle_update(_request, call) do
+        # Default: accept UPDATE requests (RFC 3311)
+        {:noreply, call}
+      end
+
+      @impl Parrot.InviteHandler
+      def handle_update_complete(_response, call) do
+        # Default: acknowledge UPDATE completion (RFC 3311)
+        {:noreply, call}
+      end
+
+      @impl Parrot.InviteHandler
+      def handle_update_failed(_status, _response, call) do
+        # Default: acknowledge UPDATE failure (RFC 3311)
+        {:noreply, call}
+      end
+
       defoverridable handle_play_complete: 2,
                      handle_dtmf: 2,
                      handle_prompt_complete: 3,
@@ -709,7 +833,10 @@ defmodule Parrot.InviteHandler do
                      handle_tts_error: 3,
                      handle_media_started: 1,
                      handle_media_stopped: 2,
-                     handle_leg_event: 3
+                     handle_leg_event: 3,
+                     handle_update: 2,
+                     handle_update_complete: 2,
+                     handle_update_failed: 3
     end
   end
 end

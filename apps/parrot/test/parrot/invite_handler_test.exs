@@ -64,9 +64,25 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_fork_media_error, 3} in callbacks
     end
 
-    test "defines all 17 expected callbacks" do
+    test "defines all 20 expected callbacks" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 17
+      assert length(callbacks) == 20
+    end
+
+    # RFC 3311 UPDATE callbacks
+    test "defines handle_update/2 callback (RFC 3311)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_update, 2} in callbacks
+    end
+
+    test "defines handle_update_complete/2 callback (RFC 3311)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_update_complete, 2} in callbacks
+    end
+
+    test "defines handle_update_failed/3 callback (RFC 3311)" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_update_failed, 3} in callbacks
     end
 
     # T038: Unit test for handle_media_started/1 callback definition
@@ -200,6 +216,25 @@ defmodule Parrot.InviteHandlerTest do
       # Verify the pipeline operations were applied
       operations = Call.get_operations(result)
       assert [{:answer, []}, {:play, "welcome.wav", []}] = operations
+    end
+
+    # RFC 3311 UPDATE callback defaults
+    test "provides default handle_update/2 implementation returning {:noreply, call}" do
+      call = Call.new()
+      request = %{method: :update, body: "v=0\r\n"}
+      assert {:noreply, ^call} = MinimalHandler.handle_update(request, call)
+    end
+
+    test "provides default handle_update_complete/2 implementation returning {:noreply, call}" do
+      call = Call.new()
+      response = %{status: 200, body: "v=0\r\n"}
+      assert {:noreply, ^call} = MinimalHandler.handle_update_complete(response, call)
+    end
+
+    test "provides default handle_update_failed/3 implementation returning {:noreply, call}" do
+      call = Call.new()
+      response = %{status: 488, reason: "Not Acceptable Here"}
+      assert {:noreply, ^call} = MinimalHandler.handle_update_failed(488, response, call)
     end
   end
 
@@ -1323,6 +1358,175 @@ defmodule Parrot.InviteHandlerTest do
       call = Call.new()
       result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, "custom-leg-123", :ringing)
       assert {:ok, _} = result
+    end
+  end
+
+  # ===========================================================================
+  # RFC 3311 UPDATE Callbacks
+  # ===========================================================================
+
+  describe "UPDATE callbacks (RFC 3311)" do
+    defmodule UpdateHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Accept UPDATE requests and track the new SDP
+      def handle_update(request, call) do
+        new_assigns = Map.put(call.assigns, :received_update_sdp, request[:body])
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+
+      # Track successful UPDATE completion
+      def handle_update_complete(response, call) do
+        new_assigns =
+          call.assigns
+          |> Map.put(:update_complete, true)
+          |> Map.put(:update_response_sdp, response[:body])
+
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+
+      # Track UPDATE failures
+      def handle_update_failed(status, response, call) do
+        new_assigns =
+          call.assigns
+          |> Map.put(:update_failed, true)
+          |> Map.put(:update_failure_status, status)
+          |> Map.put(:update_failure_reason, response[:reason])
+
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+    end
+
+    defmodule UpdateRejectHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Reject UPDATE requests if not in correct state
+      def handle_update(_request, %{assigns: %{hold_active: true}} = call) do
+        {:reject, 491, call}  # Request Pending
+      end
+
+      # Accept other UPDATE requests
+      def handle_update(request, call) do
+        new_assigns = Map.put(call.assigns, :update_accepted, request[:body])
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+    end
+
+    test "handle_update/2 receives request map and call struct" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      request = %{method: :update, body: "v=0\r\no=- 123 456 IN IP4 192.168.1.1\r\n"}
+
+      {:noreply, result} = UpdateHandler.handle_update(request, call)
+
+      assert result.assigns.received_update_sdp == request[:body]
+      assert result.assigns.session_id == "test-123"
+    end
+
+    test "handle_update/2 can return {:reject, status, call} to reject the UPDATE" do
+      call = Call.new(assigns: %{hold_active: true})
+      request = %{method: :update, body: "v=0\r\n"}
+
+      result = UpdateRejectHandler.handle_update(request, call)
+
+      assert {:reject, 491, ^call} = result
+    end
+
+    test "handle_update/2 can accept UPDATE with {:noreply, call}" do
+      call = Call.new()
+      request = %{method: :update, body: "v=0\r\n"}
+
+      {:noreply, result} = UpdateRejectHandler.handle_update(request, call)
+
+      assert result.assigns.update_accepted == "v=0\r\n"
+    end
+
+    test "handle_update_complete/2 receives response and tracks success" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      response = %{status: 200, body: "v=0\r\no=- 456 789 IN IP4 192.168.1.2\r\n"}
+
+      {:noreply, result} = UpdateHandler.handle_update_complete(response, call)
+
+      assert result.assigns.update_complete == true
+      assert result.assigns.update_response_sdp == response[:body]
+      assert result.assigns.session_id == "test-123"
+    end
+
+    test "handle_update_failed/3 receives status, response, and call" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      response = %{status: 488, reason: "Not Acceptable Here"}
+
+      {:noreply, result} = UpdateHandler.handle_update_failed(488, response, call)
+
+      assert result.assigns.update_failed == true
+      assert result.assigns.update_failure_status == 488
+      assert result.assigns.update_failure_reason == "Not Acceptable Here"
+      assert result.assigns.session_id == "test-123"
+    end
+
+    test "handle_update/2 is defoverridable" do
+      call = Call.new()
+      request = %{method: :update, body: "v=0\r\n"}
+
+      # MinimalHandler uses default
+      minimal_result = Parrot.InviteHandlerTest.MinimalHandler.handle_update(request, call)
+      assert minimal_result == {:noreply, call}
+
+      # UpdateHandler overrides it
+      {:noreply, custom_result} = UpdateHandler.handle_update(request, call)
+      assert custom_result.assigns[:received_update_sdp] == "v=0\r\n"
+    end
+
+    test "handle_update_complete/2 is defoverridable" do
+      call = Call.new()
+      response = %{status: 200, body: "v=0\r\n"}
+
+      # MinimalHandler uses default
+      minimal_result = Parrot.InviteHandlerTest.MinimalHandler.handle_update_complete(response, call)
+      assert minimal_result == {:noreply, call}
+
+      # UpdateHandler overrides it
+      {:noreply, custom_result} = UpdateHandler.handle_update_complete(response, call)
+      assert custom_result.assigns[:update_complete] == true
+    end
+
+    test "handle_update_failed/3 is defoverridable" do
+      call = Call.new()
+      response = %{status: 488, reason: "Not Acceptable Here"}
+
+      # MinimalHandler uses default
+      minimal_result = Parrot.InviteHandlerTest.MinimalHandler.handle_update_failed(488, response, call)
+      assert minimal_result == {:noreply, call}
+
+      # UpdateHandler overrides it
+      {:noreply, custom_result} = UpdateHandler.handle_update_failed(488, response, call)
+      assert custom_result.assigns[:update_failed] == true
+    end
+
+    test "handle_update_failed/3 handles various failure status codes" do
+      call = Call.new()
+
+      # Common UPDATE failure codes per RFC 3311
+      failure_scenarios = [
+        {488, "Not Acceptable Here"},
+        {491, "Request Pending"},
+        {500, "Server Internal Error"},
+        {503, "Service Unavailable"}
+      ]
+
+      for {status, reason} <- failure_scenarios do
+        response = %{status: status, reason: reason}
+        {:noreply, result} = UpdateHandler.handle_update_failed(status, response, call)
+        assert result.assigns.update_failure_status == status
+        assert result.assigns.update_failure_reason == reason
+      end
     end
   end
 end
