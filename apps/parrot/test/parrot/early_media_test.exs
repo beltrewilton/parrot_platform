@@ -379,6 +379,116 @@ defmodule Parrot.EarlyMediaTest do
   end
 
   # ===========================================================================
+  # UAC Early Media Tests (Receiving 183 with SDP)
+  # ===========================================================================
+
+  describe "UAC early media flow (receiving 183)" do
+    defmodule EarlyMediaHandler do
+      @moduledoc "Handler that tracks early media events"
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        # test_pid is passed through assigns in the invite
+        {:noreply, call}
+      end
+
+      @impl true
+      def handle_early_media(response, call) do
+        # Track that we received early media (test_pid passed through assigns)
+        if test_pid = call.assigns[:test_pid] do
+          send(test_pid, {:early_media_received, response})
+        end
+
+        call |> assign(:early_media_sdp, response[:body])
+      end
+
+      @impl true
+      def handle_hangup(call) do
+        {:noreply, call}
+      end
+    end
+
+    test "dispatch_early_media calls handle_early_media callback" do
+      test_pid = self()
+
+      # Start Call.Server with the handler, passing test_pid through assigns
+      {:ok, server_pid} =
+        Parrot.Call.Server.start_link(
+          handler: EarlyMediaHandler,
+          invite: %{
+            from: "sip:alice@example.com",
+            to: "sip:bob@example.com",
+            call_id: "early-media-uac-test-#{:rand.uniform(100_000)}",
+            assigns: %{test_pid: test_pid}
+          }
+        )
+
+      # Simulate receiving 183 with SDP
+      early_sdp = """
+      v=0
+      o=- 123 456 IN IP4 192.168.1.100
+      s=Early Media
+      c=IN IP4 192.168.1.100
+      t=0 0
+      m=audio 20000 RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendonly
+      """
+
+      response = %{
+        status: 183,
+        body: early_sdp,
+        from: "sip:bob@example.com",
+        to: "sip:alice@example.com"
+      }
+
+      # Dispatch the early media event
+      :ok = Parrot.Call.Server.dispatch_early_media(server_pid, response)
+
+      # Verify handler callback was invoked
+      assert_receive {:early_media_received, ^response}
+
+      GenServer.stop(server_pid)
+    end
+
+    test "early media SDP can be stored in assigns" do
+      test_pid = self()
+
+      {:ok, server_pid} =
+        Parrot.Call.Server.start_link(
+          handler: EarlyMediaHandler,
+          invite: %{
+            from: "sip:alice@example.com",
+            to: "sip:bob@example.com",
+            call_id: "early-media-sdp-test-#{:rand.uniform(100_000)}",
+            assigns: %{test_pid: test_pid}
+          }
+        )
+
+      early_sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n"
+
+      response = %{
+        status: 183,
+        body: early_sdp,
+        from: "sip:bob@example.com",
+        to: "sip:alice@example.com"
+      }
+
+      :ok = Parrot.Call.Server.dispatch_early_media(server_pid, response)
+
+      # Wait for callback
+      assert_receive {:early_media_received, _}
+
+      # Get the call state
+      call = Parrot.Call.Server.get_call(server_pid)
+      assert call.assigns[:early_media_sdp] == early_sdp
+
+      GenServer.stop(server_pid)
+    end
+  end
+
+  # ===========================================================================
   # Helper Functions
   # ===========================================================================
 

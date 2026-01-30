@@ -160,6 +160,34 @@ defmodule Parrot.Call.Server do
   end
 
   @doc """
+  Dispatches an early media event (183 Session Progress with SDP) to the server.
+
+  This is called when the UAC receives a 183 response with SDP, allowing the
+  remote party to send early media (like ringback tones or IVR prompts) before
+  the call is answered.
+
+  The handler's `handle_early_media/2` callback is invoked with the response.
+
+  ## Parameters
+
+  - `server` - The Call.Server pid or registered name
+  - `response` - Map with `:status`, `:body` (SDP), and other response fields
+
+  ## Returns
+
+  - `:ok` on success
+
+  ## Example
+
+      response = %{status: 183, body: sdp, from: "sip:bob@example.com"}
+      :ok = Parrot.Call.Server.dispatch_early_media(pid, response)
+  """
+  @spec dispatch_early_media(GenServer.server(), map()) :: :ok
+  def dispatch_early_media(server, response) do
+    GenServer.call(server, {:dispatch_early_media, response})
+  end
+
+  @doc """
   Gets the current call struct.
 
   ## Examples
@@ -313,6 +341,35 @@ defmodule Parrot.Call.Server do
         Logger.warning("Unexpected handle_update return: #{inspect(other)}")
         {:reply, {:noreply, call}, state}
     end
+  end
+
+  # Handle early media (183 Session Progress with SDP) dispatch
+  # RFC 3261 Section 13.2.2.4: Early Dialog for provisional responses with SDP
+  def handle_call({:dispatch_early_media, response}, _from, state) do
+    %{call: call, handler: handler} = state
+
+    # Invoke handler's handle_early_media/2 callback
+    result = handler.handle_early_media(response, call)
+
+    # Process the result and update state
+    updated_call =
+      case result do
+        {:noreply, updated_call} ->
+          updated_call
+
+        # Allow returning just the call struct (convenience)
+        %Call{} = updated_call ->
+          updated_call
+
+        other ->
+          Logger.warning("Unexpected handle_early_media return: #{inspect(other)}")
+          call
+      end
+
+    # Execute any operations that were added by the handler
+    updated_call = execute_operations_if_context(updated_call, state.context)
+
+    {:reply, :ok, %{state | call: updated_call}}
   end
 
   @impl true
