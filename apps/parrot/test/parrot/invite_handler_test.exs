@@ -64,9 +64,15 @@ defmodule Parrot.InviteHandlerTest do
       assert {:handle_fork_media_error, 3} in callbacks
     end
 
-    test "defines all 20 expected callbacks" do
+    test "defines all 21 expected callbacks" do
       callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
-      assert length(callbacks) == 20
+      assert length(callbacks) == 21
+    end
+
+    # Early Media callback (183 Session Progress)
+    test "defines handle_early_media/2 callback" do
+      callbacks = Parrot.InviteHandler.behaviour_info(:callbacks)
+      assert {:handle_early_media, 2} in callbacks
     end
 
     # RFC 3311 UPDATE callbacks
@@ -216,6 +222,13 @@ defmodule Parrot.InviteHandlerTest do
       # Verify the pipeline operations were applied
       operations = Call.get_operations(result)
       assert [{:answer, []}, {:play, "welcome.wav", []}] = operations
+    end
+
+    # Early Media callback default
+    test "provides default handle_early_media/2 implementation returning {:noreply, call}" do
+      call = Call.new()
+      response = %{status: 183, body: "v=0\r\n"}
+      assert {:noreply, ^call} = MinimalHandler.handle_early_media(response, call)
     end
 
     # RFC 3311 UPDATE callback defaults
@@ -1358,6 +1371,78 @@ defmodule Parrot.InviteHandlerTest do
       call = Call.new()
       result = Parrot.InviteHandlerTest.MinimalHandler.handle_leg_event(call, "custom-leg-123", :ringing)
       assert {:ok, _} = result
+    end
+  end
+
+  # ===========================================================================
+  # Early Media Callback (183 Session Progress)
+  # ===========================================================================
+
+  describe "handle_early_media/2 callback" do
+    defmodule EarlyMediaHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Override to track early media
+      def handle_early_media(response, call) do
+        new_assigns =
+          call.assigns
+          |> Map.put(:early_media_received, true)
+          |> Map.put(:early_media_sdp, response[:body])
+
+        {:noreply, %{call | assigns: new_assigns}}
+      end
+    end
+
+    defmodule EarlyMediaStopRingbackHandler do
+      use Parrot.InviteHandler
+
+      def handle_invite(invite) do
+        invite |> answer()
+      end
+
+      # Stop local ringback when early media is received
+      def handle_early_media(_response, call) do
+        call
+        |> assign(:ringback_stopped, true)
+      end
+    end
+
+    test "receives 183 response and call struct" do
+      call = Call.new(assigns: %{session_id: "test-123"})
+      response = %{status: 183, body: "v=0\r\no=- 123 456 IN IP4 192.168.1.1\r\n"}
+
+      {:noreply, result} = EarlyMediaHandler.handle_early_media(response, call)
+
+      assert result.assigns.early_media_received == true
+      assert result.assigns.early_media_sdp == response[:body]
+      assert result.assigns.session_id == "test-123"
+    end
+
+    test "can return Call struct with operations (not wrapped in {:noreply, _})" do
+      call = Call.new()
+      response = %{status: 183, body: "v=0\r\n"}
+
+      result = EarlyMediaStopRingbackHandler.handle_early_media(response, call)
+
+      # Can return just the call struct (not wrapped)
+      assert result.assigns.ringback_stopped == true
+    end
+
+    test "handle_early_media/2 is defoverridable" do
+      call = Call.new()
+      response = %{status: 183, body: "v=0\r\n"}
+
+      # MinimalHandler uses default
+      minimal_result = Parrot.InviteHandlerTest.MinimalHandler.handle_early_media(response, call)
+      assert minimal_result == {:noreply, call}
+
+      # EarlyMediaHandler overrides it
+      {:noreply, custom_result} = EarlyMediaHandler.handle_early_media(response, call)
+      assert custom_result.assigns[:early_media_received] == true
     end
   end
 

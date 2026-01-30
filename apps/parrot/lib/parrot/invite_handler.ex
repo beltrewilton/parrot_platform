@@ -110,6 +110,7 @@ defmodule Parrot.InviteHandler do
   - `handle_update/2` - Called when an UPDATE request is received (RFC 3311)
   - `handle_update_complete/2` - Called when an outgoing UPDATE succeeds
   - `handle_update_failed/3` - Called when an outgoing UPDATE fails
+  - `handle_early_media/2` - Called when 183 Session Progress with SDP is received (UAC)
   """
 
   alias Parrot.Call
@@ -656,6 +657,33 @@ defmodule Parrot.InviteHandler do
           | {:transfer_failed, atom() | term()}
 
   @doc """
+  Called when 183 Session Progress with SDP is received (UAC side).
+
+  Early media means the remote party is sending audio before answering.
+  This is typically ringback tone or IVR prompts from the far end.
+
+  ## Arguments
+
+  - `response` - The 183 Session Progress response (map with `:status`, `:body` SDP, etc.)
+  - `call` - The current call state
+
+  ## Example
+
+      def handle_early_media(response, call) do
+        # Stop local ringback - remote is sending audio
+        Logger.info("Received early media: \#{inspect(response[:body])}")
+        call |> assign(:early_media, true)
+      end
+
+      # Alternative: just track it for logging
+      def handle_early_media(_response, call) do
+        {:noreply, %{call | assigns: Map.put(call.assigns, :early_media_received, true)}}
+      end
+  """
+  @callback handle_early_media(response :: map(), call :: Call.t()) ::
+              {:noreply, Call.t()} | Call.t()
+
+  @doc """
   Provides default implementations and imports Call functions.
 
   When you `use Parrot.InviteHandler`, you get:
@@ -801,6 +829,12 @@ defmodule Parrot.InviteHandler do
       end
 
       @impl Parrot.InviteHandler
+      def handle_early_media(_response, call) do
+        # Default: do nothing, let early audio play
+        {:noreply, call}
+      end
+
+      @impl Parrot.InviteHandler
       def handle_update(_request, call) do
         # Default: accept UPDATE requests (RFC 3311)
         {:noreply, call}
@@ -834,6 +868,7 @@ defmodule Parrot.InviteHandler do
                      handle_media_started: 1,
                      handle_media_stopped: 2,
                      handle_leg_event: 3,
+                     handle_early_media: 2,
                      handle_update: 2,
                      handle_update_complete: 2,
                      handle_update_failed: 3
