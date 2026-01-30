@@ -782,4 +782,101 @@ defmodule Parrot.Bridge.B2BUATest do
       assert leg.dialog_id == "dialog-123"
     end
   end
+
+  # ===========================================================================
+  # B2BUA Fork Scenario Tests (parrot_platform-bot)
+  # ===========================================================================
+
+  describe "B2BUA fork scenario - A-leg state synchronization" do
+    # Tests for the B2BUA forking pattern where:
+    # 1. A-leg is created with state: :init when INVITE arrives
+    # 2. DSL answer() sends SIP 200 OK
+    # 3. A-leg state must transition through :trying -> :answered
+    # 4. Only then can B2BUA.connect() succeed
+    #
+    # This addresses parrot_platform-bot: A-leg state not updated after answer()
+
+    test "A-leg starting in :init can transition to :answered via :trying" do
+      {:ok, %{pid: pid}} = start_b2bua()
+      {:ok, media_a} = start_mock_media("media-a")
+      {:ok, media_b} = start_mock_media("media-b")
+
+      # Create A-leg with state: :init (as would happen when INVITE arrives)
+      a_leg = create_mock_leg(id: :a_leg, direction: :inbound, state: :init, media_pid: media_a)
+      :ok = B2BUA.set_a_leg(pid, a_leg)
+
+      # Verify A-leg starts in :init
+      {:ok, leg_before} = B2BUA.get_leg(pid, :a_leg)
+      assert leg_before.state == :init
+
+      # After DSL answer() sends 200 OK, synchronize A-leg state
+      # Must go through :trying first (per Leg state machine)
+      :ok = B2BUA.handle_leg_event(pid, :a_leg, :trying)
+      :ok = B2BUA.handle_leg_event(pid, :a_leg, {:answered, nil})
+
+      # Verify A-leg is now :answered
+      {:ok, leg_after} = B2BUA.get_leg(pid, :a_leg)
+      assert leg_after.state == :answered
+
+      # Now connect should succeed with answered B-leg
+      {:ok, _} = B2BUA.originate(pid, "sip:bob@example.com", as: :b_leg)
+      :ok = B2BUA.handle_leg_event(pid, :b_leg, :trying)
+      :ok = B2BUA.handle_leg_event(pid, :b_leg, {:answered, "sdp"})
+      :ok = B2BUA.update_leg(pid, :b_leg, media_pid: media_b)
+
+      assert {:ok, _bridge} = B2BUA.connect(pid, :a_leg, :b_leg)
+    end
+
+    test "connect fails when A-leg still in :init state" do
+      {:ok, %{pid: pid}} = start_b2bua()
+      {:ok, media_a} = start_mock_media("media-a")
+      {:ok, media_b} = start_mock_media("media-b")
+
+      # Create A-leg with state: :init
+      a_leg = create_mock_leg(id: :a_leg, direction: :inbound, state: :init, media_pid: media_a)
+      :ok = B2BUA.set_a_leg(pid, a_leg)
+
+      # Create answered B-leg
+      {:ok, _} = B2BUA.originate(pid, "sip:bob@example.com", as: :b_leg)
+      :ok = B2BUA.handle_leg_event(pid, :b_leg, :trying)
+      :ok = B2BUA.handle_leg_event(pid, :b_leg, {:answered, "sdp"})
+      :ok = B2BUA.update_leg(pid, :b_leg, media_pid: media_b)
+
+      # Connect should fail because A-leg is not answered
+      assert {:error, :leg_not_answered} = B2BUA.connect(pid, :a_leg, :b_leg)
+    end
+
+    test "fork scenario: A-leg must be answered before connecting to fork winner" do
+      {:ok, %{pid: pid}} = start_b2bua()
+      {:ok, media_a} = start_mock_media("media-a")
+      {:ok, media_b} = start_mock_media("media-b")
+
+      # 1. Create A-leg with state: :init (incoming INVITE)
+      a_leg = create_mock_leg(id: :a_leg, direction: :inbound, state: :init, media_pid: media_a)
+      :ok = B2BUA.set_a_leg(pid, a_leg)
+
+      # 2. Fork to multiple destinations
+      destinations = ["sip:agent1@example.com", "sip:agent2@example.com"]
+      strategy = RingStrategy.simultaneous(timeout: 30_000)
+      {:ok, leg_ids} = B2BUA.fork(pid, destinations, strategy: strategy)
+
+      # 3. Simulate legs trying
+      for leg_id <- leg_ids do
+        :ok = B2BUA.handle_leg_event(pid, leg_id, :trying)
+      end
+
+      # 4. Simulate DSL answer() - updates A-leg state
+      :ok = B2BUA.handle_leg_event(pid, :a_leg, :trying)
+      :ok = B2BUA.handle_leg_event(pid, :a_leg, {:answered, nil})
+
+      # 5. First B-leg answers (winner)
+      [winner | _] = leg_ids
+      :ok = B2BUA.handle_leg_event(pid, winner, {:answered, "sdp"})
+      :ok = B2BUA.update_leg(pid, winner, media_pid: media_b)
+
+      # 6. Connect winner to A-leg should now succeed
+      assert {:ok, bridge} = B2BUA.connect(pid, :a_leg, winner)
+      assert %Parrot.Bridge.MediaBridge{state: :bridged} = bridge
+    end
+  end
 end

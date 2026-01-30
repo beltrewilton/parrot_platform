@@ -608,10 +608,16 @@ defmodule Parrot.Bridge.B2BUA do
 
   defp process_leg_event(state, leg, {:answered, sdp}) do
     with {:ok, new_state} <- transition_leg(state, leg, :answered) do
-      # Update leg with SDP
-      updated_leg = Leg.set_sdp(new_state.legs[leg.id], sdp)
-      new_legs = Map.put(new_state.legs, leg.id, updated_leg)
-      new_state = %{new_state | legs: new_legs}
+      # Update leg with SDP (if provided)
+      # SDP may be nil for A-leg when DSL answer() is called without explicit SDP
+      new_state =
+        if is_binary(sdp) do
+          updated_leg = Leg.set_sdp(new_state.legs[leg.id], sdp)
+          new_legs = Map.put(new_state.legs, leg.id, updated_leg)
+          %{new_state | legs: new_legs}
+        else
+          new_state
+        end
 
       # Handle forking: first answer wins
       new_state = handle_fork_answer(new_state, leg.id)

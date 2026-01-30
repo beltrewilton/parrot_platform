@@ -176,13 +176,39 @@ defmodule Parrot.Bridge.ActionExecutor do
 
   # Notify B2BUA that A-leg has been answered
   # Only called when b2bua_pid is present in context (B2BUA scenarios)
+  #
+  # The Leg state machine requires transitions through valid states:
+  #   init -> trying -> answered
+  # We use handle_leg_event to properly transition through the state machine.
   @spec notify_b2bua_answered(context(), String.t() | nil) :: :ok
   defp notify_b2bua_answered(%{b2bua_pid: b2bua_pid}, sdp) when is_pid(b2bua_pid) do
     Logger.debug("[ActionExecutor] Notifying B2BUA of A-leg answered state")
-    # Update A-leg state to :answered and set SDP if present
-    updates = if sdp, do: [state: :answered, sdp: sdp], else: [state: :answered]
-    B2BUA.update_leg(b2bua_pid, :a_leg, updates)
-    :ok
+
+    # Transition A-leg through proper state machine: init -> trying -> answered
+    # First get the current leg state to determine required transitions
+    case B2BUA.get_leg(b2bua_pid, :a_leg) do
+      {:ok, %{state: :init}} ->
+        # A-leg is in :init state, need to transition through :trying first
+        :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, :trying)
+        :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, {:answered, sdp})
+
+      {:ok, %{state: :trying}} ->
+        # A-leg is already trying, just transition to answered
+        :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, {:answered, sdp})
+
+      {:ok, %{state: :ringing}} ->
+        # A-leg is ringing, transition to answered
+        :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, {:answered, sdp})
+
+      {:ok, %{state: :answered}} ->
+        # A-leg already answered, just update SDP if present
+        if sdp, do: B2BUA.update_leg(b2bua_pid, :a_leg, sdp: sdp)
+        :ok
+
+      {:error, :not_found} ->
+        Logger.warning("[ActionExecutor] A-leg not found in B2BUA, cannot sync state")
+        :ok
+    end
   end
 
   defp notify_b2bua_answered(_context, _sdp), do: :ok

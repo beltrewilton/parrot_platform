@@ -3822,4 +3822,116 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       GenServer.stop(mock_pid)
     end
   end
+
+  # ===========================================================================
+  # B2BUA A-leg State Synchronization Tests (parrot_platform-bot, parrot_platform-92w)
+  # ===========================================================================
+
+  describe "execute_answer/3 with B2BUA integration" do
+    # Tests that verify the A-leg state is properly synchronized when
+    # answer() is executed in a B2BUA context
+
+    test "notifies B2BUA and transitions A-leg from init to answered" do
+      alias Parrot.Bridge.B2BUA
+      alias Parrot.Leg
+
+      # Start a real B2BUA session
+      {:ok, b2bua_pid} =
+        B2BUA.start_link(
+          handler: nil,
+          handler_state: nil,
+          media_mode: :proxy
+        )
+
+      # Create A-leg with state: :init
+      a_leg = Leg.new(id: :a_leg, direction: :inbound, state: :init)
+      :ok = B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      # Verify A-leg starts in :init
+      {:ok, leg_before} = B2BUA.get_leg(b2bua_pid, :a_leg)
+      assert leg_before.state == :init
+
+      # Execute answer with b2bua_pid in context
+      call = Call.new()
+      sip_msg = build_invite_message()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        b2bua_pid: b2bua_pid,
+        sdp_answer: "v=0\r\n"
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Verify A-leg is now :answered
+      {:ok, leg_after} = B2BUA.get_leg(b2bua_pid, :a_leg)
+      assert leg_after.state == :answered
+
+      B2BUA.stop(b2bua_pid)
+    end
+
+    test "notifies B2BUA and transitions A-leg from trying to answered" do
+      alias Parrot.Bridge.B2BUA
+      alias Parrot.Leg
+
+      # Start a real B2BUA session
+      {:ok, b2bua_pid} =
+        B2BUA.start_link(
+          handler: nil,
+          handler_state: nil,
+          media_mode: :proxy
+        )
+
+      # Create A-leg with state: :init, then transition to :trying
+      a_leg = Leg.new(id: :a_leg, direction: :inbound, state: :init)
+      :ok = B2BUA.set_a_leg(b2bua_pid, a_leg)
+      :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, :trying)
+
+      # Verify A-leg is in :trying
+      {:ok, leg_before} = B2BUA.get_leg(b2bua_pid, :a_leg)
+      assert leg_before.state == :trying
+
+      # Execute answer with b2bua_pid in context
+      call = Call.new()
+      sip_msg = build_invite_message()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil,
+        b2bua_pid: b2bua_pid,
+        sdp_answer: nil
+      }
+
+      {:ok, _updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Verify A-leg is now :answered
+      {:ok, leg_after} = B2BUA.get_leg(b2bua_pid, :a_leg)
+      assert leg_after.state == :answered
+
+      B2BUA.stop(b2bua_pid)
+    end
+
+    test "no-op when b2bua_pid is not in context" do
+      # When b2bua_pid is not in context, answer() should still work normally
+      call = Call.new()
+      sip_msg = build_invite_message()
+
+      context = %{
+        uas: self(),
+        sip_msg: sip_msg,
+        media_pid: nil
+        # No b2bua_pid
+      }
+
+      {:ok, updated_call} = ActionExecutor.execute_answer(call, context, [])
+
+      # Should have sent 200 OK
+      assert_receive {:response_sent, response}
+      assert response.status_code == 200
+      assert updated_call.state == :answered
+    end
+  end
 end

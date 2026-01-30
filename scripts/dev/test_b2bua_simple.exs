@@ -57,9 +57,16 @@ defmodule TestB2BUAHandler do
     # Store B2BUA pid in call assigns for later use
     call = call |> Parrot.Call.assign(:b2bua_pid, b2bua_pid)
 
-    # Answer the A-leg first
+    # Answer the A-leg first (SIP 200 OK)
     Logger.info("[B2BUA] Answering A-leg...")
     call = call |> answer()
+
+    # Synchronize B2BUA A-leg state to :answered
+    # The DSL answer() sends SIP 200 OK, but we need to explicitly update
+    # the B2BUA's A-leg state. The Leg state machine requires: init -> trying -> answered
+    :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, :trying)
+    :ok = B2BUA.handle_leg_event(b2bua_pid, :a_leg, {:answered, nil})
+    Logger.info("[B2BUA] A-leg state synchronized to :answered")
 
     # Now originate to B-leg
     # NOTE: This currently only creates the leg struct in B2BUA state.
