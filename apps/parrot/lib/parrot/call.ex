@@ -675,6 +675,95 @@ defmodule Parrot.Call do
     add_operation(call, {:connect_legs, leg_a, leg_b, opts})
   end
 
+  # ===========================================================================
+  # Mid-Call Session Modification (RFC 3311 UPDATE)
+  # ===========================================================================
+
+  @doc """
+  Puts the call on hold.
+
+  Sends a SIP UPDATE with `a=sendonly` direction, indicating we will continue
+  to send media but will not process received media. The remote party should
+  play hold music or silence.
+
+  This is a call-level operation that affects the entire call's media direction.
+  For B2BUA scenarios where you need to hold a specific leg, use `hold/2`.
+
+  ## Examples
+
+      call |> hold()
+
+  ## RFC References
+
+  - RFC 3311 - SIP UPDATE Method
+  - RFC 4566 - SDP direction attributes (sendonly, recvonly, sendrecv, inactive)
+  """
+  @spec hold(t()) :: t()
+  def hold(%__MODULE__{} = call) do
+    add_operation(call, {:hold, [direction: :sendonly]})
+  end
+
+  @doc """
+  Resumes the call from hold.
+
+  Sends a SIP UPDATE with `a=sendrecv` direction, restoring bidirectional
+  media flow after the call was placed on hold.
+
+  This is a call-level operation. For B2BUA scenarios, use `resume/2`.
+
+  ## Examples
+
+      call
+      |> hold()
+      |> resume()  # Restore normal media flow
+
+  ## RFC References
+
+  - RFC 3311 - SIP UPDATE Method
+  - RFC 4566 - SDP direction attributes
+  """
+  @spec resume(t()) :: t()
+  def resume(%__MODULE__{} = call) do
+    add_operation(call, {:resume, [direction: :sendrecv]})
+  end
+
+  @doc """
+  Sends a SIP UPDATE to modify the session.
+
+  This is a low-level operation that allows sending custom UPDATE requests
+  with arbitrary options. For common operations like hold/resume, prefer
+  using `hold/1` and `resume/1`.
+
+  ## Options
+
+  * `:direction` - Media direction: `:sendrecv`, `:sendonly`, `:recvonly`, `:inactive`
+  * `:sdp` - Custom SDP body (optional)
+  * `:headers` - Additional SIP headers (optional)
+
+  ## Examples
+
+      # Change direction to receive-only (we are muted)
+      call |> update(direction: :recvonly)
+
+      # Make media inactive (both directions muted)
+      call |> update(direction: :inactive)
+
+      # With custom SDP
+      call |> update(sdp: custom_sdp_body)
+
+  ## RFC References
+
+  - RFC 3311 - SIP UPDATE Method
+  """
+  @spec update(t(), keyword()) :: t()
+  def update(%__MODULE__{} = call, opts \\ []) do
+    add_operation(call, {:update, opts})
+  end
+
+  # ===========================================================================
+  # B2BUA Leg Operations
+  # ===========================================================================
+
   @doc """
   Puts a leg on hold.
 

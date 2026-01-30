@@ -839,4 +839,83 @@ defmodule Parrot.CallTest do
       assert Call.get_operations(call) == []
     end
   end
+
+  # ===========================================================================
+  # Mid-Call UPDATE Operations (RFC 3311, Task 849.6)
+  # ===========================================================================
+
+  describe "hold/1 (call-level hold)" do
+    test "adds hold operation with sendonly direction" do
+      call = %Call{} |> Call.hold()
+
+      assert [operation] = call.__operations__
+      assert operation == {:hold, [direction: :sendonly]}
+    end
+
+    test "chains with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.hold()
+
+      assert length(call.__operations__) == 2
+      # Operations are stored most-recent-first in __operations__
+      assert [{:hold, [direction: :sendonly]}, {:answer, []}] = call.__operations__
+    end
+  end
+
+  describe "resume/1 (call-level resume)" do
+    test "adds resume operation with sendrecv direction" do
+      call = %Call{} |> Call.resume()
+
+      assert [operation] = call.__operations__
+      assert operation == {:resume, [direction: :sendrecv]}
+    end
+
+    test "chains with hold" do
+      call =
+        %Call{}
+        |> Call.hold()
+        |> Call.resume()
+
+      assert length(call.__operations__) == 2
+      # Operations are stored most-recent-first in __operations__
+      assert [{:resume, _}, {:hold, _}] = call.__operations__
+    end
+  end
+
+  describe "update/2 (custom UPDATE)" do
+    test "adds update operation with default options" do
+      call = %Call{} |> Call.update()
+
+      assert [operation] = call.__operations__
+      assert operation == {:update, []}
+    end
+
+    test "adds update operation with custom direction" do
+      call = %Call{} |> Call.update(direction: :recvonly)
+
+      assert [operation] = call.__operations__
+      assert operation == {:update, [direction: :recvonly]}
+    end
+
+    test "adds update operation with SDP body" do
+      sdp = "v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\n"
+      call = %Call{} |> Call.update(sdp: sdp)
+
+      assert [operation] = call.__operations__
+      assert {:update, opts} = operation
+      assert Keyword.get(opts, :sdp) == sdp
+    end
+
+    test "chains with other operations" do
+      call =
+        %Call{}
+        |> Call.answer()
+        |> Call.update(direction: :inactive)
+        |> Call.update(direction: :sendrecv)
+
+      assert length(call.__operations__) == 3
+    end
+  end
 end
