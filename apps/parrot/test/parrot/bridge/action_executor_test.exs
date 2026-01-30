@@ -4391,8 +4391,15 @@ defmodule Parrot.Bridge.ActionExecutorTest do
                ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
     end
 
-    test "returns {:error, :no_b2bua} when b2bua_pid is nil" do
-      call = %Call{state: :answered, id: "test", assigns: %{}}
+    test "creates B2BUA lazily when b2bua_pid is nil" do
+      call = %Call{
+        state: :answered,
+        id: "lazy-test-#{:rand.uniform(100_000)}",
+        handler: __MODULE__,
+        from: "sip:caller@example.com",
+        to: "sip:callee@example.com",
+        assigns: %{}
+      }
 
       context = %{
         uas: self(),
@@ -4402,12 +4409,22 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         b2bua_pid: nil
       }
 
-      assert {:error, :no_b2bua} =
+      # Lazy creation - should succeed by creating B2BUA automatically
+      assert {:ok, updated_call} =
                ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+
+      assert updated_call.assigns[:__bridge_leg__] == :b_leg
     end
 
-    test "returns {:error, :no_b2bua} when b2bua_pid is not in context" do
-      call = %Call{state: :answered, id: "test", assigns: %{}}
+    test "creates B2BUA lazily when b2bua_pid is not in context" do
+      call = %Call{
+        state: :answered,
+        id: "lazy-test-#{:rand.uniform(100_000)}",
+        handler: __MODULE__,
+        from: "sip:caller@example.com",
+        to: "sip:callee@example.com",
+        assigns: %{}
+      }
 
       context = %{
         uas: self(),
@@ -4416,8 +4433,11 @@ defmodule Parrot.Bridge.ActionExecutorTest do
         sdp_answer: nil
       }
 
-      assert {:error, :no_b2bua} =
+      # Lazy creation - should succeed by creating B2BUA automatically
+      assert {:ok, updated_call} =
                ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+
+      assert updated_call.assigns[:__bridge_leg__] == :b_leg
     end
   end
 
@@ -4611,8 +4631,15 @@ defmodule Parrot.Bridge.ActionExecutorTest do
                ActionExecutor.execute_fork(call, context, destinations, [])
     end
 
-    test "returns {:error, :no_b2bua} when b2bua_pid is nil" do
-      call = %Call{state: :answered, id: "test", assigns: %{}}
+    test "creates B2BUA lazily when b2bua_pid is nil" do
+      call = %Call{
+        state: :answered,
+        id: "lazy-fork-#{:rand.uniform(100_000)}",
+        handler: __MODULE__,
+        from: "sip:caller@example.com",
+        to: "sip:callee@example.com",
+        assigns: %{}
+      }
 
       context = %{
         uas: self(),
@@ -4624,12 +4651,22 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       destinations = ["sip:a@example.com", "sip:b@example.com"]
 
-      assert {:error, :no_b2bua} =
+      # Lazy creation - should succeed by creating B2BUA automatically
+      assert {:ok, updated_call} =
                ActionExecutor.execute_fork(call, context, destinations, [])
+
+      assert is_list(updated_call.assigns[:__fork_legs__])
     end
 
-    test "returns {:error, :no_b2bua} when b2bua_pid not in context" do
-      call = %Call{state: :answered, id: "test", assigns: %{}}
+    test "creates B2BUA lazily when b2bua_pid not in context" do
+      call = %Call{
+        state: :answered,
+        id: "lazy-fork-#{:rand.uniform(100_000)}",
+        handler: __MODULE__,
+        from: "sip:caller@example.com",
+        to: "sip:callee@example.com",
+        assigns: %{}
+      }
 
       context = %{
         uas: self(),
@@ -4640,8 +4677,11 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       destinations = ["sip:a@example.com", "sip:b@example.com"]
 
-      assert {:error, :no_b2bua} =
+      # Lazy creation - should succeed by creating B2BUA automatically
+      assert {:ok, updated_call} =
                ActionExecutor.execute_fork(call, context, destinations, [])
+
+      assert is_list(updated_call.assigns[:__fork_legs__])
     end
 
     test "returns {:error, :no_destinations} when destinations empty" do

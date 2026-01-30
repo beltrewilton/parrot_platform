@@ -31,6 +31,7 @@ defmodule Parrot.Bridge.ActionExecutor do
   alias Parrot.Bridge.B2BUA
   alias Parrot.Bridge.RingStrategy
   alias Parrot.Call
+  alias Parrot.Leg
   alias ParrotMedia.WsBidirectional
   alias ParrotMedia.WsBidirectional.Config, as: WsConfig
   alias ParrotSip.Message
@@ -1381,24 +1382,23 @@ defmodule Parrot.Bridge.ActionExecutor do
     {:error, :invalid_state}
   end
 
-  def execute_bridge(_call, %{b2bua_pid: nil}, _destination, _opts) do
-    {:error, :no_b2bua}
-  end
-
-  def execute_bridge(_call, context, _destination, _opts) when not is_map_key(context, :b2bua_pid) do
-    {:error, :no_b2bua}
-  end
-
-  def execute_bridge(_call, %{b2bua_pid: b2bua_pid}, _destination, _opts)
-      when not is_pid(b2bua_pid) do
-    {:error, :no_b2bua}
-  end
-
   def execute_bridge(_call, _context, "", _opts) do
     {:error, :invalid_destination}
   end
 
-  def execute_bridge(call, %{b2bua_pid: b2bua_pid}, destination, opts) do
+  def execute_bridge(call, context, destination, opts) do
+    # Ensure B2BUA session exists (lazy creation)
+    case ensure_b2bua(call, context) do
+      {:ok, b2bua_pid} ->
+        execute_bridge_with_b2bua(call, b2bua_pid, destination, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Execute bridge operation with an available B2BUA session
+  defp execute_bridge_with_b2bua(call, b2bua_pid, destination, opts) do
     Logger.debug("[ActionExecutor] Executing bridge to #{destination}")
 
     # Generate B-leg ID
@@ -1443,24 +1443,23 @@ defmodule Parrot.Bridge.ActionExecutor do
     {:error, :invalid_state}
   end
 
-  def execute_fork(_call, %{b2bua_pid: nil}, _destinations, _opts) do
-    {:error, :no_b2bua}
-  end
-
-  def execute_fork(_call, context, _destinations, _opts) when not is_map_key(context, :b2bua_pid) do
-    {:error, :no_b2bua}
-  end
-
-  def execute_fork(_call, %{b2bua_pid: b2bua_pid}, _destinations, _opts)
-      when not is_pid(b2bua_pid) do
-    {:error, :no_b2bua}
-  end
-
   def execute_fork(_call, _context, [], _opts) do
     {:error, :no_destinations}
   end
 
-  def execute_fork(call, %{b2bua_pid: b2bua_pid}, destinations, opts) do
+  def execute_fork(call, context, destinations, opts) do
+    # Ensure B2BUA session exists (lazy creation)
+    case ensure_b2bua(call, context) do
+      {:ok, b2bua_pid} ->
+        execute_fork_with_b2bua(call, b2bua_pid, destinations, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Execute fork operation with an available B2BUA session
+  defp execute_fork_with_b2bua(call, b2bua_pid, destinations, opts) do
     Logger.debug("[ActionExecutor] Executing fork to #{length(destinations)} destinations")
 
     strategy_atom = Keyword.get(opts, :strategy, :simultaneous)
@@ -1505,6 +1504,59 @@ defmodule Parrot.Bridge.ActionExecutor do
     # Fallback to simultaneous for unknown strategies
     Logger.warning("[ActionExecutor] Unknown fork strategy #{inspect(strategy)}, using :simultaneous")
     RingStrategy.simultaneous(timeout: timeout)
+  end
+
+  # ============================================================================
+  # B2BUA Session Management (Lazy Creation)
+  # ============================================================================
+
+  @doc false
+  # Ensures a B2BUA session exists, creating one lazily if needed.
+  #
+  # When b2bua_pid is already in context, returns it.
+  # Otherwise, creates a new B2BUA session and sets up the A-leg
+  # (the inbound call that is being bridged/forked).
+  #
+  # Returns `{:ok, b2bua_pid}` on success, or `{:error, reason}` on failure.
+  @spec ensure_b2bua(Call.t(), context()) :: {:ok, pid()} | {:error, atom()}
+  defp ensure_b2bua(_call, %{b2bua_pid: b2bua_pid}) when is_pid(b2bua_pid) do
+    # B2BUA session already exists
+    {:ok, b2bua_pid}
+  end
+
+  defp ensure_b2bua(call, context) do
+    # No B2BUA session - create one lazily
+    Logger.debug("[ActionExecutor] Creating B2BUA session lazily for call #{call.id}")
+
+    case B2BUA.start_link(session_id: call.id, handler: call.handler) do
+      {:ok, b2bua_pid} ->
+        # Set up A-leg (the inbound call)
+        a_leg = Leg.new(
+          id: :a_leg,
+          direction: :inbound,
+          state: :answered,
+          dialog_id: call.__dialog_id__,
+          media_pid: Map.get(context, :media_pid),
+          remote_uri: call.from,
+          local_uri: call.to,
+          sdp: Map.get(context, :sdp_answer)
+        )
+
+        case B2BUA.set_a_leg(b2bua_pid, a_leg) do
+          :ok ->
+            Logger.debug("[ActionExecutor] B2BUA session created with A-leg: #{inspect(b2bua_pid)}")
+            {:ok, b2bua_pid}
+
+          {:error, reason} ->
+            Logger.error("[ActionExecutor] Failed to set A-leg: #{inspect(reason)}")
+            B2BUA.stop(b2bua_pid)
+            {:error, :a_leg_setup_failed}
+        end
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Failed to create B2BUA session: #{inspect(reason)}")
+        {:error, :b2bua_start_failed}
+    end
   end
 
   @doc """
