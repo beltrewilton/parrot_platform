@@ -85,7 +85,7 @@ defmodule ParrotSip.DialogStatem do
 
   alias ParrotSip.{Dialog, Message, Branch, DialogBroadcast}
   alias ParrotSip.CDR
-  alias ParrotSip.CDR.{Generator, Dispatcher, TerminationCause}
+  alias ParrotSip.CDR.{Generator, Dispatcher, MediaInfo, TerminationCause}
   alias ParrotSip.Headers.{Contact, Via}
 
   @type trans :: {:trans, pid()}
@@ -121,7 +121,9 @@ defmodule ParrotSip.DialogStatem do
       answered_at: nil,
       # MOS fetcher function for CDR integration
       # Takes session_id and returns MOS summary map or nil
-      mos_fetcher: nil
+      mos_fetcher: nil,
+      # Media session ID for MOS data fetching
+      media_session_id: nil
     ]
 
     @type mos_fetcher :: (String.t() -> map() | nil) | nil
@@ -138,7 +140,8 @@ defmodule ParrotSip.DialogStatem do
             recovered: boolean(),
             invite_received_at: DateTime.t() | nil,
             answered_at: DateTime.t() | nil,
-            mos_fetcher: mos_fetcher()
+            mos_fetcher: mos_fetcher(),
+            media_session_id: String.t() | nil
           }
   end
 
@@ -285,7 +288,8 @@ defmodule ParrotSip.DialogStatem do
       log_id: uas_log_id(resp_sip_msg),
       dialog_type: dialog_type(req_sip_msg),
       invite_received_at: DateTime.utc_now(),
-      mos_fetcher: Keyword.get(opts, :mos_fetcher)
+      mos_fetcher: Keyword.get(opts, :mos_fetcher),
+      media_session_id: Keyword.get(opts, :media_session_id)
     }
 
     # Set a timer for NOTIFY dialogs
@@ -364,7 +368,8 @@ defmodule ParrotSip.DialogStatem do
       log_id: uac_log_id(resp_sip_msg),
       dialog_type: dialog_type(out_req),
       invite_received_at: DateTime.utc_now(),
-      mos_fetcher: Keyword.get(opts, :mos_fetcher)
+      mos_fetcher: Keyword.get(opts, :mos_fetcher),
+      media_session_id: Keyword.get(opts, :media_session_id)
     }
 
     initial_state = dialog.state
@@ -392,7 +397,8 @@ defmodule ParrotSip.DialogStatem do
       log_id: uac_log_id(resp_sip_msg),
       dialog_type: dialog_type(out_req),
       invite_received_at: DateTime.utc_now(),
-      mos_fetcher: Keyword.get(opts, :mos_fetcher)
+      mos_fetcher: Keyword.get(opts, :mos_fetcher),
+      media_session_id: Keyword.get(opts, :media_session_id)
     }
 
     initial_state = dialog.state
@@ -467,7 +473,8 @@ defmodule ParrotSip.DialogStatem do
       recovered: true,
       invite_received_at: Map.get(stored_state, :invite_received_at, now),
       answered_at: Map.get(stored_state, :answered_at, now),
-      mos_fetcher: Keyword.get(opts, :mos_fetcher)
+      mos_fetcher: Keyword.get(opts, :mos_fetcher),
+      media_session_id: Keyword.get(opts, :media_session_id)
     }
 
     Logger.info("[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state")
@@ -869,6 +876,49 @@ defmodule ParrotSip.DialogStatem do
   end
 
   @doc """
+  Returns the media session ID associated with this dialog.
+
+  The media session ID is used with the mos_fetcher to retrieve MOS data
+  during CDR generation.
+
+  ## Returns
+    - String media session ID, or `nil` if not set
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, media_session_id: "session-123"})
+      DialogStatem.get_media_session_id(pid)
+      # => "session-123"
+  """
+  @spec get_media_session_id(pid()) :: String.t() | nil
+  def get_media_session_id(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_media_session_id)
+  end
+
+  @doc """
+  Sets the media session ID for this dialog.
+
+  This allows late binding of the media session to the dialog, which is common
+  when the media session is created after the dialog.
+
+  ## Parameters
+    - `pid` - The dialog process
+    - `session_id` - The media session ID to associate
+
+  ## Returns
+    - `:ok` on success
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+      :ok = DialogStatem.set_media_session_id(pid, "session-123")
+  """
+  @spec set_media_session_id(pid(), String.t()) :: :ok
+  def set_media_session_id(pid, session_id) when is_pid(pid) and is_binary(session_id) do
+    :gen_statem.call(pid, {:set_media_session_id, session_id})
+  end
+
+  @doc """
   Returns the full dialog data for recovery purposes.
 
   This returns all dialog fields needed for cluster failover recovery,
@@ -895,9 +945,14 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :early}]}
   end
 
-  def early({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher] do
+  def early({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher, :get_media_session_id] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
+  def early({:call, from}, {:set_media_session_id, session_id}, data) do
+    new_data = %{data | media_session_id: session_id}
+    {:keep_state, new_data, [{:reply, from, :ok}]}
   end
 
   def early({:call, from}, {:uas_request, req_sip_msg}, data) do
@@ -934,9 +989,14 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :confirmed}]}
   end
 
-  def confirmed({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher] do
+  def confirmed({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher, :get_media_session_id] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
+  def confirmed({:call, from}, {:set_media_session_id, session_id}, data) do
+    new_data = %{data | media_session_id: session_id}
+    {:keep_state, new_data, [{:reply, from, :ok}]}
   end
 
   def confirmed({:call, from}, {:uas_request, req_sip_msg}, data) do
@@ -978,7 +1038,7 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :terminated}]}
   end
 
-  def terminated({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher] do
+  def terminated({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher, :get_media_session_id] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -1026,6 +1086,10 @@ defmodule ParrotSip.DialogStatem do
 
   defp handle_introspection_call(:get_mos_fetcher, %Data{mos_fetcher: mos_fetcher}) do
     mos_fetcher
+  end
+
+  defp handle_introspection_call(:get_media_session_id, %Data{media_session_id: media_session_id}) do
+    media_session_id
   end
 
   defp handle_introspection_call(:get_dialog_data, %Data{dialog: dialog}) do
@@ -1432,8 +1496,15 @@ defmodule ParrotSip.DialogStatem do
       ended_at: DateTime.utc_now()
     }
 
+    # Fetch MOS summary and build media info for CDR
+    mos_summary = fetch_mos_summary(data)
+    media_info = build_media_info(mos_summary)
+
+    # Build options for CDR generator
+    opts = if media_info, do: [media_info: media_info], else: []
+
     # Generate CDR
-    case Generator.generate(data.dialog, timing_data, termination_cause) do
+    case Generator.generate(data.dialog, timing_data, termination_cause, opts) do
       {:ok, cdr} ->
         # Fire-and-forget dispatch to all handlers
         handlers = CDR.list_handlers()
@@ -1452,6 +1523,58 @@ defmodule ParrotSip.DialogStatem do
         :ok
     end
   end
+
+  # Fetches MOS summary from the media session if both mos_fetcher and media_session_id are set.
+  # Returns nil if either is missing or if the fetcher raises an error.
+  # Error handling ensures MOS fetch failures never prevent CDR generation.
+  @spec fetch_mos_summary(Data.t()) :: map() | nil
+  defp fetch_mos_summary(%Data{mos_fetcher: nil}), do: nil
+  defp fetch_mos_summary(%Data{media_session_id: nil}), do: nil
+
+  defp fetch_mos_summary(%Data{mos_fetcher: fetcher, media_session_id: session_id}) do
+    try do
+      fetcher.(session_id)
+    rescue
+      e ->
+        Logger.warning("Failed to fetch MOS summary for session #{session_id}: #{inspect(e)}")
+        nil
+    end
+  end
+
+  # Builds MediaInfo struct from MOS summary.
+  # Returns nil if mos_summary is nil (CDR will have media_info: nil).
+  @spec build_media_info(map() | nil) :: MediaInfo.t() | nil
+  defp build_media_info(nil), do: nil
+
+  defp build_media_info(mos_summary) when is_map(mos_summary) do
+    %MediaInfo{
+      mos_summary: mos_summary,
+      packets_sent: Map.get(mos_summary, :total_packets),
+      packets_received: calculate_packets_received(mos_summary),
+      jitter_ms: extract_avg_jitter(mos_summary)
+    }
+  end
+
+  # Calculate packets received from total_packets and total_lost
+  defp calculate_packets_received(%{total_packets: total, total_lost: lost})
+       when is_integer(total) and is_integer(lost) do
+    max(0, total - lost)
+  end
+
+  defp calculate_packets_received(_), do: nil
+
+  # Extract average jitter from quality events if available
+  defp extract_avg_jitter(%{quality_events: events}) when is_list(events) and events != [] do
+    jitters = events |> Enum.map(&Map.get(&1, :jitter)) |> Enum.reject(&is_nil/1)
+
+    if jitters != [] do
+      Enum.sum(jitters) / length(jitters)
+    else
+      nil
+    end
+  end
+
+  defp extract_avg_jitter(_), do: nil
 
   # Builds termination cause based on dialog state and termination context.
   # Determines disposition based on whether call was answered and how it ended.

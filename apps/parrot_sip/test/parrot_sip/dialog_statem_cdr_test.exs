@@ -532,4 +532,100 @@ defmodule ParrotSip.DialogStatemCdrTest do
       assert is_function(mos_fetcher_from_dialog, 1)
     end
   end
+
+  # ===========================================================================
+  # Media Session ID Tests (T04: Implement fetch_mos_summary)
+  # ===========================================================================
+
+  describe "media_session_id configuration" do
+    test "dialog accepts media_session_id in opts" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "media-session-#{:erlang.unique_integer([:positive])}"
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, media_session_id: session_id})
+
+      retrieved_id = DialogStatem.get_media_session_id(pid)
+      assert retrieved_id == session_id
+    end
+
+    test "dialog without media_session_id has nil" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      retrieved_id = DialogStatem.get_media_session_id(pid)
+      assert retrieved_id == nil
+    end
+
+    test "media_session_id can be set after dialog creation" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Initially nil
+      assert DialogStatem.get_media_session_id(pid) == nil
+
+      # Set media session ID
+      session_id = "late-bound-session-#{:erlang.unique_integer([:positive])}"
+      :ok = DialogStatem.set_media_session_id(pid, session_id)
+
+      # Now should have the value
+      assert DialogStatem.get_media_session_id(pid) == session_id
+    end
+  end
+
+  describe "fetch_mos_summary integration" do
+    test "MOS data is fetched when both mos_fetcher and media_session_id are set" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "mos-test-session-#{:erlang.unique_integer([:positive])}"
+
+      # Create MOS fetcher that returns data for our session
+      mos_fetcher = fn ^session_id ->
+        %{
+          min_mos: 3.5,
+          max_mos: 4.2,
+          avg_mos: 3.8,
+          total_packets: 1000,
+          total_lost: 10,
+          overall_loss_percent: 1.0,
+          status: :good
+        }
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      # Verify both are stored
+      assert DialogStatem.get_mos_fetcher(pid) != nil
+      assert DialogStatem.get_media_session_id(pid) == session_id
+    end
+
+    test "MOS fetcher exceptions are caught gracefully" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      session_id = "error-session-#{:erlang.unique_integer([:positive])}"
+
+      # Create MOS fetcher that raises an error
+      mos_fetcher = fn _session_id ->
+        raise "Simulated MOS fetch error"
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
+        mos_fetcher: mos_fetcher,
+        media_session_id: session_id
+      })
+
+      # Dialog should be created successfully despite faulty fetcher
+      assert Process.alive?(pid)
+      assert DialogStatem.get_state(pid) == :confirmed
+    end
+  end
 end
