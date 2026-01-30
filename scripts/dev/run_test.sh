@@ -82,8 +82,11 @@ echo "Log file: $LOG_FILE"
 echo ""
 
 # Start the script in background with logging
-SIP_TRACE=true LOG_LEVEL=debug nohup mix run "$SCRIPT_FILE" > "$LOG_FILE" 2>&1 &
+# Use setsid to create new session, ensuring process is not terminated when
+# parent shell exits (fixes timing issues when called via subshell)
+SIP_TRACE=true LOG_LEVEL=debug setsid mix run "$SCRIPT_FILE" > "$LOG_FILE" 2>&1 &
 PID=$!
+disown $PID 2>/dev/null || true
 
 echo "PID:      $PID"
 echo ""

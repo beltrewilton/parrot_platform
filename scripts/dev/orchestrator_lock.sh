@@ -52,11 +52,12 @@ find_lock() {
         jq -r '.[0].id // empty' 2>/dev/null
 }
 
-# Get lock holder
+# Get lock holder (extracted from title: "lock:test_name (orchestrator_id)")
 get_lock_holder() {
     local test="$1"
     bd search "lock:$test" --label "$LOCK_LABEL" --status open --json 2>/dev/null | \
-        jq -r '.[0].assignee // empty' 2>/dev/null
+        jq -r '.[0].title // empty' 2>/dev/null | \
+        sed -n 's/.*(\(.*\))/\1/p'
 }
 
 case "$ACTION" in
@@ -74,12 +75,12 @@ case "$ACTION" in
         fi
 
         # Create lock
-        LOCK_ID=$(bd q "lock:$TEST_NAME" \
+        # Note: bd q doesn't support --assignee or --description
+        # Include orchestrator ID in title instead
+        LOCK_ID=$(bd q "lock:$TEST_NAME ($ORCHESTRATOR_ID)" \
             --type task \
             --priority 0 \
             --labels "$LOCK_LABEL,test-coordination" \
-            --assignee "$ORCHESTRATOR_ID" \
-            --description "Test lock for $TEST_NAME - orchestrator: $ORCHESTRATOR_ID" \
             2>/dev/null)
 
         if [ -n "$LOCK_ID" ]; then
@@ -127,7 +128,7 @@ case "$ACTION" in
     list)
         echo "Current orchestrator locks:"
         bd list --label "$LOCK_LABEL" --status open --json 2>/dev/null | \
-            jq -r '.[] | "  \(.title) - \(.assignee // "unknown")"' 2>/dev/null || \
+            jq -r '.[] | "  \(.title)"' 2>/dev/null || \
             echo "  (none)"
         exit 0
         ;;
