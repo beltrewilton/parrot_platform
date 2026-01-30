@@ -78,6 +78,8 @@ defmodule ParrotMedia.Sdp do
          {:ok, local_port} <- get_required_option(opts, :local_port) do
       supported_codecs = Keyword.get(opts, :supported_codecs, [:pcma])
       direction = Keyword.get(opts, :direction, :sendrecv)
+      # Use provided session_version or default to system time
+      session_version = Keyword.get(opts, :session_version, :os.system_time(:second))
 
       # Normalize IP to tuple format
       ip_tuple = normalize_ip_to_tuple(local_ip)
@@ -96,7 +98,7 @@ defmodule ParrotMedia.Sdp do
         origin: %ExSDP.Origin{
           username: "-",
           session_id: :os.system_time(:second),
-          session_version: :os.system_time(:second),
+          session_version: session_version,
           network_type: "IN",
           address: ip_tuple
         },

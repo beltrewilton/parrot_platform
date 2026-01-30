@@ -45,9 +45,11 @@ defmodule ParrotMedia.Test.TestMediaHandler do
   end
 
   def handle_codec_negotiation(offered, supported, state) do
-    # Pick the first common codec
-    codec = Enum.find(supported, fn c -> c in offered end) || hd(supported)
-    {:ok, codec, state}
+    # Pick the first common codec, or return error if none found
+    case Enum.find(supported, fn c -> c in offered end) do
+      nil -> {:error, :no_common_codec, state}
+      codec -> {:ok, codec, state}
+    end
   end
 
   def handle_negotiation_complete(_answer, _offer, _codec, state) do

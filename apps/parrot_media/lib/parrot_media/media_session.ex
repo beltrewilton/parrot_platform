@@ -125,7 +125,9 @@ defmodule ParrotMedia.MediaSession do
       # Whether RTP forwarding is paused
       rtp_forward_paused: false,
       # Fork.Manager PID for media forking
-      fork_manager_pid: nil
+      fork_manager_pid: nil,
+      # SDP session version (increments with each reoffer, RFC 3264)
+      session_version: 1
     ]
 
     @type t :: %__MODULE__{
@@ -161,7 +163,8 @@ defmodule ParrotMedia.MediaSession do
             direction: :sendrecv | :sendonly | :recvonly | :inactive,
             mos_calculator_pid: pid() | nil,
             rtp_forward_config: %{target_pid: pid(), direction: :both | :send_only | :recv_only} | nil,
-            rtp_forward_paused: boolean()
+            rtp_forward_paused: boolean(),
+            session_version: pos_integer()
           }
   end
 
@@ -269,6 +272,91 @@ defmodule ParrotMedia.MediaSession do
   @spec process_answer(String.t() | pid(), String.t(), timeout()) :: :ok | {:error, term()}
   def process_answer(session, sdp_answer, timeout \\ 5000) do
     :gen_statem.call(get_pid(session), {:process_answer, sdp_answer}, timeout)
+  end
+
+  @doc """
+  Renegotiates the media session with a new SDP offer.
+
+  This is used for mid-call changes like hold/resume via UPDATE or re-INVITE.
+  The session must already be in a negotiated state (ready or active).
+
+  ## Renegotiation Rules (RFC 3264)
+
+  - Cannot add new media types (must be subset of original)
+  - Can change codec preference order
+  - Can change direction (sendrecv -> sendonly for hold)
+  - Can change connection address (for ICE restart scenarios)
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `sdp_offer` - The new SDP offer as a string
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `{:ok, sdp_answer}` - Successfully renegotiated, returns SDP answer
+    * `{:error, :not_negotiated}` - Session not yet in negotiated state
+    * `{:error, :no_compatible_codec}` - Offer contains no supported codecs
+    * `{:error, reason}` - Other negotiation errors
+  """
+  @spec renegotiate(String.t() | pid(), String.t(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def renegotiate(session, sdp_offer, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:renegotiate, sdp_offer}, timeout)
+  end
+
+  @doc """
+  Creates a new SDP offer for renegotiation (we initiate the change).
+
+  Use this to initiate hold, resume, or codec changes from our side.
+  The session must already be in a negotiated state.
+
+  ## Options
+
+    * `:direction` - New media direction (:sendrecv, :sendonly, :recvonly, :inactive)
+    * `:codecs` - List of codecs to offer (defaults to currently negotiated codec)
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `opts` - Options for the reoffer
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `{:ok, sdp_offer}` - New SDP offer
+    * `{:error, :not_negotiated}` - Session not yet in negotiated state
+    * `{:error, reason}` - Other errors
+  """
+  @spec create_reoffer(String.t() | pid(), keyword(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def create_reoffer(session, opts \\ [], timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:create_reoffer, opts}, timeout)
+  end
+
+  @doc """
+  Processes the answer to our reoffer.
+
+  After sending a reoffer via `create_reoffer/2`, use this to process
+  the remote party's answer and update our session state.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `sdp_answer` - The SDP answer to our reoffer
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `:ok` - Successfully processed answer
+    * `{:error, :no_pending_reoffer}` - No reoffer was pending
+    * `{:error, reason}` - Processing failed
+  """
+  @spec process_reoffer_answer(String.t() | pid(), String.t(), timeout()) ::
+          :ok | {:error, term()}
+  def process_reoffer_answer(session, sdp_answer, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:process_reoffer_answer, sdp_answer}, timeout)
   end
 
   @doc """
@@ -670,6 +758,19 @@ defmodule ParrotMedia.MediaSession do
     {:keep_state_and_data, [{:reply, from, []}]}
   end
 
+  # Renegotiation requires an established session
+  def idle({:call, from}, {:renegotiate, _sdp_offer}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_negotiated}}]}
+  end
+
+  def idle({:call, from}, {:create_reoffer, _opts}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_negotiated}}]}
+  end
+
+  def idle({:call, from}, {:process_reoffer_answer, _sdp_answer}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_negotiated}}]}
+  end
+
   # No catch-all for :call, :cast, or other event types - let them crash
 
   defp process_offer_internal(from, sdp_offer, data) do
@@ -850,6 +951,20 @@ defmodule ParrotMedia.MediaSession do
     handle_resume_forward(from, data)
   end
 
+  # Renegotiation handlers (RFC 3264 - mid-call SDP updates)
+
+  def ready({:call, from}, {:renegotiate, sdp_offer}, data) do
+    handle_renegotiate(from, sdp_offer, data)
+  end
+
+  def ready({:call, from}, {:create_reoffer, opts}, data) do
+    handle_create_reoffer(from, opts, data)
+  end
+
+  def ready({:call, from}, {:process_reoffer_answer, sdp_answer}, data) do
+    handle_process_reoffer_answer(from, sdp_answer, data)
+  end
+
   #################
   # State: active #
   #################
@@ -909,6 +1024,20 @@ defmodule ParrotMedia.MediaSession do
 
   def active({:call, from}, :resume_forward, data) do
     handle_resume_forward(from, data)
+  end
+
+  # Renegotiation handlers (RFC 3264 - mid-call SDP updates)
+
+  def active({:call, from}, {:renegotiate, sdp_offer}, data) do
+    handle_renegotiate(from, sdp_offer, data)
+  end
+
+  def active({:call, from}, {:create_reoffer, opts}, data) do
+    handle_create_reoffer(from, opts, data)
+  end
+
+  def active({:call, from}, {:process_reoffer_answer, sdp_answer}, data) do
+    handle_process_reoffer_answer(from, sdp_answer, data)
   end
 
   # Fork media to external destination
@@ -1225,7 +1354,8 @@ defmodule ParrotMedia.MediaSession do
       has_remote_sdp: data.remote_sdp != nil,
       pipeline_active: data.pipeline_pid != nil,
       rtp_forward_config: data.rtp_forward_config,
-      rtp_forward_paused: data.rtp_forward_paused
+      rtp_forward_paused: data.rtp_forward_paused,
+      direction: data.direction
     }
 
     {:keep_state_and_data, [{:reply, from, state_info}]}
@@ -1295,6 +1425,175 @@ defmodule ParrotMedia.MediaSession do
     # TODO: In future, notify the pipeline to resume RTP forwarding
 
     {:keep_state, updated_data, [{:reply, from, :ok}]}
+  end
+
+  # ===========================================================================
+  # Renegotiation handlers (RFC 3264 - mid-call SDP updates)
+  # ===========================================================================
+
+  # Handle incoming renegotiation offer (e.g., hold/resume from remote)
+  defp handle_renegotiate(from, sdp_offer, data) do
+    Logger.info("MediaSession #{data.id}: Processing renegotiation offer")
+
+    # Wrap SDP parsing in try/rescue to catch ExSDP parser exceptions
+    parse_result =
+      try do
+        Sdp.parse(sdp_offer)
+      rescue
+        e ->
+          Logger.warning("MediaSession #{data.id}: SDP parsing failed: #{inspect(e)}")
+          {:error, :invalid_sdp}
+      end
+
+    with {:ok, parsed_sdp} <- parse_result,
+         {:ok, audio_media} <- find_audio_media(parsed_sdp),
+         {:ok, selected_codec, handler_state} <- negotiate_codec(audio_media, data) do
+      # Extract the remote's direction from offer
+      offer_direction = extract_sdp_direction(audio_media)
+      # Compute our answer direction based on theirs
+      answer_direction = compute_answer_direction(offer_direction)
+
+      Logger.info(
+        "MediaSession #{data.id}: Renegotiation direction: offer=#{offer_direction}, answer=#{answer_direction}"
+      )
+
+      # Get IP for SDP
+      sdp_ip = get_sdp_ip(data)
+
+      # Build answer with the computed direction
+      case Sdp.build_answer_for_codec(selected_codec,
+             local_ip: sdp_ip,
+             local_port: data.local_rtp_port,
+             direction: answer_direction,
+             offer_audio_media: audio_media
+           ) do
+        {:ok, sdp_answer} ->
+          # Update session state
+          updated_data = %{
+            data
+            | handler_state: handler_state,
+              direction: answer_direction,
+              remote_sdp: sdp_offer,
+              local_sdp: sdp_answer
+          }
+
+          Logger.info("MediaSession #{data.id}: Renegotiation complete, direction=#{answer_direction}")
+          {:keep_state, updated_data, [{:reply, from, {:ok, sdp_answer}}]}
+
+        {:error, reason} ->
+          Logger.error("MediaSession #{data.id}: Failed to build renegotiation answer: #{inspect(reason)}")
+          {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+      end
+    else
+      {:error, :no_audio_media} ->
+        {:keep_state_and_data, [{:reply, from, {:error, :no_audio_media}}]}
+
+      {:error, :no_common_codec} ->
+        {:keep_state_and_data, [{:reply, from, {:error, :no_compatible_codec}}]}
+
+      {:error, :invalid_sdp} ->
+        {:keep_state_and_data, [{:reply, from, {:error, :invalid_sdp}}]}
+
+      {:error, reason} ->
+        Logger.error("MediaSession #{data.id}: Renegotiation failed: #{inspect(reason)}")
+        {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
+  # Handle creating a reoffer (e.g., to put call on hold)
+  defp handle_create_reoffer(from, opts, data) do
+    direction = Keyword.get(opts, :direction, data.direction)
+    Logger.info("MediaSession #{data.id}: Creating reoffer with direction=#{direction}")
+
+    # Get IP for SDP
+    sdp_ip = get_sdp_ip(data)
+
+    # Build offer with the requested direction
+    # Increment session version for the reoffer (RFC 3264)
+    new_version = data.session_version + 1
+
+    case Sdp.build_offer(
+           local_ip: sdp_ip,
+           local_port: data.local_rtp_port,
+           supported_codecs: [data.selected_codec],
+           direction: direction,
+           session_version: new_version
+         ) do
+      {:ok, sdp_offer} ->
+        updated_data = %{data | session_version: new_version}
+        Logger.info("MediaSession #{data.id}: Reoffer created with version=#{new_version}")
+        {:keep_state, updated_data, [{:reply, from, {:ok, sdp_offer}}]}
+
+      {:error, reason} ->
+        Logger.error("MediaSession #{data.id}: Failed to create reoffer: #{inspect(reason)}")
+        {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
+  # Handle processing answer to our reoffer
+  defp handle_process_reoffer_answer(from, sdp_answer, data) do
+    Logger.info("MediaSession #{data.id}: Processing reoffer answer")
+
+    with {:ok, parsed_sdp} <- Sdp.parse(sdp_answer),
+         {:ok, audio_media} <- find_audio_media(parsed_sdp) do
+      # Extract the direction from their answer
+      answer_direction = extract_sdp_direction(audio_media)
+
+      Logger.info("MediaSession #{data.id}: Reoffer answer direction=#{answer_direction}")
+
+      # Update our direction based on their answer
+      # If we sent sendonly (hold), they should respond with recvonly
+      # If we sent sendrecv (resume), they should respond with sendrecv
+      updated_data = %{
+        data
+        | direction: compute_local_direction_from_answer(data.direction, answer_direction),
+          remote_sdp: sdp_answer
+      }
+
+      {:keep_state, updated_data, [{:reply, from, :ok}]}
+    else
+      {:error, reason} ->
+        Logger.error("MediaSession #{data.id}: Failed to process reoffer answer: #{inspect(reason)}")
+        {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
+  # Extract direction attribute from SDP audio media
+  defp extract_sdp_direction(audio_media) do
+    direction =
+      Enum.find(audio_media.attributes, fn
+        attr when attr in [:sendrecv, :sendonly, :recvonly, :inactive] -> true
+        _ -> false
+      end)
+
+    # Default to sendrecv if no direction specified (RFC 3264)
+    direction || :sendrecv
+  end
+
+  # Compute the appropriate answer direction based on offer direction
+  # Per RFC 3264 Section 6:
+  # - sendonly offer -> recvonly answer (they send, we receive)
+  # - recvonly offer -> sendonly answer (they receive, we send)
+  # - sendrecv offer -> sendrecv answer (bidirectional)
+  # - inactive offer -> inactive answer (no media)
+  defp compute_answer_direction(:sendonly), do: :recvonly
+  defp compute_answer_direction(:recvonly), do: :sendonly
+  defp compute_answer_direction(:inactive), do: :inactive
+  defp compute_answer_direction(:sendrecv), do: :sendrecv
+
+  # Compute our local direction after receiving an answer to our reoffer
+  # If we offered sendonly (hold) and they answered recvonly, we keep sendonly
+  # If we offered sendrecv (resume) and they answered sendrecv, we keep sendrecv
+  defp compute_local_direction_from_answer(_our_offer_direction, answer_direction) do
+    # Our direction is the inverse of their answer
+    # If they say recvonly (they receive), we are sendonly (we send)
+    # If they say sendonly (they send), we are recvonly (we receive)
+    case answer_direction do
+      :recvonly -> :sendonly
+      :sendonly -> :recvonly
+      :inactive -> :inactive
+      :sendrecv -> :sendrecv
+    end
   end
 
   # Fork media to external destination (WebSocket or RTP)
