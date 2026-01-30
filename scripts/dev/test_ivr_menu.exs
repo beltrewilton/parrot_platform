@@ -67,7 +67,7 @@ defmodule IVRMenuHandler do
   @impl true
   def handle_play_complete(_file, %{assigns: %{__pending_collect__: opts}} = call)
       when not is_nil(opts) do
-    Logger.debug("[IVR] Prompt audio complete, starting DTMF collection")
+    Logger.info("[IVR] Prompt audio complete, starting DTMF collection")
 
     call
     |> assign(:__pending_collect__, nil)
@@ -129,6 +129,7 @@ defmodule IVRMenuHandler do
   # After operator transfer message, bridge to operator
   def handle_play_complete(_file, %{assigns: %{last_audio: :operator_transfer}} = call) do
     Logger.info("[IVR] Operator transfer, bridging to operator")
+
     call
     |> assign(:last_audio, nil)
     |> bridge("sip:operator@127.0.0.1:5090", timeout: 60_000)
@@ -136,7 +137,7 @@ defmodule IVRMenuHandler do
 
   # Default: continue with DTMF collection for current menu
   def handle_play_complete(_file, %{assigns: %{menu: menu}} = call) do
-    Logger.debug("[IVR] Audio complete, collecting DTMF for menu: #{menu}")
+    Logger.info("[IVR] Audio complete, collecting DTMF for menu: #{menu}")
     call |> collect_dtmf(@dtmf_opts)
   end
 
@@ -287,7 +288,10 @@ defmodule IVRMenuHandler do
 
   def handle_dtmf(digit, %{assigns: %{retries: retries, menu: menu}} = call) do
     new_retries = retries + 1
-    Logger.info("[IVR] Invalid digit '#{digit}': Retry #{new_retries}/#{@max_retries} for menu #{menu}")
+
+    Logger.info(
+      "[IVR] Invalid digit '#{digit}': Retry #{new_retries}/#{@max_retries} for menu #{menu}"
+    )
 
     call
     |> assign(:retries, new_retries)
@@ -323,7 +327,11 @@ defmodule IVRMenuHandler do
   @impl true
   def handle_hangup(call) do
     Logger.info("[IVR] Call ended - session ID: #{call.id}")
-    Logger.info("[IVR] Final state: menu=#{call.assigns[:menu]}, retries=#{call.assigns[:retries]}")
+
+    Logger.info(
+      "[IVR] Final state: menu=#{call.assigns[:menu]}, retries=#{call.assigns[:retries]}"
+    )
+
     {:noreply, call}
   end
 
@@ -332,7 +340,7 @@ defmodule IVRMenuHandler do
   # ---------------------------------------------------------------------------
 
   defp play_main_menu(call) do
-    Logger.debug("[IVR] Playing main menu prompt")
+    Logger.info("[IVR] Playing main menu prompt")
 
     call
     |> assign(:menu, @menu_main)
