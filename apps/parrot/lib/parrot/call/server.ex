@@ -130,6 +130,36 @@ defmodule Parrot.Call.Server do
   end
 
   @doc """
+  Dispatches an UPDATE request to the call server synchronously.
+
+  This is used for mid-dialog UPDATE requests (RFC 3311) where the handler's
+  decision determines the SIP response. Unlike regular dispatch/2, this
+  returns the handler's decision for the caller to act upon.
+
+  ## Arguments
+
+  * `server` - The Call.Server pid
+  * `request` - Map with UPDATE request data (`:method`, `:body`, `:call_id`, etc.)
+
+  ## Returns
+
+  * `{:noreply, call}` - Handler accepted the UPDATE (send 200 OK)
+  * `{:reject, status_code, call}` - Handler rejected (send error response)
+
+  ## Examples
+
+      case Parrot.Call.Server.dispatch_update(pid, request) do
+        {:noreply, _call} -> send_200_ok()
+        {:reject, 491, _call} -> send_491_request_pending()
+      end
+  """
+  @spec dispatch_update(GenServer.server(), map()) ::
+          {:noreply, Call.t()} | {:reject, integer(), Call.t()}
+  def dispatch_update(server, request) do
+    GenServer.call(server, {:dispatch_update, request})
+  end
+
+  @doc """
   Gets the current call struct.
 
   ## Examples
@@ -256,6 +286,33 @@ defmodule Parrot.Call.Server do
 
   def handle_call(:get_call, _from, state) do
     {:reply, state.call, state}
+  end
+
+  # Handle UPDATE request dispatch - returns handler's decision
+  # RFC 3311: UPDATE allows modifying session parameters mid-dialog
+  def handle_call({:dispatch_update, request}, _from, state) do
+    %{call: call, handler: handler} = state
+
+    # Invoke handler's handle_update/2 callback
+    result = handler.handle_update(request, call)
+
+    # Process the result and update state
+    case result do
+      {:noreply, updated_call} ->
+        # Handler accepted UPDATE - update state and return decision
+        state = %{state | call: updated_call}
+        {:reply, {:noreply, updated_call}, state}
+
+      {:reject, status_code, updated_call} ->
+        # Handler rejected UPDATE - update state and return decision
+        state = %{state | call: updated_call}
+        {:reply, {:reject, status_code, updated_call}, state}
+
+      other ->
+        # Unexpected return - treat as accept with original call
+        Logger.warning("Unexpected handle_update return: #{inspect(other)}")
+        {:reply, {:noreply, call}, state}
+    end
   end
 
   @impl true

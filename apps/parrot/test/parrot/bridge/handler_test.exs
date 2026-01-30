@@ -2557,4 +2557,222 @@ defmodule Parrot.Bridge.HandlerTest do
       }
     }
   end
+
+  # ===========================================================================
+  # UPDATE Request Handling Tests (RFC 3311, Task 849.5)
+  # ===========================================================================
+
+  describe "handle_update/3 incoming UPDATE request handling" do
+    @describetag :update_request
+
+    # Handler that tracks UPDATE requests
+    defmodule UpdateTrackingHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      @impl true
+      def handle_update(request, call) do
+        # Track that we were called by sending a message
+        send(Application.get_env(:parrot, :test_pid), {:update_received, request})
+        {:noreply, call}
+      end
+    end
+
+    # Handler that rejects UPDATE with 491 Request Pending
+    defmodule UpdateRejectHandler do
+      use Parrot.InviteHandler
+
+      @impl true
+      def handle_invite(call) do
+        call |> answer()
+      end
+
+      @impl true
+      def handle_update(_request, call) do
+        {:reject, 491, call}
+      end
+    end
+
+    defmodule UpdateTrackingRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.UpdateTrackingHandler)
+    end
+
+    defmodule UpdateRejectRouter do
+      use Parrot.Router
+      invite("*", Parrot.Bridge.HandlerTest.UpdateRejectHandler)
+    end
+
+    defp create_test_update do
+      %Message{
+        type: :request,
+        method: :update,
+        request_uri: "sip:100@127.0.0.1:5060",
+        version: "SIP/2.0",
+        via: [
+          %ParrotSip.Headers.Via{
+            protocol: "SIP",
+            version: "2.0",
+            transport: :udp,
+            host: "127.0.0.1",
+            port: 5080,
+            host_type: :ipv4,
+            parameters: %{"branch" => "z9hG4bK-update-test-#{System.unique_integer([:positive])}"}
+          }
+        ],
+        from: %ParrotSip.Headers.From{
+          display_name: nil,
+          uri: %ParrotSip.Uri{
+            scheme: "sip",
+            user: "alice",
+            host: "127.0.0.1",
+            port: 5080,
+            host_type: :ipv4,
+            parameters: %{},
+            headers: %{}
+          },
+          parameters: %{"tag" => "from-tag-update"}
+        },
+        to: %ParrotSip.Headers.To{
+          display_name: nil,
+          uri: %ParrotSip.Uri{
+            scheme: "sip",
+            user: "100",
+            host: "127.0.0.1",
+            port: 5060,
+            host_type: :ipv4,
+            parameters: %{},
+            headers: %{}
+          },
+          parameters: %{"tag" => "to-tag-update"}
+        },
+        call_id: "test-call-id-update@127.0.0.1",
+        cseq: %ParrotSip.Headers.CSeq{number: 2, method: :update},
+        max_forwards: 70,
+        body: "",
+        source: %{ip: {127, 0, 0, 1}, port: 5080}
+      }
+    end
+
+    defp create_test_update_with_sdp do
+      sdp_body = """
+      v=0
+      o=alice 123456 654321 IN IP4 127.0.0.1
+      s=Session
+      c=IN IP4 127.0.0.1
+      t=0 0
+      m=audio 30000 RTP/AVP 8
+      a=rtpmap:8 PCMA/8000
+      """
+
+      create_test_update()
+      |> Map.put(:body, sdp_body)
+      |> Map.put(:content_type, "application/sdp")
+    end
+
+    test "handle_update callback exists and is exported" do
+      Code.ensure_loaded!(Handler)
+      assert function_exported?(Handler, :handle_update, 3)
+    end
+
+    test "returns :ok when called" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      update = create_test_update()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      result = Handler.handle_update(uas, update, args)
+      assert result == :ok
+    end
+
+    test "invokes handler.handle_update/2 when UPDATE request received" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      update = create_test_update()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      # Should receive the update_received message from handler
+      assert_receive {:update_received, request}, 1000
+      assert request.method == :update
+    end
+
+    test "sends 200 OK when handler returns {:noreply, call}" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      update = create_test_update()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      # Should send 200 OK
+      assert_receive {:sip_response, response}, 1000
+      assert response.status_code == 200
+      assert response.reason_phrase == "OK"
+    end
+
+    test "sends rejection when handler returns {:reject, status, call}" do
+      test_pid = self()
+
+      update = create_test_update()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateRejectRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      # Should send 491 Request Pending
+      assert_receive {:sip_response, response}, 1000
+      assert response.status_code == 491
+      assert response.reason_phrase == "Request Pending"
+    end
+
+    test "handles UPDATE with SDP body" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      update = create_test_update_with_sdp()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      # Should receive the update with SDP body
+      assert_receive {:update_received, request}, 1000
+      assert request.body =~ "m=audio"
+    end
+
+    test "response includes correct headers from request" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      update = create_test_update()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      assert_receive {:sip_response, response}, 1000
+      # Response should have same Call-ID, From, To tags, CSeq
+      assert response.call_id == update.call_id
+      assert response.from == update.from
+      assert response.cseq == update.cseq
+    end
+  end
 end

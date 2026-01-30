@@ -36,6 +36,8 @@ defmodule ParrotSip.Handler do
   @callback handle_info(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
   # RFC 3903 - SIP PUBLISH for event state publication
   @callback handle_publish(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
+  # RFC 3311 - SIP UPDATE for mid-call session modification
+  @callback handle_update(ParrotSip.Transaction.Server.t(), ParrotSip.Message.t(), any()) :: :ok
 
   # Optional transaction state callbacks
   @callback handle_transaction_trying(ParrotSip.Transaction.t(), ParrotSip.Message.t(), any()) ::
@@ -71,6 +73,7 @@ defmodule ParrotSip.Handler do
     handle_message: 3,
     handle_info: 3,
     handle_publish: 3,
+    handle_update: 3,
     handle_transaction_trying: 3,
     handle_transaction_proceeding: 3,
     handle_transaction_completed: 3,
@@ -139,6 +142,8 @@ defmodule ParrotSip.Handler do
   defp method_to_callback(:info), do: :handle_info
   # RFC 3903 - SIP PUBLISH for event state publication
   defp method_to_callback(:publish), do: :handle_publish
+  # RFC 3311 - SIP UPDATE for mid-call session modification
+  defp method_to_callback(:update), do: :handle_update
   defp method_to_callback(_), do: nil
 
   @spec uas_cancel(ParrotSip.Transaction.Server.id(), handler()) :: :ok
