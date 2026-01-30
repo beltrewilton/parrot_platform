@@ -127,7 +127,9 @@ defmodule ParrotMedia.MediaSession do
       # Fork.Manager PID for media forking
       fork_manager_pid: nil,
       # SDP session version (increments with each reoffer, RFC 3264)
-      session_version: 1
+      session_version: 1,
+      # Early media flag (true when media started from 183 before 200 OK)
+      early_media: false
     ]
 
     @type t :: %__MODULE__{
@@ -272,6 +274,86 @@ defmodule ParrotMedia.MediaSession do
   @spec process_answer(String.t() | pid(), String.t(), timeout()) :: :ok | {:error, term()}
   def process_answer(session, sdp_answer, timeout \\ 5000) do
     :gen_statem.call(get_pid(session), {:process_answer, sdp_answer}, timeout)
+  end
+
+  @doc """
+  Processes an early SDP answer (from 183 Session Progress).
+
+  Unlike `process_answer/2` which expects the call to be answered (200 OK),
+  this starts media in an "early" state where we receive media but the
+  dialog is not yet confirmed.
+
+  The session will transition to `:early` state and can later be confirmed
+  with `confirm_media/1` when the 200 OK is received.
+
+  ## Early Media Flow (RFC 3261 Section 13.2.2.4)
+
+  1. UAC sends INVITE with offer
+  2. UAS responds with 183 Session Progress + SDP answer
+  3. UAC calls `process_early_answer/2` - media starts flowing
+  4. UAS sends 200 OK (possibly same SDP)
+  5. UAC calls `confirm_media/1` - session is confirmed
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `sdp_answer` - The early SDP answer from 183 as a string
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `{:ok, map()}` - Successfully processed early answer, returns negotiated parameters
+    * `{:error, :invalid_state}` - Not in negotiating state
+    * `{:error, :invalid_role}` - Not a UAC session
+    * `{:error, reason}` - SDP processing failed
+  """
+  @spec process_early_answer(String.t() | pid(), String.t(), timeout()) ::
+          {:ok, map()} | {:error, term()}
+  def process_early_answer(session, sdp_answer, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:process_early_answer, sdp_answer}, timeout)
+  end
+
+  @doc """
+  Confirms the media session after early media.
+
+  Called when the 200 OK is received after processing early media.
+  Transitions from `:early` state to `:active` state.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+  """
+  @spec confirm_media(String.t() | pid(), timeout()) :: :ok | {:error, term()}
+  def confirm_media(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :confirm_media, timeout)
+  end
+
+  @doc """
+  Creates an early SDP offer for UAS to send with 183 Session Progress.
+
+  This allows the UAS to start sending media (e.g., ringback tone) before
+  answering the call.
+
+  ## Options
+
+    * `:direction` - SDP direction attribute (default: `:sendonly`)
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `opts` - Options for the early offer
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `{:ok, sdp_string}` - Successfully created early offer
+    * `{:error, reason}` - Creation failed
+  """
+  @spec create_early_offer(String.t() | pid(), keyword(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def create_early_offer(session, opts \\ [], timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:create_early_offer, opts}, timeout)
   end
 
   @doc """
@@ -771,6 +853,11 @@ defmodule ParrotMedia.MediaSession do
     {:keep_state_and_data, [{:reply, from, {:error, :not_negotiated}}]}
   end
 
+  # Reject early answer in idle state - must be in negotiating state
+  def idle({:call, from}, {:process_early_answer, _sdp_answer}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :invalid_state}}]}
+  end
+
   # No catch-all for :call, :cast, or other event types - let them crash
 
   defp process_offer_internal(from, sdp_offer, data) do
@@ -804,6 +891,58 @@ defmodule ParrotMedia.MediaSession do
         Logger.error("MediaSession #{data.id}: Failed to process answer: #{inspect(reason)}")
         {:next_state, :negotiating, data, [{:reply, from, error}]}
     end
+  end
+
+  # Process early SDP answer (from 183 Session Progress) - UAC only
+  def negotiating({:call, from}, {:process_early_answer, sdp_answer}, data)
+      when data.role == :uac do
+    Logger.info("MediaSession #{data.id}: Processing early SDP answer (183)")
+
+    case process_sdp_answer(sdp_answer, data) do
+      {:ok, updated_data} ->
+        Logger.debug("MediaSession #{data.id}: Processed early SDP answer, starting early media")
+
+        # Mark as early media and start the pipeline
+        early_data = %{updated_data | early_media: true}
+
+        case start_media_pipeline(early_data) do
+          {:ok, pipeline_pid, monitor_ref, rtcp_receiver_pid} ->
+            Logger.info("MediaSession #{data.id}: Early media pipeline started")
+
+            final_data = %{
+              early_data
+              | pipeline_pid: pipeline_pid,
+                pipeline_monitor: monitor_ref,
+                rtcp_receiver_pid: rtcp_receiver_pid
+            }
+
+            result = %{
+              local_port: final_data.local_rtp_port,
+              remote_port: final_data.remote_rtp_port,
+              remote_address: final_data.remote_rtp_address,
+              codec: final_data.selected_codec
+            }
+
+            {:next_state, :early, final_data, [{:reply, from, {:ok, result}}]}
+
+          {:error, reason} = error ->
+            Logger.error(
+              "MediaSession #{data.id}: Failed to start early media pipeline: #{inspect(reason)}"
+            )
+
+            {:next_state, :negotiating, data, [{:reply, from, error}]}
+        end
+
+      {:error, reason} = error ->
+        Logger.error("MediaSession #{data.id}: Failed to process early answer: #{inspect(reason)}")
+        {:next_state, :negotiating, data, [{:reply, from, error}]}
+    end
+  end
+
+  # Reject process_early_answer for UAS
+  def negotiating({:call, from}, {:process_early_answer, _sdp_answer}, data)
+      when data.role == :uas do
+    {:keep_state_and_data, [{:reply, from, {:error, :invalid_role}}]}
   end
 
   # Owner process DOWN
@@ -964,6 +1103,97 @@ defmodule ParrotMedia.MediaSession do
   def ready({:call, from}, {:process_reoffer_answer, sdp_answer}, data) do
     handle_process_reoffer_answer(from, sdp_answer, data)
   end
+
+  # Reject early answer processing in ready state (only valid in negotiating state)
+  def ready({:call, from}, {:process_early_answer, _sdp_answer}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :invalid_state}}]}
+  end
+
+  # Create early offer for 183 response (UAS providing early media)
+  # Returns the local SDP with optional direction modification
+  def ready({:call, from}, {:create_early_offer, opts}, data) when data.role == :uas do
+    Logger.info("MediaSession #{data.id}: Creating early offer for 183 response")
+
+    early_sdp =
+      case Keyword.get(opts, :direction) do
+        nil ->
+          # Return local SDP as-is
+          data.local_sdp
+
+        direction when direction in [:sendonly, :recvonly, :inactive, :sendrecv] ->
+          # Modify the direction attribute in SDP
+          modify_sdp_direction(data.local_sdp, direction)
+
+        invalid ->
+          Logger.warning("MediaSession #{data.id}: Invalid direction #{inspect(invalid)}, using sendrecv")
+          data.local_sdp
+      end
+
+    {:keep_state_and_data, [{:reply, from, {:ok, early_sdp}}]}
+  end
+
+  # UAC cannot use create_early_offer
+  def ready({:call, from}, {:create_early_offer, _opts}, data) when data.role == :uac do
+    {:keep_state_and_data, [{:reply, from, {:error, :uac_cannot_create_early_offer}}]}
+  end
+
+  ################
+  # State: early #
+  ################
+
+  # Early state - media is flowing but dialog is not yet confirmed (183 received, waiting for 200)
+
+  # Confirm the early media session (when 200 OK is received)
+  def early({:call, from}, :confirm_media, data) do
+    Logger.info("MediaSession #{data.id}: Confirming early media session")
+    # Clear the early_media flag and transition to active
+    confirmed_data = %{data | early_media: false}
+    {:next_state, :active, confirmed_data, [{:reply, from, :ok}]}
+  end
+
+  # Allow getting state in early
+  def early({:call, from}, :get_state, data), do: reply_with_state(from, :early, data)
+
+  # set_notify_pid call
+  def early({:call, from}, {:set_notify_pid, pid}, data) do
+    {:keep_state, %{data | notify_pid: pid}, [{:reply, from, :ok}]}
+  end
+
+  # RTP forwarding calls - available in all states
+  def early({:call, from}, {:set_rtp_forward, config}, data) do
+    handle_set_rtp_forward(from, config, data)
+  end
+
+  def early({:call, from}, :pause_forward, data) do
+    handle_pause_forward(from, data)
+  end
+
+  def early({:call, from}, :resume_forward, data) do
+    handle_resume_forward(from, data)
+  end
+
+  # Owner process DOWN
+  def early(:info, {:DOWN, ref, :process, _pid, reason}, %{owner_monitor: ref} = data) do
+    Logger.info("MediaSession #{data.id}: Owner process terminated in early state: #{inspect(reason)}")
+    cleanup_session(data)
+    {:stop, :normal}
+  end
+
+  # Pipeline process DOWN
+  def early(:info, {:DOWN, _ref, :process, pid, reason}, %{pipeline_pid: pid} = data) do
+    Logger.warning("MediaSession #{data.id}: Early media pipeline terminated: #{inspect(reason)}")
+    # Go back to ready state if pipeline dies
+    {:next_state, :ready, %{data | pipeline_pid: nil, pipeline_monitor: nil, early_media: false}}
+  end
+
+  # Unknown process DOWN
+  def early(:info, {:DOWN, _ref, :process, pid, _reason}, data) do
+    Logger.debug("MediaSession #{data.id}: Unknown process down in early state: #{inspect(pid)}")
+    {:keep_state_and_data, []}
+  end
+
+  # Catch-all ONLY for :info messages - forwards to media handler
+  def early(:info, msg, data), do: handle_media_message(msg, data)
 
   #################
   # State: active #
@@ -1594,6 +1824,16 @@ defmodule ParrotMedia.MediaSession do
       :inactive -> :inactive
       :sendrecv -> :sendrecv
     end
+  end
+
+  # Modify the direction attribute in an SDP string
+  # Used for early media where we want to send 183 with a specific direction
+  defp modify_sdp_direction(sdp_string, new_direction) do
+    direction_str = Atom.to_string(new_direction)
+
+    # Replace existing direction attribute or add one
+    sdp_string
+    |> String.replace(~r/a=(sendrecv|sendonly|recvonly|inactive)\r?\n/, "a=#{direction_str}\r\n")
   end
 
   # Fork media to external destination (WebSocket or RTP)

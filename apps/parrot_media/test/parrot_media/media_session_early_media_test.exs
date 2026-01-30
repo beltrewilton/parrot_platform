@@ -17,8 +17,6 @@ defmodule ParrotMedia.MediaSessionEarlyMediaTest do
   alias ParrotMedia.Test.TestMediaHandler
 
   @moduletag :early_media
-  # All tests pending until early media support is implemented
-  @moduletag skip: "pending early media implementation"
 
   describe "UAC early media (receiving 183 with SDP)" do
     test "process_early_answer/2 starts media in early state" do
