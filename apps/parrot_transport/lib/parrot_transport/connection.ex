@@ -1,15 +1,17 @@
 defmodule ParrotTransport.Connection do
   @moduledoc """
-  TCP connection state machine with Content-Length framing.
+  TCP/TLS connection state machine with Content-Length framing.
 
   States:
-  - :connecting - Establishing TCP connection
+  - :connecting - Establishing connection (TCP outbound only)
   - :connected - Active connection, receiving and sending data
-  - :reconnecting - Connection lost, attempting to reconnect
+  - :reconnecting - Connection lost, attempting to reconnect (TCP outbound only)
   - :stopping - Graceful shutdown
 
-  This module manages a single outbound TCP connection with automatic
-  reconnection, message framing via Content-Length, and error handling.
+  This module manages TCP and TLS connections with automatic reconnection
+  (for outbound TCP), message framing via Content-Length, and error handling.
+  Both TCP and TLS connections use the same gen_statem architecture for
+  consistent state management and queryability.
   """
 
   @behaviour :gen_statem
@@ -19,7 +21,7 @@ defmodule ParrotTransport.Connection do
   alias ParrotTransport.Framing.ContentLength
 
   defmodule Data do
-    @enforce_keys [:config, :handler]
+    @enforce_keys [:config, :handler, :transport]
     defstruct [
       :config,
       :handler,
@@ -28,6 +30,8 @@ defmodule ParrotTransport.Connection do
       :local_port,
       :framing,
       :reconnect_timer,
+      :tls_info,
+      transport: :tcp,
       reconnect_attempts: 0,
       max_reconnect_attempts: :infinity,
       reconnect_interval: 1000,
@@ -39,11 +43,13 @@ defmodule ParrotTransport.Connection do
     @type t :: %__MODULE__{
             config: ListenerConfig.t(),
             handler: pid(),
-            socket: :gen_tcp.socket() | nil,
+            socket: :gen_tcp.socket() | :ssl.sslsocket() | nil,
             local_ip: :inet.ip_address() | nil,
             local_port: :inet.port_number() | nil,
             framing: ContentLength.t() | nil,
             reconnect_timer: reference() | nil,
+            tls_info: map() | nil,
+            transport: :tcp | :tls,
             reconnect_attempts: non_neg_integer(),
             max_reconnect_attempts: non_neg_integer() | :infinity,
             reconnect_interval: non_neg_integer(),
@@ -67,13 +73,25 @@ defmodule ParrotTransport.Connection do
   end
 
   @doc """
-  Starts a Connection with an already-connected socket (inbound).
+  Starts a Connection with an already-connected TCP socket (inbound).
   Used by TcpListener when accepting connections.
   """
   @spec start_link_with_socket(ListenerConfig.t(), pid(), :gen_tcp.socket()) ::
           :gen_statem.start_ret()
   def start_link_with_socket(%ListenerConfig{transport: :tcp} = config, handler_pid, socket) do
-    :gen_statem.start_link(__MODULE__, {:inbound, config, handler_pid, socket}, [])
+    :gen_statem.start_link(__MODULE__, {:inbound_tcp, config, handler_pid, socket}, [])
+  end
+
+  @doc """
+  Starts a Connection with an already-connected TLS/SSL socket (inbound).
+  Used by TlsListener when accepting connections.
+
+  This uses gen_statem for consistent state management with TCP connections.
+  """
+  @spec start_link_with_ssl_socket(ListenerConfig.t(), pid(), :ssl.sslsocket()) ::
+          :gen_statem.start_ret()
+  def start_link_with_ssl_socket(%ListenerConfig{transport: :tls} = config, handler_pid, ssl_socket) do
+    :gen_statem.start_link(__MODULE__, {:inbound_tls, config, handler_pid, ssl_socket}, [])
   end
 
   @doc """
@@ -101,11 +119,12 @@ defmodule ParrotTransport.Connection do
   end
 
   @doc """
-  Starts a simple TLS connection handler (non-gen_statem).
+  DEPRECATED: Use `start_link_with_ssl_socket/3` instead.
 
-  This spawns a dedicated process for handling a TLS socket with framing.
-  Returns the PID for the connection process.
+  This legacy function spawns a simple process for TLS handling.
+  The new gen_statem-based function provides consistent state management.
   """
+  @deprecated "Use start_link_with_ssl_socket/3 instead"
   @spec start_tls(:ssl.sslsocket(), tuple(), tuple(), Data.t()) :: pid()
   def start_tls(ssl_socket, remote_addr, local_addr, data) do
     spawn_link(fn ->
@@ -122,31 +141,58 @@ defmodule ParrotTransport.Connection do
 
   @impl :gen_statem
   def init({:outbound, config, handler_pid}) do
-    # Outbound connection - will attempt to connect
+    # Outbound TCP connection - will attempt to connect
     data = %Data{
       config: config,
       handler: handler_pid,
+      transport: :tcp,
       framing: %ContentLength{}
     }
 
     {:ok, :connecting, data}
   end
 
-  def init({:inbound, config, handler_pid, socket}) do
-    # Inbound connection - socket already connected
+  def init({:inbound_tcp, config, handler_pid, socket}) do
+    # Inbound TCP connection - socket already connected
     {:ok, {local_ip, local_port}} = :inet.sockname(socket)
 
     data = %Data{
       config: config,
       handler: handler_pid,
+      transport: :tcp,
       socket: socket,
       local_ip: local_ip,
       local_port: local_port,
       framing: %ContentLength{}
     }
 
-    Logger.info("[Connection] Accepted connection from #{format_addr(config.ip)}:#{config.port}")
+    Logger.info("[Connection] Accepted TCP connection from #{format_addr(config.ip)}:#{config.port}")
 
+    {:ok, :connected, data}
+  end
+
+  def init({:inbound_tls, config, handler_pid, ssl_socket}) do
+    # Inbound TLS connection - socket already connected and handshake complete
+    {:ok, {local_ip, local_port}} = :ssl.sockname(ssl_socket)
+    {:ok, {remote_ip, remote_port}} = :ssl.peername(ssl_socket)
+
+    # Get TLS info for metadata
+    tls_info = get_tls_info(ssl_socket)
+
+    data = %Data{
+      config: %{config | ip: remote_ip, port: remote_port},
+      handler: handler_pid,
+      transport: :tls,
+      socket: ssl_socket,
+      local_ip: local_ip,
+      local_port: local_port,
+      tls_info: tls_info,
+      framing: %ContentLength{}
+    }
+
+    Logger.info("[Connection] Accepted TLS connection from #{format_addr(remote_ip)}:#{remote_port}")
+
+    # Note: Socket will be set to active mode by caller after controlling_process transfer
     {:ok, :connected, data}
   end
 
@@ -259,7 +305,64 @@ defmodule ParrotTransport.Connection do
     {:next_state, :reconnecting, %{data | socket: nil, framing: %ContentLength{}, errors: data.errors + 1}}
   end
 
-  def connected(:cast, {:send_data, data_to_send}, data) do
+  # TLS message handlers
+  def connected(:info, {:ssl, socket, binary_data}, %{socket: socket, transport: :tls} = data) do
+    if data.config.trace do
+      Logger.info("[SIP TRACE] TLS recv from #{format_addr(data.config.ip)}:#{data.config.port}\n#{binary_data}")
+    end
+
+    # Process incoming data through framing
+    case ContentLength.process(data.framing, binary_data) do
+      {:ok, messages, new_framing} ->
+        # Create packets for each complete message
+        for message <- messages do
+          packet = %IncomingPacket{
+            data: message,
+            source: %Source{
+              transport: :tls,
+              remote_addr: {data.config.ip, data.config.port},
+              local_addr: {data.local_ip, data.local_port},
+              connection: self()
+            },
+            metadata: %Metadata{
+              timestamp: System.monotonic_time(),
+              connection_id: inspect(self()),
+              tls_info: data.tls_info
+            }
+          }
+
+          send(data.handler, {:incoming_packet, packet})
+        end
+
+        new_data = %{data |
+          framing: new_framing,
+          packets_received: data.packets_received + length(messages)
+        }
+
+        {:keep_state, new_data}
+
+      {:error, reason} ->
+        Logger.error("[Connection] TLS framing error: #{inspect(reason)}")
+        new_data = %{data | errors: data.errors + 1}
+        {:keep_state, new_data}
+    end
+  end
+
+  def connected(:info, {:ssl_closed, socket}, %{socket: socket, transport: :tls} = data) do
+    Logger.warning("[Connection] TLS connection closed")
+    :ssl.close(socket)
+    # TLS connections don't reconnect - just stop
+    {:next_state, :stopping, %{data | socket: nil}}
+  end
+
+  def connected(:info, {:ssl_error, socket, reason}, %{socket: socket, transport: :tls} = data) do
+    Logger.error("[Connection] TLS error: #{inspect(reason)}")
+    :ssl.close(socket)
+    {:next_state, :stopping, %{data | socket: nil, errors: data.errors + 1}}
+  end
+
+  # Send data - dispatch based on transport type
+  def connected(:cast, {:send_data, data_to_send}, %{transport: :tcp} = data) do
     if data.config.trace do
       Logger.info("[SIP TRACE] TCP send to #{format_addr(data.config.ip)}:#{data.config.port}\n#{data_to_send}")
     end
@@ -270,10 +373,27 @@ defmodule ParrotTransport.Connection do
         {:keep_state, new_data}
 
       {:error, reason} ->
-        Logger.error("[Connection] Send failed: #{inspect(reason)}")
+        Logger.error("[Connection] TCP send failed: #{inspect(reason)}")
         :gen_tcp.close(data.socket)
         new_data = %{data | socket: nil, framing: %ContentLength{}, errors: data.errors + 1}
         {:next_state, :reconnecting, new_data}
+    end
+  end
+
+  def connected(:cast, {:send_data, data_to_send}, %{transport: :tls} = data) do
+    if data.config.trace do
+      Logger.info("[SIP TRACE] TLS send to #{format_addr(data.config.ip)}:#{data.config.port}\n#{data_to_send}")
+    end
+
+    case :ssl.send(data.socket, data_to_send) do
+      :ok ->
+        new_data = %{data | packets_sent: data.packets_sent + 1}
+        {:keep_state, new_data}
+
+      {:error, reason} ->
+        Logger.error("[Connection] TLS send failed: #{inspect(reason)}")
+        :ssl.close(data.socket)
+        {:next_state, :stopping, %{data | socket: nil, errors: data.errors + 1}}
     end
   end
 
@@ -331,10 +451,10 @@ defmodule ParrotTransport.Connection do
 
   def stopping(:enter, _old_state, data) do
     if data.socket do
-      :gen_tcp.close(data.socket)
+      close_socket(data.transport, data.socket)
     end
 
-    Logger.info("[Connection] Stopped")
+    Logger.info("[Connection] Stopped (#{data.transport})")
     {:stop, :normal}
   end
 
@@ -350,8 +470,11 @@ defmodule ParrotTransport.Connection do
 
   defp format_addr(ip), do: inspect(ip)
 
+  defp close_socket(:tcp, socket), do: :gen_tcp.close(socket)
+  defp close_socket(:tls, socket), do: :ssl.close(socket)
+
   # ============================================================================
-  # TLS Connection Loop (Simple Process)
+  # TLS Connection Loop (DEPRECATED - Legacy Simple Process)
   # ============================================================================
 
   defp tls_connection_loop(ssl_socket, remote_addr, local_addr, handler, config, framing) do

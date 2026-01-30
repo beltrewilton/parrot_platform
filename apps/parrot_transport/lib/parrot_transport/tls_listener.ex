@@ -248,24 +248,22 @@ defmodule ParrotTransport.TlsListener do
         # Perform SSL handshake
         case :ssl.handshake(client_socket) do
           {:ok, ssl_socket} ->
-            # Get peer information
-            {:ok, {remote_ip, remote_port}} = :ssl.peername(ssl_socket)
-            {:ok, {local_ip, local_port}} = :ssl.sockname(ssl_socket)
+            # Start gen_statem connection process
+            case Connection.start_link_with_ssl_socket(data.config, data.handler, ssl_socket) do
+              {:ok, conn_pid} ->
+                # Transfer socket ownership to connection process
+                :ssl.controlling_process(ssl_socket, conn_pid)
 
-            # Start connection process with config
-            conn_pid =
-              Connection.start_tls(
-                ssl_socket,
-                {remote_ip, remote_port},
-                {local_ip, local_port},
-                data
-              )
+                # Set socket to active mode so Connection receives messages
+                :ssl.setopts(ssl_socket, [{:active, true}])
 
-            # Transfer socket ownership to connection process
-            :ssl.controlling_process(ssl_socket, conn_pid)
+                # Notify listener about new connection
+                send(listener_pid, {:connection_accepted, conn_pid})
 
-            # Notify listener about new connection
-            send(listener_pid, {:connection_accepted, conn_pid})
+              {:error, reason} ->
+                Logger.error("[TlsListener] Failed to start connection: #{inspect(reason)}")
+                :ssl.close(ssl_socket)
+            end
 
           {:error, reason} ->
             Logger.warning("[TlsListener] SSL handshake failed: #{inspect(reason)}")
