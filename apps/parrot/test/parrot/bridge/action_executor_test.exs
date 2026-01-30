@@ -3591,4 +3591,235 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       }
     }
   end
+
+  # ===========================================================================
+  # Media Forking Operations
+  # ===========================================================================
+
+  describe "execute_fork_media/4" do
+    # Mock MediaSession that responds to fork_media calls
+    defmodule MockMediaSessionFork do
+      use GenServer
+
+      def start_link(opts \\ []) do
+        GenServer.start_link(__MODULE__, opts)
+      end
+
+      def init(opts) do
+        test_pid = Keyword.get(opts, :test_pid)
+        fork_response = Keyword.get(opts, :fork_response, {:ok, "fork-auto-123"})
+        {:ok, %{test_pid: test_pid, fork_response: fork_response}}
+      end
+
+      def handle_call({:fork_media, destination, opts}, _from, state) do
+        if state.test_pid do
+          send(state.test_pid, {:fork_media_called, destination, opts})
+        end
+
+        {:reply, state.fork_response, state}
+      end
+
+      def handle_call({:stop_fork_media, fork_id}, _from, state) do
+        if state.test_pid do
+          send(state.test_pid, {:stop_fork_media_called, fork_id})
+        end
+
+        # Return :ok for existing fork, {:error, :not_found} for non-existent
+        response =
+          if fork_id == "non-existent" do
+            {:error, :not_found}
+          else
+            :ok
+          end
+
+        {:reply, response, state}
+      end
+    end
+
+    test "returns error when call is not in answered state" do
+      call = Call.new()
+      context = %{media_pid: self(), sip_msg: build_invite_message(), uas: nil}
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_fork_media(call, context, "wss://example.com/audio", [])
+    end
+
+    test "returns error when no media_pid" do
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: nil, sip_msg: build_invite_message(), uas: nil}
+
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_fork_media(call, context, "wss://example.com/audio", [])
+    end
+
+    test "calls MediaSession.fork_media with WebSocket URL" do
+      {:ok, mock_pid} = MockMediaSessionFork.start_link(test_pid: self())
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute_fork_media(call, context, "wss://example.com/audio", [])
+
+      assert {:ok, updated_call} = result
+      assert_receive {:fork_media_called, "wss://example.com/audio", []}
+      assert updated_call.assigns[{:fork, "wss://example.com/audio"}] == "fork-auto-123"
+
+      GenServer.stop(mock_pid)
+    end
+
+    test "calls MediaSession.fork_media with IP tuple destination" do
+      {:ok, mock_pid} = MockMediaSessionFork.start_link(test_pid: self())
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      destination = {{192, 168, 1, 100}, 5004}
+      result = ActionExecutor.execute_fork_media(call, context, destination, [])
+
+      assert {:ok, updated_call} = result
+      assert_receive {:fork_media_called, {{192, 168, 1, 100}, 5004}, []}
+      assert updated_call.assigns[{:fork, destination}] == "fork-auto-123"
+
+      GenServer.stop(mock_pid)
+    end
+
+    test "passes options to MediaSession.fork_media" do
+      {:ok, mock_pid} = MockMediaSessionFork.start_link(test_pid: self())
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      opts = [direction: :rx, label: "transcription", format: :pcma]
+      result = ActionExecutor.execute_fork_media(call, context, "wss://example.com/audio", opts)
+
+      assert {:ok, _updated_call} = result
+      assert_receive {:fork_media_called, "wss://example.com/audio", ^opts}
+
+      GenServer.stop(mock_pid)
+    end
+
+    test "handles fork_media failure" do
+      {:ok, mock_pid} =
+        MockMediaSessionFork.start_link(
+          test_pid: self(),
+          fork_response: {:error, :not_active}
+        )
+
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute_fork_media(call, context, "wss://example.com/audio", [])
+
+      assert {:error, :media_session_not_active} = result
+
+      GenServer.stop(mock_pid)
+    end
+  end
+
+  describe "execute_stop_fork_media/3" do
+    test "returns error when call is not in answered state" do
+      call = Call.new()
+      context = %{media_pid: self(), sip_msg: build_invite_message(), uas: nil}
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_stop_fork_media(call, context, "fork-123")
+    end
+
+    test "returns error when no media_pid" do
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: nil, sip_msg: build_invite_message(), uas: nil}
+
+      assert {:error, :no_media_session} =
+               ActionExecutor.execute_stop_fork_media(call, context, "fork-123")
+    end
+
+    test "calls MediaSession.stop_fork_media" do
+      {:ok, mock_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionFork.start_link(test_pid: self())
+
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute_stop_fork_media(call, context, "fork-123")
+
+      assert {:ok, _updated_call} = result
+      assert_receive {:stop_fork_media_called, "fork-123"}
+
+      GenServer.stop(mock_pid)
+    end
+
+    test "handles stop_fork_media not found" do
+      {:ok, mock_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionFork.start_link(test_pid: self())
+
+      call = %{Call.new() | state: :answered}
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute_stop_fork_media(call, context, "non-existent")
+
+      assert {:error, :fork_not_found} = result
+
+      GenServer.stop(mock_pid)
+    end
+  end
+
+  describe "execute/3 with fork_media operations" do
+    test "executes fork_media operation in pipeline" do
+      {:ok, mock_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionFork.start_link(test_pid: self())
+
+      # Build a call with answer and fork_media operations
+      call =
+        %{Call.new() | state: :answered}
+        |> Call.fork_media("wss://example.com/audio", direction: :rx)
+
+      operations = Call.get_operations(call)
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute(operations, call, context)
+
+      assert {:ok, updated_call} = result
+      assert_receive {:fork_media_called, "wss://example.com/audio", [direction: :rx]}
+      assert updated_call.assigns[{:fork, "wss://example.com/audio"}] == "fork-auto-123"
+
+      GenServer.stop(mock_pid)
+    end
+
+    test "executes stop_fork_media operation in pipeline" do
+      {:ok, mock_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionFork.start_link(test_pid: self())
+
+      call =
+        %{Call.new() | state: :answered}
+        |> Call.stop_fork_media("fork-123")
+
+      operations = Call.get_operations(call)
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute(operations, call, context)
+
+      assert {:ok, _updated_call} = result
+      assert_receive {:stop_fork_media_called, "fork-123"}
+
+      GenServer.stop(mock_pid)
+    end
+
+    test "chains fork_media and stop_fork_media operations" do
+      {:ok, mock_pid} =
+        Parrot.Bridge.ActionExecutorTest.MockMediaSessionFork.start_link(test_pid: self())
+
+      call =
+        %{Call.new() | state: :answered}
+        |> Call.fork_media("wss://example.com/audio")
+        |> Call.stop_fork_media("fork-auto-123")
+
+      operations = Call.get_operations(call)
+      context = %{media_pid: mock_pid, sip_msg: build_invite_message(), uas: nil}
+
+      result = ActionExecutor.execute(operations, call, context)
+
+      assert {:ok, _updated_call} = result
+      assert_receive {:fork_media_called, "wss://example.com/audio", []}
+      assert_receive {:stop_fork_media_called, "fork-auto-123"}
+
+      GenServer.stop(mock_pid)
+    end
+  end
 end

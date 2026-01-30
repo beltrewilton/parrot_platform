@@ -60,6 +60,9 @@ defmodule Parrot.Bridge.ActionExecutor do
           | {:resume, leg_id()}
           | {:transfer, leg_id(), String.t(), keyword()}
           | {:hangup_leg, leg_id()}
+          # Media forking operations
+          | {:fork_media, String.t() | {tuple(), pos_integer()}, keyword()}
+          | {:stop_fork_media, String.t()}
 
   @type context :: %{
           required(:uas) => term(),
@@ -869,6 +872,21 @@ defmodule Parrot.Bridge.ActionExecutor do
     end
   end
 
+  # Media forking operations
+  defp execute_operation({:fork_media, destination, opts}, call, context) do
+    case execute_fork_media(call, context, destination, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
+  defp execute_operation({:stop_fork_media, fork_id}, call, context) do
+    case execute_stop_fork_media(call, context, fork_id) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
   defp execute_operation(unknown, _call, _context) do
     Logger.warning("[ActionExecutor] Unknown operation: #{inspect(unknown)}")
     {:error, {:unknown_operation, unknown}}
@@ -1378,6 +1396,122 @@ defmodule Parrot.Bridge.ActionExecutor do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # ============================================================================
+  # Media Forking Operations
+  # ============================================================================
+
+  @doc """
+  Execute the `:fork_media` operation.
+
+  Creates a media fork to stream audio to an external service via WebSocket or RTP.
+
+  1. Verify call is in `:answered` state
+  2. Verify media_pid is available
+  3. Call `MediaSession.fork_media/4` to create the fork
+
+  ## Destination Formats
+
+  - WebSocket URL: `"wss://example.com/audio"` or `"ws://example.com/audio"`
+  - RTP host:port: `"192.168.1.100:5000"`
+  - IP tuple: `{{192, 168, 1, 100}, 5004}`
+
+  ## Options
+
+  - `:direction` - Which direction to fork: `:rx` (inbound), `:tx` (outbound), or `:both` (default)
+  - `:label` - Human-readable label for this fork
+  - `:format` - Audio format: `:pcma`, `:pcmu`, `:opus`
+  - `:fork_id` - Custom fork ID (auto-generated if not provided)
+  """
+  @spec execute_fork_media(
+          Call.t(),
+          context(),
+          String.t() | {tuple(), pos_integer()},
+          keyword()
+        ) :: execute_result()
+  def execute_fork_media(%Call{state: state}, _context, _destination, _opts)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_fork_media(_call, %{media_pid: nil}, _destination, _opts) do
+    {:error, :no_media_session}
+  end
+
+  def execute_fork_media(call, %{media_pid: media_pid}, destination, opts) do
+    Logger.debug("[ActionExecutor] Executing fork_media to #{inspect(destination)}")
+
+    # Get media_session_id from the media_pid
+    # MediaSession is registered by ID, so we need to get the session ID
+    # Since we have the pid, we call fork_media directly on the pid
+    case ParrotMedia.MediaSession.fork_media(media_pid, destination, opts) do
+      {:ok, fork_id} ->
+        Logger.debug("[ActionExecutor] Fork created with ID: #{fork_id}")
+
+        # Store fork_id in assigns keyed by destination for easy lookup
+        # Use the fork_id from opts if provided, otherwise use the auto-generated one
+        fork_key = {:fork, destination}
+        updated_assigns = Map.put(call.assigns, fork_key, fork_id)
+        updated_call = %{call | assigns: updated_assigns}
+
+        {:ok, updated_call}
+
+      {:error, :not_active} ->
+        Logger.warning("[ActionExecutor] Cannot fork media - session not active")
+        {:error, :media_session_not_active}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Fork media failed: #{inspect(reason)}")
+        {:error, {:fork_media_failed, reason}}
+    end
+  end
+
+  @doc """
+  Execute the `:stop_fork_media` operation.
+
+  Removes a media fork by its ID.
+
+  1. Verify call is in `:answered` state
+  2. Verify media_pid is available
+  3. Call `MediaSession.stop_fork_media/3` to remove the fork
+  """
+  @spec execute_stop_fork_media(Call.t(), context(), String.t()) :: execute_result()
+  def execute_stop_fork_media(%Call{state: state}, _context, _fork_id)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_stop_fork_media(_call, %{media_pid: nil}, _fork_id) do
+    {:error, :no_media_session}
+  end
+
+  def execute_stop_fork_media(call, %{media_pid: media_pid}, fork_id) do
+    Logger.debug("[ActionExecutor] Executing stop_fork_media for #{fork_id}")
+
+    case ParrotMedia.MediaSession.stop_fork_media(media_pid, fork_id) do
+      :ok ->
+        Logger.debug("[ActionExecutor] Fork #{fork_id} stopped")
+
+        # Remove fork_id from assigns
+        # Find and remove any key containing this fork_id
+        updated_assigns =
+          Enum.reduce(call.assigns, call.assigns, fn
+            {{:fork, _dest}, ^fork_id}, acc -> Map.delete(acc, {:fork, fork_id})
+            _, acc -> acc
+          end)
+
+        updated_call = %{call | assigns: updated_assigns}
+        {:ok, updated_call}
+
+      {:error, :not_found} ->
+        Logger.warning("[ActionExecutor] Fork #{fork_id} not found")
+        {:error, :fork_not_found}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Stop fork failed: #{inspect(reason)}")
+        {:error, {:stop_fork_failed, reason}}
     end
   end
 end
