@@ -95,57 +95,70 @@ defmodule Parrot.Bridge.B2BUAIntegrationTest do
     Mock MediaSession for testing B2BUA without real media processing.
 
     Tracks forwarding state and simulates media operations.
+    Uses gen_statem to match the real MediaSession's wire protocol.
     """
-    use GenServer
+    @behaviour :gen_statem
 
     def start_link(opts \\ []) do
-      GenServer.start_link(__MODULE__, opts)
+      :gen_statem.start_link(__MODULE__, opts, [])
     end
 
     def get_state(pid) do
-      GenServer.call(pid, :get_state)
+      :gen_statem.call(pid, :get_state)
     end
 
     def set_forward_target(pid, target_pid) do
-      GenServer.call(pid, {:set_forward_target, target_pid})
+      :gen_statem.call(pid, {:set_forward_target, target_pid})
     end
 
     def pause_forward(pid) do
-      GenServer.call(pid, :pause_forward)
+      :gen_statem.call(pid, :pause_forward)
     end
 
     def resume_forward(pid) do
-      GenServer.call(pid, :resume_forward)
+      :gen_statem.call(pid, :resume_forward)
     end
+
+    # gen_statem callbacks
+
+    @impl true
+    def callback_mode, do: :state_functions
 
     @impl true
     def init(opts) do
-      {:ok,
-       %{
-         id: Keyword.get(opts, :id, generate_id()),
-         forward_target: nil,
-         forwarding: false
-       }}
+      data = %{
+        id: Keyword.get(opts, :id, generate_id()),
+        forward_target: nil,
+        forwarding: false,
+        rtp_forward_config: nil,
+        rtp_forward_paused: false
+      }
+      {:ok, :idle, data}
     end
 
-    @impl true
-    def handle_call(:get_state, _from, state) do
-      {:reply, state, state}
+    # State function for :idle state (handles all calls in any state)
+    def idle({:call, from}, :get_state, data) do
+      {:keep_state_and_data, [{:reply, from, data}]}
     end
 
-    @impl true
-    def handle_call({:set_forward_target, target_pid}, _from, state) do
-      {:reply, :ok, %{state | forward_target: target_pid, forwarding: true}}
+    def idle({:call, from}, {:set_forward_target, target_pid}, data) do
+      {:keep_state, %{data | forward_target: target_pid, forwarding: true}, [{:reply, from, :ok}]}
     end
 
-    @impl true
-    def handle_call(:pause_forward, _from, state) do
-      {:reply, :ok, %{state | forwarding: false}}
+    def idle({:call, from}, {:set_rtp_forward, nil}, data) do
+      {:keep_state, %{data | rtp_forward_config: nil, rtp_forward_paused: false}, [{:reply, from, :ok}]}
     end
 
-    @impl true
-    def handle_call(:resume_forward, _from, state) do
-      {:reply, :ok, %{state | forwarding: true}}
+    def idle({:call, from}, {:set_rtp_forward, config}, data) do
+      {:keep_state, %{data | rtp_forward_config: config, rtp_forward_paused: false}, [{:reply, from, :ok}]}
+    end
+
+    def idle({:call, from}, :pause_forward, data) do
+      {:keep_state, %{data | forwarding: false, rtp_forward_paused: true}, [{:reply, from, :ok}]}
+    end
+
+    def idle({:call, from}, :resume_forward, data) do
+      {:keep_state, %{data | forwarding: true, rtp_forward_paused: false}, [{:reply, from, :ok}]}
     end
 
     defp generate_id do

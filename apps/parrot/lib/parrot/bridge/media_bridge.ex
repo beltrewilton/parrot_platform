@@ -156,10 +156,10 @@ defmodule Parrot.Bridge.MediaBridge do
   """
   @spec bridge(t()) :: {:ok, t()} | {:error, atom()}
   def bridge(%__MODULE__{state: :idle} = bridge) do
-    # TODO: When T08 (MediaSession.set_rtp_forward) is implemented,
-    # set up bidirectional forwarding here:
-    #   ParrotMedia.MediaSession.set_rtp_forward(bridge.leg_a_media, bridge.leg_b_media)
-    #   ParrotMedia.MediaSession.set_rtp_forward(bridge.leg_b_media, bridge.leg_a_media)
+    # Set up bidirectional RTP forwarding between the two legs
+    # Only configure forwarding if both PIDs are valid
+    setup_rtp_forwarding(bridge.leg_a_media, bridge.leg_b_media)
+    setup_rtp_forwarding(bridge.leg_b_media, bridge.leg_a_media)
 
     Logger.debug("[MediaBridge] Bridge activated between legs")
     {:ok, %{bridge | state: :bridged}}
@@ -210,8 +210,8 @@ defmodule Parrot.Bridge.MediaBridge do
   def hold(%__MODULE__{} = bridge, leg) when leg in [:leg_a, :leg_b, :both] do
     new_state = compute_hold_state(bridge.state, leg)
 
-    # TODO: When T08 is implemented, pause forwarding:
-    #   pause_forward_for_leg(bridge, leg)
+    # Pause forwarding for the appropriate leg(s)
+    pause_forward_for_leg(bridge, leg)
 
     Logger.debug("[MediaBridge] Hold #{leg}: #{bridge.state} -> #{new_state}")
     {:ok, %{bridge | state: new_state}}
@@ -257,8 +257,8 @@ defmodule Parrot.Bridge.MediaBridge do
   def resume(%__MODULE__{} = bridge, leg) when leg in [:leg_a, :leg_b, :both] do
     new_state = compute_resume_state(bridge.state, leg)
 
-    # TODO: When T08 is implemented, resume forwarding:
-    #   resume_forward_for_leg(bridge, leg)
+    # Resume forwarding for the appropriate leg(s)
+    resume_forward_for_leg(bridge, leg)
 
     Logger.debug("[MediaBridge] Resume #{leg}: #{bridge.state} -> #{new_state}")
     {:ok, %{bridge | state: new_state}}
@@ -288,12 +288,12 @@ defmodule Parrot.Bridge.MediaBridge do
   """
   @spec destroy(t()) :: :ok
   def destroy(%__MODULE__{} = bridge) do
-    # TODO: When T08 is implemented, stop forwarding:
-    #   ParrotMedia.MediaSession.stop_forward(bridge.leg_a_media)
-    #   ParrotMedia.MediaSession.stop_forward(bridge.leg_b_media)
+    # Clear forwarding configuration on both legs
+    # Only attempt if the processes are valid PIDs and still alive
+    clear_rtp_forwarding(bridge.leg_a_media)
+    clear_rtp_forwarding(bridge.leg_b_media)
 
     Logger.debug("[MediaBridge] Bridge destroyed")
-    _ = bridge
     :ok
   end
 
@@ -341,6 +341,54 @@ defmodule Parrot.Bridge.MediaBridge do
   # ===========================================================================
   # Private Helpers
   # ===========================================================================
+
+  # Set up RTP forwarding from source to target (handles nil PIDs)
+  defp setup_rtp_forwarding(nil, _target), do: :ok
+  defp setup_rtp_forwarding(_source, nil), do: :ok
+  defp setup_rtp_forwarding(source, target) when is_pid(source) and is_pid(target) do
+    config = %{target_pid: target, direction: :both}
+    ParrotMedia.MediaSession.set_rtp_forward(source, config)
+  end
+
+  # Clear RTP forwarding configuration (handles nil PIDs and dead processes)
+  defp clear_rtp_forwarding(nil), do: :ok
+  defp clear_rtp_forwarding(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      ParrotMedia.MediaSession.set_rtp_forward(pid, nil)
+    end
+  end
+
+  # Safely call a MediaSession function, handling nil PIDs gracefully
+  defp safe_media_call(nil, _fun), do: :ok
+  defp safe_media_call(pid, fun) when is_pid(pid) and is_function(fun, 1), do: fun.(pid)
+
+  # Pause forwarding for the specified leg(s)
+  defp pause_forward_for_leg(bridge, :leg_a) do
+    safe_media_call(bridge.leg_a_media, &ParrotMedia.MediaSession.pause_forward/1)
+  end
+
+  defp pause_forward_for_leg(bridge, :leg_b) do
+    safe_media_call(bridge.leg_b_media, &ParrotMedia.MediaSession.pause_forward/1)
+  end
+
+  defp pause_forward_for_leg(bridge, :both) do
+    safe_media_call(bridge.leg_a_media, &ParrotMedia.MediaSession.pause_forward/1)
+    safe_media_call(bridge.leg_b_media, &ParrotMedia.MediaSession.pause_forward/1)
+  end
+
+  # Resume forwarding for the specified leg(s)
+  defp resume_forward_for_leg(bridge, :leg_a) do
+    safe_media_call(bridge.leg_a_media, &ParrotMedia.MediaSession.resume_forward/1)
+  end
+
+  defp resume_forward_for_leg(bridge, :leg_b) do
+    safe_media_call(bridge.leg_b_media, &ParrotMedia.MediaSession.resume_forward/1)
+  end
+
+  defp resume_forward_for_leg(bridge, :both) do
+    safe_media_call(bridge.leg_a_media, &ParrotMedia.MediaSession.resume_forward/1)
+    safe_media_call(bridge.leg_b_media, &ParrotMedia.MediaSession.resume_forward/1)
+  end
 
   # Compute the new state after a hold operation
   @spec compute_hold_state(state(), leg()) :: state()

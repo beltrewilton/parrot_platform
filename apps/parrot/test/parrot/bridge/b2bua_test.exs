@@ -84,21 +84,46 @@ defmodule Parrot.Bridge.B2BUATest do
   defmodule MockMediaSession do
     @moduledoc """
     Minimal mock MediaSession for testing B2BUA without real media.
+    Uses gen_statem to match the real MediaSession's wire protocol.
     """
-    use GenServer
+    @behaviour :gen_statem
 
     def start_link(opts \\ []) do
-      GenServer.start_link(__MODULE__, opts)
+      :gen_statem.start_link(__MODULE__, opts, [])
     end
+
+    @impl true
+    def callback_mode, do: :state_functions
 
     @impl true
     def init(opts) do
-      {:ok, %{id: Keyword.get(opts, :id, "mock-media")}}
+      data = %{
+        id: Keyword.get(opts, :id, "mock-media"),
+        rtp_forward_config: nil,
+        rtp_forward_paused: false
+      }
+      {:ok, :idle, data}
     end
 
-    @impl true
-    def handle_call(:get_state, _from, state) do
-      {:reply, state, state}
+    def idle({:call, from}, :get_state, data) do
+      {:keep_state_and_data, [{:reply, from, data}]}
+    end
+
+    def idle({:call, from}, {:set_rtp_forward, config}, data) do
+      new_data = if config == nil do
+        %{data | rtp_forward_config: nil, rtp_forward_paused: false}
+      else
+        %{data | rtp_forward_config: config, rtp_forward_paused: false}
+      end
+      {:keep_state, new_data, [{:reply, from, :ok}]}
+    end
+
+    def idle({:call, from}, :pause_forward, data) do
+      {:keep_state, %{data | rtp_forward_paused: true}, [{:reply, from, :ok}]}
+    end
+
+    def idle({:call, from}, :resume_forward, data) do
+      {:keep_state, %{data | rtp_forward_paused: false}, [{:reply, from, :ok}]}
     end
   end
 
