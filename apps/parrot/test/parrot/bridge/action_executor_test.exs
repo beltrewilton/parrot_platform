@@ -4462,7 +4462,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       # Verify B2BUA has the new leg
       {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
-      assert leg.destination == "sip:agent@pbx.local"
+      assert leg.remote_uri == "sip:agent@pbx.local"
     end
 
     test "stores bridge leg ID in call assigns", %{call: call, context: context} do
@@ -4480,7 +4480,7 @@ defmodule Parrot.Bridge.ActionExecutorTest do
 
       # Verify the leg was created with custom ID
       {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :custom_leg)
-      assert leg.destination == "sip:agent@pbx.local"
+      assert leg.remote_uri == "sip:agent@pbx.local"
     end
 
     test "passes timeout option to B2BUA.originate", %{call: call, context: context, b2bua_pid: b2bua_pid} do

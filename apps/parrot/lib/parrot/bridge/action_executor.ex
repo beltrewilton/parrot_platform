@@ -963,6 +963,13 @@ defmodule Parrot.Bridge.ActionExecutor do
   end
 
   # B2BUA operations
+  defp execute_operation({:bridge, destination, opts}, call, context) do
+    case execute_bridge(call, context, destination, opts) do
+      {:ok, updated_call} -> {:ok, updated_call, :continue}
+      error -> error
+    end
+  end
+
   defp execute_operation({:originate, destination, opts}, call, context) do
     case execute_originate(call, context, destination, opts) do
       {:ok, updated_call} -> {:ok, updated_call, :continue}
@@ -1339,6 +1346,69 @@ defmodule Parrot.Bridge.ActionExecutor do
   # ============================================================================
   # B2BUA Operations
   # ============================================================================
+
+  @doc """
+  Execute the `:bridge` operation.
+
+  Creates a B2BUA session and originates to the destination.
+  When the B-leg answers, it auto-connects to the A-leg.
+
+  ## Options
+
+  - `:as` - Custom leg ID (default: :b_leg)
+  - `:timeout` - Ring timeout in milliseconds (default: 30_000)
+  - `:headers` - Custom headers for B-leg INVITE
+  - `:media` - Media mode: `:proxy` (default) or `:direct`
+
+  ## Flow
+
+  1. Verify call is in :answered state
+  2. Get B2BUA session from context
+  3. Call B2BUA.originate(b2bua_pid, destination, opts)
+  4. Store bridge leg ID in call assigns
+  """
+  @spec execute_bridge(Call.t(), context(), String.t(), keyword()) :: execute_result()
+  def execute_bridge(%Call{state: state}, _context, _destination, _opts)
+      when state != :answered do
+    {:error, :invalid_state}
+  end
+
+  def execute_bridge(_call, %{b2bua_pid: nil}, _destination, _opts) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_bridge(_call, context, _destination, _opts) when not is_map_key(context, :b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_bridge(_call, %{b2bua_pid: b2bua_pid}, _destination, _opts)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_bridge(_call, _context, "", _opts) do
+    {:error, :invalid_destination}
+  end
+
+  def execute_bridge(call, %{b2bua_pid: b2bua_pid}, destination, opts) do
+    Logger.debug("[ActionExecutor] Executing bridge to #{destination}")
+
+    # Generate B-leg ID
+    leg_id = Keyword.get(opts, :as, :b_leg)
+    timeout = Keyword.get(opts, :timeout, 30_000)
+
+    # Originate B-leg
+    case B2BUA.originate(b2bua_pid, destination, as: leg_id, timeout: timeout) do
+      {:ok, ^leg_id} ->
+        # Store bridge state in call assigns for handler reference
+        updated_call = Call.assign(call, :__bridge_leg__, leg_id)
+        {:ok, updated_call}
+
+      {:error, reason} ->
+        Logger.error("[ActionExecutor] Bridge originate failed: #{inspect(reason)}")
+        {:error, {:bridge_failed, reason}}
+    end
+  end
 
   @doc """
   Execute the `:originate` operation.
