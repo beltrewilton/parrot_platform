@@ -1961,4 +1961,147 @@ defmodule ParrotSip.DialogStatemTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
     end
   end
+
+  describe "UPDATE request handling (RFC 3311)" do
+    test "processes UPDATE in confirmed state" do
+      # Create a confirmed dialog (UAS perspective)
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      # Transition to confirmed
+      :gen_statem.cast(pid, {:uas_response, response, invite})
+      Process.sleep(10)
+
+      assert :gen_statem.call(pid, :get_state) == :confirmed
+
+      # Build UPDATE request with new SDP
+      update_req = %Message{
+        type: :request,
+        method: :update,
+        request_uri: "sip:target@example.com",
+        via: invite.via,
+        from: invite.from,
+        to: response.to,
+        call_id: invite.call_id,
+        cseq: %CSeq{number: invite.cseq.number + 1, method: :update},
+        max_forwards: 70,
+        contact: %Contact{
+          display_name: nil,
+          uri: "sip:alice@192.168.1.50:5060",
+          parameters: %{}
+        },
+        body: "v=0\r\no=- 123 456 IN IP4 192.168.1.50\r\n",
+        other_headers: %{"content-type" => "application/sdp"}
+      }
+
+      # Process UPDATE - should succeed and remain in confirmed state
+      result = :gen_statem.call(pid, {:uas_request, update_req})
+      assert result == :process
+
+      assert :gen_statem.call(pid, :get_state) == :confirmed
+    end
+
+    test "processes UPDATE with target refresh - updates remote target" do
+      # Create a confirmed dialog
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      :gen_statem.cast(pid, {:uas_response, response, invite})
+      Process.sleep(10)
+
+      # Build UPDATE with new Contact URI (target refresh)
+      new_contact_uri = "sip:alice@10.0.0.100:5080"
+
+      update_req = %Message{
+        type: :request,
+        method: :update,
+        request_uri: "sip:target@example.com",
+        via: invite.via,
+        from: invite.from,
+        to: response.to,
+        call_id: invite.call_id,
+        cseq: %CSeq{number: invite.cseq.number + 1, method: :update},
+        max_forwards: 70,
+        contact: %Contact{
+          display_name: nil,
+          uri: new_contact_uri,
+          parameters: %{}
+        },
+        body: "",
+        other_headers: %{}
+      }
+
+      # Process UPDATE
+      result = :gen_statem.call(pid, {:uas_request, update_req})
+      assert result == :process
+
+      # Verify dialog data was updated (via introspection)
+      {:ok, dialog_data} = :gen_statem.call(pid, :get_dialog_data)
+      # Remote target should be updated to new Contact URI
+      assert dialog_data.remote_target == new_contact_uri
+    end
+
+    test "can generate UPDATE request from UAC" do
+      # Create dialog from UAC perspective
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      outbound_req = build_outbound_request(invite)
+      {:ok, pid} = DialogStatem.start_link({:uac, outbound_req, response})
+
+      Process.sleep(10)
+
+      # Request UPDATE from UAC
+      update_template = %Message{
+        method: :update,
+        body: "v=0\r\no=- 789 012 IN IP4 192.168.1.200\r\n",
+        other_headers: %{"content-type" => "application/sdp"}
+      }
+
+      {:ok, update_msg} = :gen_statem.call(pid, {:uac_request, update_template})
+
+      assert update_msg.method == :update
+      assert update_msg.cseq.method == :update
+      # CSeq should be incremented
+      assert update_msg.cseq.number > invite.cseq.number
+      assert update_msg.body == "v=0\r\no=- 789 012 IN IP4 192.168.1.200\r\n"
+    end
+
+    test "rejects UPDATE with out-of-order CSeq" do
+      # Create a confirmed dialog
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      :gen_statem.cast(pid, {:uas_response, response, invite})
+      Process.sleep(10)
+
+      # Build UPDATE with CSeq lower than the dialog's remote_seq
+      update_req = %Message{
+        type: :request,
+        method: :update,
+        request_uri: "sip:target@example.com",
+        via: invite.via,
+        from: invite.from,
+        to: response.to,
+        call_id: invite.call_id,
+        # Use same CSeq as INVITE (not incremented)
+        cseq: %CSeq{number: invite.cseq.number, method: :update},
+        max_forwards: 70,
+        contact: %Contact{
+          display_name: nil,
+          uri: "sip:alice@192.168.1.50:5060",
+          parameters: %{}
+        },
+        body: "",
+        other_headers: %{}
+      }
+
+      # Should return error response for out-of-order CSeq
+      result = :gen_statem.call(pid, {:uas_request, update_req})
+      assert {:reply, error_response} = result
+      assert error_response.status_code == 500
+    end
+  end
 end
