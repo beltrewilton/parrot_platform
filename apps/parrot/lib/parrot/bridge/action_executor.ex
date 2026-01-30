@@ -1435,6 +1435,29 @@ defmodule Parrot.Bridge.ActionExecutor do
     {:error, :no_b2bua}
   end
 
+  def execute_hold(_call, %{b2bua_pid: b2bua_pid}, _leg_id)
+      when not is_pid(b2bua_pid) do
+    {:error, :no_b2bua}
+  end
+
+  def execute_hold(call, %{b2bua_pid: b2bua_pid}, leg_id) do
+    Logger.debug("[ActionExecutor] Executing hold on leg #{inspect(leg_id)}")
+
+    case B2BUA.hold(b2bua_pid, leg_id) do
+      :ok ->
+        {:ok, call}
+
+      {:error, :unknown_leg} ->
+        {:error, :unknown_leg}
+
+      {:error, :leg_not_connected} ->
+        {:error, :leg_not_connected}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # ===========================================================================
   # Call-level Mid-Session Modification (RFC 3311 UPDATE)
   # ===========================================================================
@@ -1535,29 +1558,6 @@ defmodule Parrot.Bridge.ActionExecutor do
       invalid_direction ->
         Logger.warning("[ActionExecutor] Invalid direction: #{inspect(invalid_direction)}")
         {:error, {:invalid_direction, invalid_direction}}
-    end
-  end
-
-  def execute_hold(_call, %{b2bua_pid: b2bua_pid}, _leg_id)
-      when not is_pid(b2bua_pid) do
-    {:error, :no_b2bua}
-  end
-
-  def execute_hold(call, %{b2bua_pid: b2bua_pid}, leg_id) do
-    Logger.debug("[ActionExecutor] Executing hold on leg #{inspect(leg_id)}")
-
-    case B2BUA.hold(b2bua_pid, leg_id) do
-      :ok ->
-        {:ok, call}
-
-      {:error, :unknown_leg} ->
-        {:error, :unknown_leg}
-
-      {:error, :leg_not_connected} ->
-        {:error, :leg_not_connected}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

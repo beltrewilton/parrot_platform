@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  UAC UPDATE Hold/Resume Scenario (RFC 3311)
+
+  Flow:
+  1. Send INVITE with sendrecv audio
+  2. Receive 200 OK
+  3. Send ACK
+  4. Wait briefly (call established)
+  5. Send UPDATE with sendonly (putting remote on hold)
+  6. Receive 200 OK for UPDATE
+  7. Wait briefly (call on hold)
+  8. Send UPDATE with sendrecv (resuming call)
+  9. Receive 200 OK for UPDATE
+  10. Wait briefly (call resumed)
+  11. Send BYE
+  12. Receive 200 OK for BYE
+-->
+<scenario name="UAC UPDATE Hold Resume">
+  <!-- Initial INVITE with sendrecv -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Subject: Test Call - UPDATE Hold/Resume
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123456 IN IP4 [local_ip]
+      s=SIPp UPDATE Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 100 Trying (optional) -->
+  <recv response="100" optional="true">
+  </recv>
+
+  <!-- Expect 180 Ringing (optional) -->
+  <recv response="180" optional="true">
+  </recv>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Call established, wait 500ms before holding -->
+  <pause milliseconds="500"/>
+
+  <!-- Send UPDATE with sendonly (hold) -->
+  <send retrans="500">
+    <![CDATA[
+
+      UPDATE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 UPDATE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123457 IN IP4 [local_ip]
+      s=SIPp UPDATE Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendonly
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for UPDATE (hold) -->
+  <recv response="200">
+  </recv>
+
+  <!-- Call on hold, wait 500ms before resuming -->
+  <pause milliseconds="500"/>
+
+  <!-- Send UPDATE with sendrecv (resume) -->
+  <send retrans="500">
+    <![CDATA[
+
+      UPDATE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 UPDATE
+      Contact: <sip:alice@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 123456 123458 IN IP4 [local_ip]
+      s=SIPp UPDATE Test
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for UPDATE (resume) -->
+  <recv response="200">
+  </recv>
+
+  <!-- Call resumed, wait 500ms before ending -->
+  <pause milliseconds="500"/>
+
+  <!-- Send BYE -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 4 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for BYE -->
+  <recv response="200">
+  </recv>
+
+</scenario>

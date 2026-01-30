@@ -238,6 +238,41 @@ defmodule SippTest.TestHandler do
     :ok
   end
 
+  @impl true
+  def handle_update(uas, sip_msg, args) do
+    Logger.debug("[TestHandler] handle_update called")
+    update_stats(args, :updates)
+
+    config = get_config(args)
+    {status, reason} = config[:update_response] || {200, "OK"}
+
+    # Build SDP for 200 OK response with recvonly (peer's perspective of our hold)
+    body =
+      if status == 200 do
+        config[:update_sdp_body] ||
+          """
+          v=0
+          o=- 123456 123456 IN IP4 127.0.0.1
+          s=Parrot SIP Test
+          c=IN IP4 127.0.0.1
+          t=0 0
+          m=audio 10000 RTP/AVP 0 8 101
+          a=rtpmap:0 PCMU/8000
+          a=rtpmap:8 PCMA/8000
+          a=rtpmap:101 telephone-event/8000
+          a=fmtp:101 0-16
+          a=recvonly
+          """
+      else
+        ""
+      end
+
+    response = Message.reply(sip_msg, status, reason)
+    response = %{response | body: body}
+    Server.response(response, uas)
+    :ok
+  end
+
   # ============================================================================
   # Public API
   # ============================================================================
@@ -256,7 +291,9 @@ defmodule SippTest.TestHandler do
     * `:notify_response` - Response for NOTIFY: {code, reason} (default: {200, "OK"})
     * `:message_response` - Response for MESSAGE: {code, reason} (default: {200, "OK"})
     * `:info_response` - Response for INFO: {code, reason} (default: {200, "OK"})
+    * `:update_response` - Response for UPDATE: {code, reason} (default: {200, "OK"})
     * `:sdp_body` - SDP body to include in 200 OK for INVITE (default: generated)
+    * `:update_sdp_body` - SDP body to include in 200 OK for UPDATE (default: generated)
     * `:contact_uri` - Contact URI to include in responses (default: nil)
 
   ## Returns
@@ -283,6 +320,7 @@ defmodule SippTest.TestHandler do
           notifies: 0,
           messages: 0,
           infos: 0,
+          updates: 0,
           other: 0
         })
       end)
@@ -355,6 +393,7 @@ defmodule SippTest.TestHandler do
           notifies: 0,
           messages: 0,
           infos: 0,
+          updates: 0,
           other: 0
         })
 
