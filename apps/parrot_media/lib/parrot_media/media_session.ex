@@ -123,7 +123,9 @@ defmodule ParrotMedia.MediaSession do
       # %{target_pid: pid(), direction: :both | :send_only | :recv_only} | nil
       rtp_forward_config: nil,
       # Whether RTP forwarding is paused
-      rtp_forward_paused: false
+      rtp_forward_paused: false,
+      # Fork.Manager PID for media forking
+      fork_manager_pid: nil
     ]
 
     @type t :: %__MODULE__{
@@ -420,6 +422,81 @@ defmodule ParrotMedia.MediaSession do
     :gen_statem.call(get_pid(session), :resume_forward, timeout)
   end
 
+  @doc """
+  Forks media to an external destination.
+
+  Creates a media fork that copies audio to a WebSocket or RTP endpoint.
+  This is useful for real-time transcription, AI analysis, or recording.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `destination` - URL or address tuple:
+      - `"ws://..." or "wss://..."` - WebSocket destination
+      - `{ip_tuple, port}` - RTP destination
+    * `opts` - Fork options:
+      - `:direction` - `:rx`, `:tx`, or `:both` (default: `:both`)
+      - `:format` - `:pcmu`, `:pcma`, `:opus`, or `:raw` (default: source format)
+      - `:label` - Human-readable label for this fork
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Examples
+
+      # Fork to WebSocket for transcription
+      {:ok, fork_id} = MediaSession.fork_media(session_id, "wss://ai-service.com/audio")
+
+      # Fork RX only to RTP endpoint
+      {:ok, fork_id} = MediaSession.fork_media(session_id, {{192,168,1,100}, 5004}, direction: :rx)
+
+  ## Returns
+
+    * `{:ok, fork_id}` on success
+    * `{:error, reason}` on failure
+  """
+  @spec fork_media(String.t() | pid(), String.t() | {tuple(), pos_integer()}, keyword(), timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def fork_media(session, destination, opts \\ [], timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:fork_media, destination, opts}, timeout)
+  end
+
+  @doc """
+  Stops a media fork.
+
+  Removes an active media fork by its ID.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `fork_id` - The fork identifier returned from `fork_media/4`
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * `:ok` on success
+    * `{:error, :not_found}` if fork doesn't exist
+  """
+  @spec stop_fork_media(String.t() | pid(), String.t(), timeout()) :: :ok | {:error, term()}
+  def stop_fork_media(session, fork_id, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), {:stop_fork_media, fork_id}, timeout)
+  end
+
+  @doc """
+  Lists all active media forks.
+
+  ## Parameters
+
+    * `session` - Session ID or PID
+    * `timeout` - Optional timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    * List of ForkState structs for all active forks
+  """
+  @spec list_forks(String.t() | pid(), timeout()) :: [ParrotMedia.Fork.Types.ForkState.t()]
+  def list_forks(session, timeout \\ 5000) do
+    :gen_statem.call(get_pid(session), :list_forks, timeout)
+  end
+
   # Callbacks
 
   @impl true
@@ -578,6 +655,19 @@ defmodule ParrotMedia.MediaSession do
 
   def idle({:call, from}, :resume_forward, data) do
     handle_resume_forward(from, data)
+  end
+
+  # Fork operations require active state
+  def idle({:call, from}, {:fork_media, _destination, _opts}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_active}}]}
+  end
+
+  def idle({:call, from}, {:stop_fork_media, _fork_id}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_active}}]}
+  end
+
+  def idle({:call, from}, :list_forks, _data) do
+    {:keep_state_and_data, [{:reply, from, []}]}
   end
 
   # No catch-all for :call, :cast, or other event types - let them crash
@@ -819,6 +909,21 @@ defmodule ParrotMedia.MediaSession do
 
   def active({:call, from}, :resume_forward, data) do
     handle_resume_forward(from, data)
+  end
+
+  # Fork media to external destination
+  def active({:call, from}, {:fork_media, destination, opts}, data) do
+    handle_fork_media(from, destination, opts, data)
+  end
+
+  # Stop a media fork
+  def active({:call, from}, {:stop_fork_media, fork_id}, data) do
+    handle_stop_fork_media(from, fork_id, data)
+  end
+
+  # List active forks
+  def active({:call, from}, :list_forks, data) do
+    handle_list_forks(from, data)
   end
 
   #################
@@ -1190,6 +1295,185 @@ defmodule ParrotMedia.MediaSession do
     # TODO: In future, notify the pipeline to resume RTP forwarding
 
     {:keep_state, updated_data, [{:reply, from, :ok}]}
+  end
+
+  # Fork media to external destination (WebSocket or RTP)
+  defp handle_fork_media(from, destination, opts, data) do
+    alias ParrotMedia.Fork.{Manager, Types.ForkConfig}
+
+    # Ensure Fork.Manager is started - updates data with fork_manager_pid
+    updated_data = ensure_fork_manager(data)
+
+    case updated_data.fork_manager_pid do
+      nil ->
+        {:keep_state, updated_data, [{:reply, from, {:error, :fork_manager_not_available}}]}
+
+      manager_pid ->
+        # Parse destination to determine fork type
+        fork_destination = parse_fork_destination(destination)
+
+        case fork_destination do
+          {:error, reason} ->
+            {:keep_state, updated_data, [{:reply, from, {:error, reason}}]}
+
+          valid_destination ->
+            # Build fork config
+            direction = Keyword.get(opts, :direction, :both)
+            format = Keyword.get(opts, :format)
+            label = Keyword.get(opts, :label)
+
+            config = %ForkConfig{
+              id: generate_fork_id(),
+              destination: valid_destination,
+              direction: direction,
+              format: format,
+              label: label
+            }
+
+            # Add fork to manager
+            case Manager.add_fork(manager_pid, config) do
+              {:ok, fork_id} ->
+                # Send fork request to pipeline
+                if updated_data.pipeline_pid do
+                  send(updated_data.pipeline_pid, {:add_fork, build_pipeline_fork_config(config)})
+                end
+
+                Logger.info("MediaSession #{updated_data.id}: Added fork #{fork_id} to #{inspect(destination)}")
+                {:keep_state, updated_data, [{:reply, from, {:ok, fork_id}}]}
+
+              {:error, reason} ->
+                {:keep_state, updated_data, [{:reply, from, {:error, reason}}]}
+            end
+        end
+    end
+  end
+
+  defp handle_stop_fork_media(from, fork_id, data) do
+    alias ParrotMedia.Fork.Manager
+
+    case data.fork_manager_pid do
+      nil ->
+        {:keep_state_and_data, [{:reply, from, {:error, :fork_manager_not_available}}]}
+
+      manager_pid ->
+        case Manager.remove_fork(manager_pid, fork_id) do
+          :ok ->
+            # Send remove request to pipeline
+            if data.pipeline_pid do
+              send(data.pipeline_pid, {:remove_fork, fork_id})
+            end
+
+            Logger.info("MediaSession #{data.id}: Removed fork #{fork_id}")
+            {:keep_state_and_data, [{:reply, from, :ok}]}
+
+          {:error, reason} ->
+            {:keep_state_and_data, [{:reply, from, {:error, reason}}]}
+        end
+    end
+  end
+
+  defp handle_list_forks(from, data) do
+    alias ParrotMedia.Fork.Manager
+
+    forks =
+      case data.fork_manager_pid do
+        nil -> []
+        manager_pid -> Manager.list_forks(manager_pid)
+      end
+
+    {:keep_state_and_data, [{:reply, from, forks}]}
+  end
+
+  defp ensure_fork_manager(%{fork_manager_pid: pid} = data) when is_pid(pid) do
+    if Process.alive?(pid) do
+      data
+    else
+      start_fork_manager(data)
+    end
+  end
+
+  defp ensure_fork_manager(data) do
+    start_fork_manager(data)
+  end
+
+  defp start_fork_manager(data) do
+    alias ParrotMedia.Fork.Manager
+
+    case Manager.start_link(
+           session_id: data.id,
+           parent_pid: data.notify_pid || data.owner_pid,
+           pipeline_pid: data.pipeline_pid
+         ) do
+      {:ok, pid} ->
+        Logger.debug("MediaSession #{data.id}: Started Fork.Manager #{inspect(pid)}")
+        %{data | fork_manager_pid: pid}
+
+      {:error, reason} ->
+        Logger.error("MediaSession #{data.id}: Failed to start Fork.Manager: #{inspect(reason)}")
+        data
+    end
+  end
+
+  defp parse_fork_destination(destination) when is_binary(destination) do
+    cond do
+      String.starts_with?(destination, "ws://") or String.starts_with?(destination, "wss://") ->
+        {:websocket, destination}
+
+      String.starts_with?(destination, "rtp://") ->
+        # Parse rtp://host:port format
+        case parse_rtp_url(destination) do
+          {:ok, ip, port} -> {:rtp, {ip, port}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:error, :invalid_destination_format}
+    end
+  end
+
+  defp parse_fork_destination({ip, port}) when is_tuple(ip) and is_integer(port) do
+    {:rtp, {ip, port}}
+  end
+
+  defp parse_fork_destination(_), do: {:error, :invalid_destination}
+
+  defp parse_rtp_url(url) do
+    uri = URI.parse(url)
+
+    case uri do
+      %URI{host: host, port: port} when is_binary(host) and is_integer(port) ->
+        case :inet.parse_address(String.to_charlist(host)) do
+          {:ok, ip} -> {:ok, ip, port}
+          {:error, _} -> {:error, :invalid_host}
+        end
+
+      _ ->
+        {:error, :invalid_rtp_url}
+    end
+  end
+
+  defp generate_fork_id do
+    "fork-" <> (:crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower))
+  end
+
+  defp build_pipeline_fork_config(%ParrotMedia.Fork.Types.ForkConfig{} = config) do
+    case config.destination do
+      {:rtp, {ip, port}} ->
+        %ParrotMedia.ForkConfig{
+          id: config.id,
+          destination_address: ip,
+          destination_port: port
+        }
+
+      {:websocket, url} ->
+        # For WebSocket forks, use WsForkSink via the new fork system
+        # The pipeline already handles this with the ws_fork_sink pattern
+        %{
+          id: config.id,
+          destination: {:websocket, url},
+          direction: config.direction
+        }
+    end
   end
 
   # Private helpers

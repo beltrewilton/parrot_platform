@@ -225,6 +225,8 @@ defmodule ParrotMedia.Fork.WebSocketSinkTest do
 
   describe "WebSocketSink struct" do
     test "has required options" do
+      # Ensure module is loaded before checking exports
+      Code.ensure_loaded!(WebSocketSink)
       # Verify the module exports the expected option definitions
       assert function_exported?(WebSocketSink, :handle_init, 2)
     end
