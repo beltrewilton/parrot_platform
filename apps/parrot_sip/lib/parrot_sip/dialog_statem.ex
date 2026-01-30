@@ -118,8 +118,13 @@ defmodule ParrotSip.DialogStatem do
       # Timestamp when INVITE was received (dialog creation)
       invite_received_at: nil,
       # Timestamp when call was answered (:early -> :confirmed transition)
-      answered_at: nil
+      answered_at: nil,
+      # MOS fetcher function for CDR integration
+      # Takes session_id and returns MOS summary map or nil
+      mos_fetcher: nil
     ]
+
+    @type mos_fetcher :: (String.t() -> map() | nil) | nil
 
     @type t :: %__MODULE__{
             id: String.t() | nil,
@@ -132,7 +137,8 @@ defmodule ParrotSip.DialogStatem do
             owner_mon: reference() | nil,
             recovered: boolean(),
             invite_received_at: DateTime.t() | nil,
-            answered_at: DateTime.t() | nil
+            answered_at: DateTime.t() | nil,
+            mos_fetcher: mos_fetcher()
           }
   end
 
@@ -190,11 +196,70 @@ defmodule ParrotSip.DialogStatem do
     :gen_statem.start_link(__MODULE__, {:recover, stored_state}, [])
   end
 
+  @doc """
+  Start a DialogStatem from recovered state with options.
+
+  ## Parameters
+    - `stored_state` - Map containing dialog state fields from DialogBroadcast
+    - `opts` - Keyword list with options:
+      - `:mos_fetcher` - Function `(session_id) -> mos_summary_map | nil`
+
+  ## Returns
+    - `{:ok, pid}` on success
+    - `{:error, reason}` on failure
+  """
+  @spec start_recovered(map(), keyword()) :: :gen_statem.start_ret()
+  def start_recovered(stored_state, opts) when is_list(opts) do
+    :gen_statem.start_link(__MODULE__, {:recover, stored_state, opts}, [])
+  end
+
   @impl :gen_statem
   def callback_mode, do: :state_functions
 
+  # All init/1 clauses grouped together to avoid warnings
   @impl :gen_statem
+  # UAS: 4-element tuple with opts (mos_fetcher support)
+  def init({:uas, resp_sip_msg, req_sip_msg, opts}) when is_list(opts) do
+    do_init_uas(resp_sip_msg, req_sip_msg, opts)
+  end
+
   def init({:uas, resp_sip_msg, req_sip_msg}) do
+    do_init_uas(resp_sip_msg, req_sip_msg, [])
+  end
+
+  # UAC: 4-element tuple with opts for provisional response (mos_fetcher support)
+  def init({:uac, out_req, %Message{status_code: code} = resp_sip_msg, opts})
+      when code >= 100 and code < 200 and is_list(opts) do
+    do_init_uac_provisional(out_req, resp_sip_msg, opts)
+  end
+
+  def init({:uac, out_req, %Message{status_code: code} = resp_sip_msg})
+      when code >= 100 and code < 200 do
+    do_init_uac_provisional(out_req, resp_sip_msg, [])
+  end
+
+  # UAC: 4-element tuple with opts for final response (mos_fetcher support)
+  def init({:uac, out_req, resp_sip_msg, opts}) when is_list(opts) do
+    do_init_uac_final(out_req, resp_sip_msg, opts)
+  end
+
+  def init({:uac, out_req, resp_sip_msg}) do
+    do_init_uac_final(out_req, resp_sip_msg, [])
+  end
+
+  # Recover: 3-element tuple with opts (mos_fetcher support)
+  @doc false
+  def init({:recover, stored_state, opts}) when is_list(opts) do
+    do_init_recover(stored_state, opts)
+  end
+
+  def init({:recover, stored_state}) do
+    do_init_recover(stored_state, [])
+  end
+
+  # Private init helpers (moved after all init/1 clauses to avoid warnings)
+
+  defp do_init_uas(resp_sip_msg, req_sip_msg, opts) do
     Logger.debug(
       "dialog: init called with UAS args: #{inspect(resp_sip_msg)}, #{inspect(req_sip_msg)}"
     )
@@ -219,7 +284,8 @@ defmodule ParrotSip.DialogStatem do
       local_contact: Message.get_header(req_sip_msg, "contact"),
       log_id: uas_log_id(resp_sip_msg),
       dialog_type: dialog_type(req_sip_msg),
-      invite_received_at: DateTime.utc_now()
+      invite_received_at: DateTime.utc_now(),
+      mos_fetcher: Keyword.get(opts, :mos_fetcher)
     }
 
     # Set a timer for NOTIFY dialogs
@@ -273,8 +339,7 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data, actions}
   end
 
-  def init({:uac, out_req, %Message{status_code: code} = resp_sip_msg})
-      when code >= 100 and code < 200 do
+  defp do_init_uac_provisional(out_req, resp_sip_msg, opts) do
     {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
 
     branch = get_branch_from_request(out_req)
@@ -298,7 +363,8 @@ defmodule ParrotSip.DialogStatem do
       early_branch: branch,
       log_id: uac_log_id(resp_sip_msg),
       dialog_type: dialog_type(out_req),
-      invite_received_at: DateTime.utc_now()
+      invite_received_at: DateTime.utc_now(),
+      mos_fetcher: Keyword.get(opts, :mos_fetcher)
     }
 
     initial_state = dialog.state
@@ -306,7 +372,7 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data}
   end
 
-  def init({:uac, out_req, resp_sip_msg}) do
+  defp do_init_uac_final(out_req, resp_sip_msg, opts) do
     {:ok, dialog} = Dialog.uac_create(out_req, resp_sip_msg)
 
     # Register with dialog ID (may already be registered via start_link)
@@ -325,7 +391,8 @@ defmodule ParrotSip.DialogStatem do
       early_branch: nil,
       log_id: uac_log_id(resp_sip_msg),
       dialog_type: dialog_type(out_req),
-      invite_received_at: DateTime.utc_now()
+      invite_received_at: DateTime.utc_now(),
+      mos_fetcher: Keyword.get(opts, :mos_fetcher)
     }
 
     initial_state = dialog.state
@@ -352,8 +419,7 @@ defmodule ParrotSip.DialogStatem do
     {:ok, initial_state, data}
   end
 
-  @doc false
-  def init({:recover, stored_state}) do
+  defp do_init_recover(stored_state, opts) do
     Logger.info("[DialogStatem] Recovering dialog #{stored_state.call_id}")
 
     # RFC 3261 Section 12: Generate dialog ID from call-id, local-tag, remote-tag
@@ -400,7 +466,8 @@ defmodule ParrotSip.DialogStatem do
       dialog_type: :invite,
       recovered: true,
       invite_received_at: Map.get(stored_state, :invite_received_at, now),
-      answered_at: Map.get(stored_state, :answered_at, now)
+      answered_at: Map.get(stored_state, :answered_at, now),
+      mos_fetcher: Keyword.get(opts, :mos_fetcher)
     }
 
     Logger.info("[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state")
@@ -782,6 +849,26 @@ defmodule ParrotSip.DialogStatem do
   end
 
   @doc """
+  Returns the MOS fetcher function configured for this dialog.
+
+  The MOS fetcher is used during CDR generation to fetch MOS (Mean Opinion Score)
+  data from the associated media session.
+
+  ## Returns
+    - Function `(session_id) -> mos_summary_map | nil`, or `nil` if not configured
+
+  ## Example
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, mos_fetcher: fetcher_fn})
+      DialogStatem.get_mos_fetcher(pid)
+      # => #Function<...>
+  """
+  @spec get_mos_fetcher(pid()) :: (String.t() -> map() | nil) | nil
+  def get_mos_fetcher(pid) when is_pid(pid) do
+    :gen_statem.call(pid, :get_mos_fetcher)
+  end
+
+  @doc """
   Returns the full dialog data for recovery purposes.
 
   This returns all dialog fields needed for cluster failover recovery,
@@ -808,7 +895,7 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :early}]}
   end
 
-  def early({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data] do
+  def early({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -847,7 +934,7 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :confirmed}]}
   end
 
-  def confirmed({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data] do
+  def confirmed({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -891,7 +978,7 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :terminated}]}
   end
 
-  def terminated({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data] do
+  def terminated({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -935,6 +1022,10 @@ defmodule ParrotSip.DialogStatem do
 
   defp handle_introspection_call(:get_timing_data, %Data{invite_received_at: invite_received_at, answered_at: answered_at}) do
     {:ok, %{invite_received_at: invite_received_at, answered_at: answered_at}}
+  end
+
+  defp handle_introspection_call(:get_mos_fetcher, %Data{mos_fetcher: mos_fetcher}) do
+    mos_fetcher
   end
 
   defp handle_introspection_call(:get_dialog_data, %Data{dialog: dialog}) do
@@ -1085,6 +1176,19 @@ defmodule ParrotSip.DialogStatem do
 
   # Helper functions
 
+  # 4-element tuple with opts (mos_fetcher support)
+  defp dialog_registry_key(
+         {:uas, %Message{to: %{parameters: %{"tag" => to_tag}}},
+          %Message{
+            from: %{parameters: %{"tag" => from_tag}},
+            call_id: call_id
+          }, _opts}
+       ) do
+    # For UAS: local=to_tag, remote=from_tag
+    dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
+    {:dialog, dialog_id_str}
+  end
+
   defp dialog_registry_key(
          {:uas, %Message{to: %{parameters: %{"tag" => to_tag}}},
           %Message{
@@ -1094,6 +1198,19 @@ defmodule ParrotSip.DialogStatem do
        ) do
     # For UAS: local=to_tag, remote=from_tag
     dialog_id_str = Dialog.generate_id(:uas, call_id, to_tag, from_tag)
+    {:dialog, dialog_id_str}
+  end
+
+  # 4-element tuple with opts (mos_fetcher support)
+  defp dialog_registry_key(
+         {:uac,
+          %Message{
+            from: %{parameters: %{"tag" => from_tag}},
+            call_id: call_id
+          }, %Message{to: %{parameters: %{"tag" => to_tag}}}, _opts}
+       ) do
+    # For UAC: local=from_tag, remote=to_tag
+    dialog_id_str = Dialog.generate_id(:uac, call_id, from_tag, to_tag)
     {:dialog, dialog_id_str}
   end
 

@@ -440,4 +440,96 @@ defmodule ParrotSip.DialogStatemCdrTest do
       body: ""
     }
   end
+
+  # ===========================================================================
+  # MOS Fetcher Tests (T03: Add mos_fetcher to DialogStatem Data struct)
+  # ===========================================================================
+
+  describe "mos_fetcher configuration" do
+    test "UAS dialog accepts mos_fetcher in opts" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      # Define a mock mos_fetcher function
+      mos_fetcher = fn session_id ->
+        %{
+          min_mos: 3.5,
+          max_mos: 4.2,
+          avg_mos: 3.8,
+          total_packets: 1000,
+          total_lost: 10,
+          overall_loss_percent: 1.0,
+          status: :good,
+          session_id: session_id
+        }
+      end
+
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite, mos_fetcher: mos_fetcher})
+
+      # Verify mos_fetcher is stored
+      mos_fetcher_from_dialog = DialogStatem.get_mos_fetcher(pid)
+      assert is_function(mos_fetcher_from_dialog, 1),
+             "mos_fetcher should be stored and retrievable"
+
+      # Verify it works when called
+      result = mos_fetcher_from_dialog.("test-session-id")
+      assert result.avg_mos == 3.8
+    end
+
+    test "UAC dialog accepts mos_fetcher in opts with 2xx response" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      mos_fetcher = fn _session_id -> %{avg_mos: 4.0} end
+
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, response, mos_fetcher: mos_fetcher})
+
+      mos_fetcher_from_dialog = DialogStatem.get_mos_fetcher(pid)
+      assert is_function(mos_fetcher_from_dialog, 1)
+    end
+
+    test "UAC dialog accepts mos_fetcher in opts with provisional response" do
+      invite = build_invite_message()
+      provisional = build_response_message(180, "Ringing")
+
+      mos_fetcher = fn _session_id -> %{avg_mos: 4.0} end
+
+      {:ok, pid} = DialogStatem.start_link({:uac, invite, provisional, mos_fetcher: mos_fetcher})
+
+      mos_fetcher_from_dialog = DialogStatem.get_mos_fetcher(pid)
+      assert is_function(mos_fetcher_from_dialog, 1)
+    end
+
+    test "dialog without mos_fetcher has nil" do
+      invite = build_invite_message()
+      response = build_response_message(200, "OK")
+
+      # No mos_fetcher in opts (backward compatibility)
+      {:ok, pid} = DialogStatem.start_link({:uas, response, invite})
+
+      mos_fetcher = DialogStatem.get_mos_fetcher(pid)
+      assert mos_fetcher == nil, "mos_fetcher should be nil when not provided"
+    end
+
+    test "recovered dialog accepts mos_fetcher in opts" do
+      stored_state = %{
+        call_id: "recovered-mos-test@example.com",
+        local_tag: "local-tag-mos",
+        remote_tag: "remote-tag-mos",
+        local_uri: "sip:local@example.com",
+        remote_uri: "sip:remote@example.com",
+        local_seq: 1,
+        remote_seq: 1,
+        secure: false,
+        route_set: []
+      }
+
+      mos_fetcher = fn _session_id -> %{avg_mos: 3.9} end
+
+      {:ok, pid} = DialogStatem.start_recovered(stored_state, mos_fetcher: mos_fetcher)
+
+      mos_fetcher_from_dialog = DialogStatem.get_mos_fetcher(pid)
+      assert is_function(mos_fetcher_from_dialog, 1)
+    end
+  end
 end
