@@ -123,9 +123,9 @@ defmodule ParrotSip.CDR.SerializerTest do
       assert headers1 == headers2
     end
 
-    test "returns exactly 16 columns" do
+    test "returns exactly 21 columns" do
       headers = Serializer.csv_headers()
-      assert length(headers) == 16
+      assert length(headers) == 21
     end
   end
 
@@ -386,7 +386,12 @@ defmodule ParrotSip.CDR.SerializerTest do
         talk_duration_ms,
         termination_party,
         termination_sip_code,
-        termination_reason
+        termination_reason,
+        _codec,
+        _mos_avg,
+        _mos_min,
+        _mos_max,
+        _mos_status
       ] = row
 
       assert id == "550e8400-e29b-41d4-a716-446655440000"
@@ -428,7 +433,12 @@ defmodule ParrotSip.CDR.SerializerTest do
         talk_duration_ms,
         termination_party,
         termination_sip_code,
-        termination_reason
+        termination_reason,
+        codec,
+        mos_avg,
+        mos_min,
+        mos_max,
+        mos_status
       ] = row
 
       assert id == ""
@@ -445,6 +455,12 @@ defmodule ParrotSip.CDR.SerializerTest do
       assert termination_party == ""
       assert termination_sip_code == ""
       assert termination_reason == ""
+      # Media info fields should be empty for nil media_info
+      assert codec == ""
+      assert mos_avg == ""
+      assert mos_min == ""
+      assert mos_max == ""
+      assert mos_status == ""
     end
 
     test "handles unanswered call with nil answered_at" do
@@ -514,7 +530,7 @@ defmodule ParrotSip.CDR.SerializerTest do
       # Simulate what a CSV library would do
       zipped = Enum.zip(headers, row)
 
-      assert length(zipped) == 16
+      assert length(zipped) == 21
       assert {"id", "550e8400-e29b-41d4-a716-446655440000"} in zipped
       assert {"disposition", "answered"} in zipped
     end

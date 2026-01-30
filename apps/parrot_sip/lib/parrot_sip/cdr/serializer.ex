@@ -37,7 +37,12 @@ defmodule ParrotSip.CDR.Serializer do
     "talk_duration_ms",
     "termination_party",
     "termination_sip_code",
-    "termination_reason"
+    "termination_reason",
+    "codec",
+    "mos_avg",
+    "mos_min",
+    "mos_max",
+    "mos_status"
   ]
 
   @doc """
@@ -83,7 +88,8 @@ defmodule ParrotSip.CDR.Serializer do
       ended_at: format_datetime(cdr.ended_at),
       ring_duration_ms: cdr.ring_duration_ms,
       talk_duration_ms: cdr.talk_duration_ms,
-      termination_cause: format_termination_cause(cdr.termination_cause)
+      termination_cause: format_termination_cause(cdr.termination_cause),
+      media_info: format_media_info(cdr.media_info)
     }
   end
 
@@ -137,7 +143,12 @@ defmodule ParrotSip.CDR.Serializer do
       to_string(cdr.talk_duration_ms || 0),
       format_termination_party_csv(cdr.termination_cause),
       format_termination_sip_code_csv(cdr.termination_cause),
-      format_termination_reason_csv(cdr.termination_cause)
+      format_termination_reason_csv(cdr.termination_cause),
+      format_codec_csv(cdr.media_info),
+      format_mos_avg_csv(cdr.media_info),
+      format_mos_min_csv(cdr.media_info),
+      format_mos_max_csv(cdr.media_info),
+      format_mos_status_csv(cdr.media_info)
     ]
   end
 
@@ -160,6 +171,59 @@ defmodule ParrotSip.CDR.Serializer do
 
   defp format_transport_csv(nil), do: ""
   defp format_transport_csv(transport) when is_atom(transport), do: to_string(transport)
+
+  # ===========================================================================
+  # Private Functions - MediaInfo formatting
+  # ===========================================================================
+
+  defp format_media_info(nil), do: nil
+
+  defp format_media_info(media_info) do
+    %{
+      codec: media_info.codec,
+      codec_payload_type: media_info.codec_payload_type,
+      packets_sent: media_info.packets_sent,
+      packets_received: media_info.packets_received,
+      jitter_ms: media_info.jitter_ms,
+      mos_summary: format_mos_summary(media_info.mos_summary)
+    }
+  end
+
+  defp format_mos_summary(nil), do: nil
+
+  defp format_mos_summary(summary) when is_map(summary) do
+    %{
+      min_mos: summary[:min_mos] || summary.min_mos,
+      max_mos: summary[:max_mos] || summary.max_mos,
+      avg_mos: summary[:avg_mos] || summary.avg_mos,
+      total_packets: summary[:total_packets] || summary.total_packets,
+      total_lost: summary[:total_lost] || summary.total_lost,
+      overall_loss_percent: summary[:overall_loss_percent] || summary.overall_loss_percent,
+      status: format_status(summary[:status] || Map.get(summary, :status)),
+      quality_events: format_quality_events(summary[:quality_events] || Map.get(summary, :quality_events))
+    }
+  end
+
+  defp format_status(nil), do: nil
+  defp format_status(status) when is_atom(status), do: to_string(status)
+  defp format_status(status), do: status
+
+  defp format_quality_events(nil), do: []
+  defp format_quality_events(events) when is_list(events) do
+    Enum.map(events, fn event ->
+      %{
+        timestamp: format_datetime(event[:timestamp] || Map.get(event, :timestamp)),
+        mos: event[:mos] || Map.get(event, :mos),
+        type: format_event_type(event[:type] || Map.get(event, :type)),
+        jitter: event[:jitter] || Map.get(event, :jitter),
+        loss_percent: event[:loss_percent] || Map.get(event, :loss_percent)
+      }
+    end)
+  end
+
+  defp format_event_type(nil), do: nil
+  defp format_event_type(type) when is_atom(type), do: to_string(type)
+  defp format_event_type(type), do: type
 
   # ===========================================================================
   # Private Functions - TerminationCause formatting
@@ -194,4 +258,32 @@ defmodule ParrotSip.CDR.Serializer do
   defp format_termination_reason_csv(nil), do: ""
   defp format_termination_reason_csv(%{reason: nil}), do: ""
   defp format_termination_reason_csv(%{reason: reason}), do: reason
+
+  # ===========================================================================
+  # Private Functions - MediaInfo CSV formatting
+  # ===========================================================================
+
+  defp format_codec_csv(nil), do: ""
+  defp format_codec_csv(%{codec: nil}), do: ""
+  defp format_codec_csv(%{codec: codec}), do: codec
+
+  defp format_mos_avg_csv(nil), do: ""
+  defp format_mos_avg_csv(%{mos_summary: nil}), do: ""
+  defp format_mos_avg_csv(%{mos_summary: %{avg_mos: avg}}), do: to_string(avg)
+  defp format_mos_avg_csv(_), do: ""
+
+  defp format_mos_min_csv(nil), do: ""
+  defp format_mos_min_csv(%{mos_summary: nil}), do: ""
+  defp format_mos_min_csv(%{mos_summary: %{min_mos: min}}), do: to_string(min)
+  defp format_mos_min_csv(_), do: ""
+
+  defp format_mos_max_csv(nil), do: ""
+  defp format_mos_max_csv(%{mos_summary: nil}), do: ""
+  defp format_mos_max_csv(%{mos_summary: %{max_mos: max}}), do: to_string(max)
+  defp format_mos_max_csv(_), do: ""
+
+  defp format_mos_status_csv(nil), do: ""
+  defp format_mos_status_csv(%{mos_summary: nil}), do: ""
+  defp format_mos_status_csv(%{mos_summary: %{status: status}}), do: to_string(status)
+  defp format_mos_status_csv(_), do: ""
 end

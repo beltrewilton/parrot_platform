@@ -308,7 +308,16 @@ defmodule ParrotSip.CDRTest do
       media_info = %MediaInfo{
         codec: "PCMU",
         codec_payload_type: 0,
-        mos_score: 4.2,
+        mos_summary: %{
+          min_mos: 3.8,
+          max_mos: 4.4,
+          avg_mos: 4.2,
+          total_packets: 12000,
+          total_lost: 50,
+          overall_loss_percent: 0.42,
+          status: :good,
+          quality_events: []
+        },
         packets_sent: 12000,
         packets_received: 11950,
         jitter_ms: 15.5
@@ -343,7 +352,7 @@ defmodule ParrotSip.CDRTest do
       # Verify media_info is populated (accessing fields will fail if nil)
       assert cdr.media_info.codec == "PCMU"
       assert cdr.media_info.codec_payload_type == 0
-      assert cdr.media_info.mos_score == 4.2
+      assert cdr.media_info.mos_summary.avg_mos == 4.2
       assert cdr.media_info.packets_sent == 12000
       assert cdr.media_info.packets_received == 11950
       assert cdr.media_info.jitter_ms == 15.5
