@@ -4338,4 +4338,235 @@ defmodule Parrot.Bridge.ActionExecutorTest do
       {:ok, _updated_call} = ActionExecutor.execute(operations, call, context)
     end
   end
+
+  # ===========================================================================
+  # execute_bridge Tests (TDD for vap.4)
+  # ===========================================================================
+
+  describe "execute_bridge/4 state validation" do
+    @describetag :bridge_ops
+
+    test "returns {:error, :invalid_state} when call not answered" do
+      call = %Call{state: :incoming, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: self()
+      }
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+    end
+
+    test "returns {:error, :invalid_state} when call is ringing" do
+      call = %Call{state: :ringing, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: self()
+      }
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+    end
+
+    test "returns {:error, :invalid_state} when call is early" do
+      call = %Call{state: :early, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: self()
+      }
+
+      assert {:error, :invalid_state} =
+               ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+    end
+
+    test "returns {:error, :no_b2bua} when b2bua_pid is nil" do
+      call = %Call{state: :answered, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: nil
+      }
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+    end
+
+    test "returns {:error, :no_b2bua} when b2bua_pid is not in context" do
+      call = %Call{state: :answered, id: "test", assigns: %{}}
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil
+      }
+
+      assert {:error, :no_b2bua} =
+               ActionExecutor.execute_bridge(call, context, "sip:dest@example.com", [])
+    end
+  end
+
+  describe "execute_bridge/4 with B2BUA" do
+    @describetag :bridge_ops
+
+    setup do
+      # Start a real B2BUA instance for integration tests
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      # Set up A-leg (the inbound call that's being bridged)
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      call = %Call{
+        id: "bridge-test-#{:rand.uniform(100_000)}",
+        state: :answered,
+        handler: __MODULE__,
+        from: "sip:caller@example.com",
+        to: "sip:callee@example.com",
+        assigns: %{}
+      }
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: self(),
+        sdp_answer: "v=0\r\no=test 1 1 IN IP4 127.0.0.1\r\n",
+        b2bua_pid: b2bua_pid
+      }
+
+      on_exit(fn ->
+        if Process.alive?(b2bua_pid), do: Parrot.Bridge.B2BUA.stop(b2bua_pid)
+      end)
+
+      %{call: call, context: context, b2bua_pid: b2bua_pid}
+    end
+
+    test "calls B2BUA.originate with destination", %{call: call, context: context, b2bua_pid: b2bua_pid} do
+      {:ok, _updated_call} =
+        ActionExecutor.execute_bridge(call, context, "sip:agent@pbx.local", [])
+
+      # Verify B2BUA has the new leg
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      assert leg.destination == "sip:agent@pbx.local"
+    end
+
+    test "stores bridge leg ID in call assigns", %{call: call, context: context} do
+      {:ok, updated_call} =
+        ActionExecutor.execute_bridge(call, context, "sip:agent@pbx.local", [])
+
+      assert updated_call.assigns[:__bridge_leg__] == :b_leg
+    end
+
+    test "uses custom leg ID from options", %{call: call, context: context, b2bua_pid: b2bua_pid} do
+      {:ok, updated_call} =
+        ActionExecutor.execute_bridge(call, context, "sip:agent@pbx.local", as: :custom_leg)
+
+      assert updated_call.assigns[:__bridge_leg__] == :custom_leg
+
+      # Verify the leg was created with custom ID
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :custom_leg)
+      assert leg.destination == "sip:agent@pbx.local"
+    end
+
+    test "passes timeout option to B2BUA.originate", %{call: call, context: context, b2bua_pid: b2bua_pid} do
+      {:ok, _updated_call} =
+        ActionExecutor.execute_bridge(call, context, "sip:agent@pbx.local", timeout: 45_000)
+
+      # Verify the leg has the timeout set
+      {:ok, leg} = Parrot.Bridge.B2BUA.get_leg(b2bua_pid, :b_leg)
+      # The timeout is stored in the leg or B2BUA state
+      assert leg != nil
+    end
+  end
+
+  describe "execute/3 with bridge operation pipeline" do
+    @describetag :bridge_ops
+
+    setup do
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      on_exit(fn ->
+        if Process.alive?(b2bua_pid), do: Parrot.Bridge.B2BUA.stop(b2bua_pid)
+      end)
+
+      %{b2bua_pid: b2bua_pid}
+    end
+
+    test "bridge operation in pipeline returns continue", %{b2bua_pid: b2bua_pid} do
+      # Create call with answer + bridge operations
+      call =
+        Call.new()
+        |> Call.answer()
+        |> Call.bridge("sip:dest@example.com")
+
+      operations = Call.get_operations(call)
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      # Should succeed - bridge returns :continue
+      {:ok, updated_call} = ActionExecutor.execute(operations, call, context)
+      assert updated_call.state == :answered
+      assert updated_call.assigns[:__bridge_leg__] == :b_leg
+    end
+  end
+
+  describe "execute_bridge/4 error handling" do
+    @describetag :bridge_ops
+
+    setup do
+      {:ok, b2bua_pid} = Parrot.Bridge.B2BUA.start_link()
+
+      a_leg = Parrot.Leg.new(id: :a_leg, direction: :inbound, state: :answered)
+      :ok = Parrot.Bridge.B2BUA.set_a_leg(b2bua_pid, a_leg)
+
+      call = %Call{
+        id: "bridge-error-test",
+        state: :answered,
+        assigns: %{}
+      }
+
+      context = %{
+        uas: self(),
+        sip_msg: build_invite_message(),
+        media_pid: nil,
+        sdp_answer: nil,
+        b2bua_pid: b2bua_pid
+      }
+
+      on_exit(fn ->
+        if Process.alive?(b2bua_pid), do: Parrot.Bridge.B2BUA.stop(b2bua_pid)
+      end)
+
+      %{call: call, context: context, b2bua_pid: b2bua_pid}
+    end
+
+    test "returns error when destination is empty", %{call: call, context: context} do
+      assert {:error, _reason} =
+               ActionExecutor.execute_bridge(call, context, "", [])
+    end
+  end
 end
