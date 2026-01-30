@@ -195,6 +195,16 @@ Real hold/resume requires SIP re-INVITE with SDP changes.
 Press Ctrl+C to stop
 """)
 
+# Start Parrot.Registry for Call.Server lookup/registration
+# This is required for handle_hangup callbacks to work properly
+case Registry.start_link(keys: :unique, name: Parrot.Registry) do
+  {:ok, _} ->
+    IO.puts("Started Parrot.Registry")
+
+  {:error, {:already_started, _}} ->
+    IO.puts("Parrot.Registry already running")
+end
+
 handler = ParrotSip.Handler.new(Parrot.Bridge.Handler, %{router: TestB2BUAHoldRouter})
 
 case ParrotSip.Stack.start_link(handler: handler, transport: :udp, port: 5080) do
