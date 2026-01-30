@@ -50,6 +50,25 @@ defmodule ParrotSip.UA.Handler do
   @callback handle_rejected(ua :: pid(), response :: map(), entity(), state()) ::
               {:ok, state()}
 
+  @doc """
+  Called when receiving 3xx redirect response.
+
+  The contacts list is sorted by q-value (highest first).
+  Contacts without q-value default to q=1.0.
+
+  Return `{:redirect, contact, new_state}` to retry with the selected contact,
+  or `{:stop, reason, new_state}` to terminate the call attempt.
+  """
+  @callback handle_redirect(
+              ua :: pid(),
+              status_code :: integer(),
+              response :: map(),
+              contacts :: list(),
+              state()
+            ) ::
+              {:redirect, contact :: map(), state()}
+              | {:stop, reason :: term(), state()}
+
   # Both directions
   @callback handle_hangup(ua :: pid(), message :: map(), entity(), state()) ::
               {:ok, state()}
@@ -67,6 +86,7 @@ defmodule ParrotSip.UA.Handler do
   @optional_callbacks [
     handle_ringing: 4,
     handle_rejected: 4,
+    handle_redirect: 5,
     handle_hangup: 4,
     handle_cancel: 3,
     handle_registered: 4,
@@ -86,6 +106,12 @@ defmodule ParrotSip.UA.Handler do
       def handle_rejected(_ua, _response, _entity, state), do: {:ok, state}
 
       @impl true
+      def handle_redirect(_ua, status_code, _response, _contacts, state) do
+        # Default: treat redirect as rejection (stop)
+        {:stop, {:redirect, status_code}, state}
+      end
+
+      @impl true
       def handle_hangup(_ua, _message, _entity, state), do: {:ok, state}
 
       @impl true
@@ -99,6 +125,7 @@ defmodule ParrotSip.UA.Handler do
 
       defoverridable handle_ringing: 4,
                      handle_rejected: 4,
+                     handle_redirect: 5,
                      handle_hangup: 4,
                      handle_cancel: 3,
                      handle_registered: 4,

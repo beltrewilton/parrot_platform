@@ -495,12 +495,60 @@ defmodule ParrotSip.UA do
     end
   end
 
-  # UAC response - 3xx-6xx Failure
+  # UAC response - 3xx Redirect (MUST come before >= 300 pattern)
+  # RFC 3261 Section 21: Redirect classes (300-399)
   def handle_cast(
         {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
         state
       )
-      when code >= 300 do
+      when code >= 300 and code < 400 do
+    case Map.get(state.entities, entity_id) do
+      nil ->
+        {:noreply, state}
+
+      entity ->
+        # Extract and sort Contact headers by q-value (highest first)
+        # Contacts without q-value default to q=1.0 per RFC 3261
+        contacts = normalize_contacts(response.contact)
+
+        sorted_contacts =
+          Enum.sort_by(contacts, fn contact ->
+            # Get q-value, defaulting to 1.0 if not present
+            case Contact.q(contact) do
+              nil -> 1.0
+              q -> q
+            end
+          end, :desc)
+
+        # Call user handler
+        case state.handler_module.handle_redirect(
+               self(),
+               code,
+               response,
+               sorted_contacts,
+               state.handler_state
+             ) do
+          {:redirect, _selected_contact, new_handler_state} ->
+            # TODO: Implement actual redirect retry logic
+            # For now, just update state - full redirect implementation
+            # would create new INVITE to selected contact
+            {:noreply, %{state | handler_state: new_handler_state}}
+
+          {:stop, _reason, new_handler_state} ->
+            # Terminate the entity
+            entity = %{entity | state: :terminated}
+            entities = Map.put(state.entities, entity_id, entity)
+            {:noreply, %{state | entities: entities, handler_state: new_handler_state}}
+        end
+    end
+  end
+
+  # UAC response - 4xx-6xx Failure
+  def handle_cast(
+        {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
+        state
+      )
+      when code >= 400 do
     case Map.get(state.entities, entity_id) do
       nil ->
         {:noreply, state}
@@ -769,4 +817,10 @@ defmodule ParrotSip.UA do
   defp generate_tag do
     Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
   end
+
+  # Normalize contact header(s) to a list of Contact structs
+  # The contact field can be nil, a single Contact, or a list of Contacts
+  defp normalize_contacts(nil), do: []
+  defp normalize_contacts(contacts) when is_list(contacts), do: contacts
+  defp normalize_contacts(contact), do: [contact]
 end
