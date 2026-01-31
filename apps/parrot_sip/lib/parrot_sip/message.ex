@@ -409,27 +409,69 @@ defmodule ParrotSip.Message do
   @spec put_header(t(), String.t(), any()) :: t()
   def put_header(%__MODULE__{} = message, name, value) do
     case String.downcase(name) do
-      "from" -> %{message | from: value}
-      "to" -> %{message | to: value}
-      "call-id" -> %{message | call_id: value}
-      "cseq" -> %{message | cseq: value}
-      "contact" -> %{message | contact: value}
-      "via" -> %{message | via: if(is_list(value), do: value, else: [value])}
-      "max-forwards" -> %{message | max_forwards: value}
-      "route" -> %{message | route: value}
-      "record-route" -> %{message | record_route: value}
-      "content-type" -> %{message | content_type: value}
-      "content-length" -> %{message | content_length: value}
-      "expires" -> %{message | expires: value}
-      "allow" -> %{message | allow: value}
-      "supported" -> %{message | supported: value}
-      "accept" -> %{message | accept: value}
-      "event" -> %{message | event: value}
-      "subscription-state" -> %{message | subscription_state: value}
-      "refer-to" -> %{message | refer_to: value}
-      "subject" -> %{message | subject: value}
-      "sip-etag" -> %{message | sip_etag: value}
-      "sip-if-match" -> %{message | sip_if_match: value}
+      "from" ->
+        %{message | from: value}
+
+      "to" ->
+        %{message | to: value}
+
+      "call-id" ->
+        %{message | call_id: value}
+
+      "cseq" ->
+        %{message | cseq: value}
+
+      "contact" ->
+        %{message | contact: value}
+
+      "via" ->
+        %{message | via: if(is_list(value), do: value, else: [value])}
+
+      "max-forwards" ->
+        %{message | max_forwards: value}
+
+      "route" ->
+        %{message | route: value}
+
+      "record-route" ->
+        %{message | record_route: value}
+
+      "content-type" ->
+        %{message | content_type: value}
+
+      "content-length" ->
+        %{message | content_length: value}
+
+      "expires" ->
+        %{message | expires: value}
+
+      "allow" ->
+        %{message | allow: value}
+
+      "supported" ->
+        %{message | supported: value}
+
+      "accept" ->
+        %{message | accept: value}
+
+      "event" ->
+        %{message | event: value}
+
+      "subscription-state" ->
+        %{message | subscription_state: value}
+
+      "refer-to" ->
+        %{message | refer_to: value}
+
+      "subject" ->
+        %{message | subject: value}
+
+      "sip-etag" ->
+        %{message | sip_etag: value}
+
+      "sip-if-match" ->
+        %{message | sip_if_match: value}
+
       downcased ->
         other_headers = Map.put(message.other_headers || %{}, downcased, value)
         %{message | other_headers: other_headers}
@@ -1122,4 +1164,155 @@ defmodule ParrotSip.Message do
       header -> [header]
     end
   end
+
+  # ===========================================================================
+  # ACK Construction Functions
+  # RFC 3261 Section 17.1.1.3: ACK for 2xx MUST have new branch
+  # RFC 3261 Section 13.2.2.4: If 2xx contains SDP offer, ACK MUST carry answer
+  # ===========================================================================
+
+  @doc """
+  Builds an ACK request from the original INVITE request and its 2xx response.
+
+  Per RFC 3261:
+  - Section 17.1.1.3: The ACK for a 2xx MUST be a new transaction with a new branch
+  - Section 13.2.2.4: If the 2xx contains an offer, the ACK MUST carry the answer
+
+  The ACK uses:
+  - Request-URI from original INVITE
+  - From header from original INVITE (including tag)
+  - To header from 2xx response (includes remote tag)
+  - Call-ID from original INVITE
+  - CSeq with same number but method ACK
+  - Via header with NEW branch (for 2xx responses)
+
+  ## Parameters
+  - invite: The original INVITE request message
+  - response: The 2xx response message
+
+  ## Examples
+
+      ack = Message.build_ack(invite, response_200ok)
+  """
+  @spec build_ack(t(), t()) :: t()
+  def build_ack(%__MODULE__{type: :request, method: :invite} = invite, %__MODULE__{} = response) do
+    # RFC 3261 Section 17.1.1.3: ACK for 2xx has a new branch
+    new_branch = ParrotSip.Branch.generate()
+
+    # Build Via header with new branch
+    invite_via =
+      case invite.via do
+        [first_via | _rest] -> first_via
+        first_via when is_struct(first_via, Via) -> first_via
+        _ -> nil
+      end
+
+    new_via =
+      if invite_via do
+        %{invite_via | parameters: Map.put(invite_via.parameters || %{}, "branch", new_branch)}
+      else
+        nil
+      end
+
+    %__MODULE__{
+      type: :request,
+      method: :ack,
+      request_uri: invite.request_uri,
+      version: "SIP/2.0",
+      via: if(new_via, do: [new_via], else: []),
+      # From is from the original INVITE
+      from: invite.from,
+      # To is from the response (includes remote tag)
+      to: response.to,
+      call_id: invite.call_id,
+      # CSeq uses INVITE's number but method is ACK
+      cseq: %CSeq{number: invite.cseq.number, method: :ack},
+      # Copy source for routing
+      source: invite.source,
+      max_forwards: 70,
+      body: nil,
+      content_type: nil,
+      other_headers: %{}
+    }
+  end
+
+  @doc """
+  Attaches an SDP answer to an ACK message if the response contains an SDP offer.
+
+  Per RFC 3261 Section 13.2.2.4: If the 2xx contains an offer, the ACK MUST carry
+  the answer in its body.
+
+  This function:
+  1. Checks if the response has an SDP offer (application/sdp content type with body)
+  2. If yes and handler is provided, invokes handler with the offer
+  3. On success, attaches the answer SDP to the ACK with Content-Type header
+  4. On failure or no handler, returns ACK unchanged (call still proceeds per RFC)
+
+  ## Parameters
+  - ack: The ACK message (from build_ack/2)
+  - response: The 2xx response containing potential SDP offer
+  - handler: Optional function `(offer_sdp, opts) -> {:ok, answer_sdp} | {:error, reason}`
+
+  ## Examples
+
+      handler = fn offer_sdp, _opts -> {:ok, generate_answer(offer_sdp)} end
+      ack = Message.build_ack(invite, response)
+      ack = Message.attach_sdp_answer(ack, response, handler)
+  """
+  @spec attach_sdp_answer(
+          t(),
+          t(),
+          (binary(), keyword() -> {:ok, binary()} | {:error, term()}) | nil
+        ) :: t()
+  def attach_sdp_answer(ack, response, handler)
+
+  # No handler provided - return ACK unchanged
+  def attach_sdp_answer(%__MODULE__{} = ack, _response, nil), do: ack
+
+  # Handler provided - check if response has SDP offer
+  def attach_sdp_answer(%__MODULE__{} = ack, %__MODULE__{} = response, handler)
+      when is_function(handler, 2) do
+    if has_sdp_offer?(response) do
+      # Response has SDP offer - invoke handler to generate answer
+      case handler.(response.body, []) do
+        {:ok, sdp_answer} when is_binary(sdp_answer) ->
+          # Attach SDP answer to ACK
+          content_type = ParrotSip.Headers.ContentType.new("application", "sdp")
+
+          ack
+          |> set_body(sdp_answer)
+          |> put_content_type(content_type)
+
+        {:error, reason} ->
+          # Handler failed - log warning and return ACK unchanged
+          # Per RFC 3261, we still send ACK even if SDP negotiation fails
+          Logger.warning(
+            "SDP answer handler failed: #{inspect(reason)}, sending ACK without body"
+          )
+
+          ack
+      end
+    else
+      # No SDP offer in response - return ACK unchanged
+      ack
+    end
+  end
+
+  @doc """
+  Checks if a message contains an SDP offer.
+
+  An SDP offer is present when:
+  - Content-Type is application/sdp
+  - Body is non-empty
+  """
+  @spec has_sdp_offer?(t()) :: boolean()
+  def has_sdp_offer?(%__MODULE__{content_type: content_type, body: body})
+      when is_binary(body) and body != "" do
+    case content_type do
+      %ParrotSip.Headers.ContentType{type: "application", subtype: "sdp"} -> true
+      _ -> false
+    end
+  end
+
+  def has_sdp_offer?(_), do: false
 end

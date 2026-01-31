@@ -53,6 +53,10 @@ defmodule SippTest.ClientTest do
       # Wait for 200 OK response
       assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
 
+      # Send ACK for the 200 OK (required by RFC 3261)
+      ack = Message.build_ack(invite_msg, response)
+      :ok = Client.send_ack(ack, {"127.0.0.1", sipp_port})
+
       # Extract dialog information from response for BYE
       to_tag = response.to.parameters["tag"]
       from_tag = invite_msg.from.parameters["tag"]
@@ -171,6 +175,10 @@ defmodule SippTest.ClientTest do
         # Wait for 200 OK for this call
         assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
 
+        # Send ACK for the 200 OK (required by RFC 3261)
+        ack = Message.build_ack(invite_msg, response)
+        :ok = Client.send_ack(ack, {"127.0.0.1", sipp_port})
+
         # Extract dialog information and send BYE to properly terminate
         to_tag = response.to.parameters["tag"]
         from_tag = invite_msg.from.parameters["tag"]
@@ -234,6 +242,10 @@ defmodule SippTest.ClientTest do
       # Wait for 200 OK
       assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
 
+      # Send ACK for the 200 OK (required by RFC 3261)
+      ack = Message.build_ack(invite_msg, response)
+      :ok = Client.send_ack(ack, {"127.0.0.1", sipp_port})
+
       # Extract dialog information from response
       to_tag = response.to.parameters["tag"]
       from_tag = invite_msg.from.parameters["tag"]
@@ -257,7 +269,13 @@ defmodule SippTest.ClientTest do
         end)
 
       # Wait for 200 OK for re-INVITE
-      assert_receive {:reinvite_result, {:response, %Message{status_code: 200}}}, 5_000
+      assert_receive {:reinvite_result,
+                      {:response, %Message{status_code: 200} = reinvite_response}},
+                     5_000
+
+      # Send ACK for the re-INVITE 200 OK (required by RFC 3261)
+      reinvite_ack = Message.build_ack(reinvite_msg, reinvite_response)
+      :ok = Client.send_ack(reinvite_ack, {"127.0.0.1", sipp_port})
 
       # Send BYE
       bye_msg = build_bye("127.0.0.1", sipp_port, stack.port, call_id, from_tag, to_tag)
@@ -317,6 +335,10 @@ defmodule SippTest.ClientTest do
       # Wait for 200 OK
       assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
 
+      # Send ACK for the 200 OK (required by RFC 3261)
+      ack = Message.build_ack(invite_msg, response)
+      :ok = Client.send_ack(ack, {"127.0.0.1", sipp_port})
+
       # Extract dialog information
       to_tag = response.to.parameters["tag"]
       from_tag = invite_msg.from.parameters["tag"]
@@ -375,6 +397,10 @@ defmodule SippTest.ClientTest do
 
         # Wait for 200 OK
         assert_receive {:uac_result, {:response, %Message{status_code: 200} = response}}, 5_000
+
+        # Send ACK for the 200 OK (required by RFC 3261)
+        ack = Message.build_ack(invite_msg, response)
+        :ok = Client.send_ack(ack, {"127.0.0.1", sipp_port})
 
         # Extract dialog information
         to_tag = response.to.parameters["tag"]

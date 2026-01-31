@@ -86,10 +86,19 @@ defmodule ParrotSip.UA do
   ## Options
   - `:sdp` - SDP body for the INVITE
   - `:headers` - Additional headers
+  - `:sdp_answer_handler` - Function to generate SDP answer when remote provides
+    offer in 2xx response. RFC 3261 Section 13.2.2.4 requires ACK to carry
+    answer when 2xx contains offer. Handler signature: `(offer_sdp, opts) -> {:ok, answer_sdp} | {:error, reason}`
 
   ## Examples
 
       {:ok, entity} = ParrotSip.UA.dial(ua, "sip:bob@example.com", sdp: my_sdp)
+
+      # Delayed offer scenario - remote provides SDP in 200 OK
+      handler = fn offer_sdp, _opts ->
+        {:ok, generate_answer(offer_sdp)}
+      end
+      {:ok, entity} = ParrotSip.UA.dial(ua, "sip:bob@example.com", sdp_answer_handler: handler)
   """
   def dial(ua, uri, opts \\ []) do
     GenServer.call(ua, {:dial, uri, opts})
@@ -291,6 +300,10 @@ defmodule ParrotSip.UA do
     # Build INVITE
     invite = build_invite(uri, opts, state)
 
+    # Extract SDP answer handler for delayed offer scenarios
+    # RFC 3261 Section 13.2.2.4: If 2xx contains offer, ACK MUST carry answer
+    sdp_answer_handler = Keyword.get(opts, :sdp_answer_handler)
+
     # Create entity with CSeq tracking (RFC 3261 Section 12.2.1.1)
     entity = %Entity{
       id: Entity.generate_id(),
@@ -304,7 +317,8 @@ defmodule ParrotSip.UA do
       local_seq: invite.cseq.number,
       created_at: System.monotonic_time(:millisecond),
       ua_pid: self(),
-      request: invite
+      request: invite,
+      sdp_answer_handler: sdp_answer_handler
     }
 
     # Send via Transaction.Client
@@ -533,6 +547,7 @@ defmodule ParrotSip.UA do
   end
 
   # UAC response - 2xx Success
+  # RFC 3261 Section 13.2.2.4: UAC MUST generate ACK for each 2xx
   def handle_cast(
         {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
         state
@@ -548,6 +563,10 @@ defmodule ParrotSip.UA do
 
         entity = %{entity | state: :confirmed, remote_tag: remote_tag}
         entities = Map.put(state.entities, entity_id, entity)
+
+        # Build and send ACK
+        # RFC 3261 Section 13.2.2.4: If the 2xx contains an offer, the ACK MUST carry the answer
+        send_ack_for_2xx(entity, response)
 
         # Call user handler
         {:ok, new_handler_state} =
@@ -574,13 +593,17 @@ defmodule ParrotSip.UA do
         contacts = normalize_contacts(response.contact)
 
         sorted_contacts =
-          Enum.sort_by(contacts, fn contact ->
-            # Get q-value, defaulting to 1.0 if not present
-            case Contact.q(contact) do
-              nil -> 1.0
-              q -> q
-            end
-          end, :desc)
+          Enum.sort_by(
+            contacts,
+            fn contact ->
+              # Get q-value, defaulting to 1.0 if not present
+              case Contact.q(contact) do
+                nil -> 1.0
+                q -> q
+              end
+            end,
+            :desc
+          )
 
         # Call user handler
         case state.handler_module.handle_redirect(
@@ -699,7 +722,12 @@ defmodule ParrotSip.UA do
       entity ->
         # Call user handler
         {:ok, new_handler_state} =
-          state.handler_module.handle_update_complete(self(), response, entity, state.handler_state)
+          state.handler_module.handle_update_complete(
+            self(),
+            response,
+            entity,
+            state.handler_state
+          )
 
         {:noreply, %{state | handler_state: new_handler_state}}
     end
@@ -988,4 +1016,40 @@ defmodule ParrotSip.UA do
   defp normalize_contacts(nil), do: []
   defp normalize_contacts(contacts) when is_list(contacts), do: contacts
   defp normalize_contacts(contact), do: [contact]
+
+  # ===========================================================================
+  # ACK Generation for 2xx Responses
+  # RFC 3261 Section 13.2.2.4: UAC MUST generate ACK for each 2xx
+  # ===========================================================================
+
+  @doc false
+  defp send_ack_for_2xx(%Entity{request: invite, sdp_answer_handler: handler} = _entity, response) do
+    # Build ACK from INVITE and response
+    ack = Message.build_ack(invite, response)
+
+    # Attach SDP answer if handler is provided and response has SDP offer
+    ack = Message.attach_sdp_answer(ack, response, handler)
+
+    # Get destination from response's To header URI
+    %ParrotSip.Headers.To{uri: uri} = response.to
+    {host, port} = extract_host_port(uri)
+
+    # Send ACK via Transaction.Client
+    Logger.debug("UA sending ACK to #{host}:#{port}")
+    Client.send_ack(ack, {host, port})
+  end
+
+  # Extract host and port from URI struct or string
+  defp extract_host_port(%ParrotSip.Uri{host: host, port: port}) do
+    {host, port || 5060}
+  end
+
+  defp extract_host_port(uri) when is_binary(uri) do
+    case ParrotSip.Uri.parse(uri) do
+      {:ok, %ParrotSip.Uri{host: host, port: port}} -> {host, port || 5060}
+      _ -> {"127.0.0.1", 5060}
+    end
+  end
+
+  defp extract_host_port(_), do: {"127.0.0.1", 5060}
 end

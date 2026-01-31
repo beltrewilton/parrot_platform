@@ -27,7 +27,10 @@ defmodule ParrotSip.UA.Entity do
           ua_pid: pid(),
           uas: term() | nil,
           trans: term() | nil,
-          request: map() | nil
+          request: map() | nil,
+          # SDP answer handler callback for delayed offer scenarios
+          # RFC 3261 Section 13.2.2.4: If 2xx contains offer, ACK MUST carry answer
+          sdp_answer_handler: (binary(), keyword() -> {:ok, binary()} | {:error, term()}) | nil
         }
 
   defstruct [
@@ -46,7 +49,9 @@ defmodule ParrotSip.UA.Entity do
     # CSeq tracking - initialized from INVITE's CSeq (keyword entries must be last)
     local_seq: 1,
     # Created timestamp for GC
-    created_at: nil
+    created_at: nil,
+    # SDP answer handler for delayed offer scenarios (RFC 3261 Section 13.2.2.4)
+    sdp_answer_handler: nil
   ]
 
   @doc """
