@@ -12,6 +12,25 @@ defmodule Parrot.SoftphoneHandler do
       defmodule MyApp.PhoneHandler do
         use Parrot.SoftphoneHandler
 
+        # Required: Return config and initial state
+        @impl true
+        def init(opts) do
+          # Fetch config dynamically - from DB, env, external service, etc.
+          user = MyApp.Repo.get!(User, opts.user_id)
+
+          config = %{
+            username: user.sip_username,
+            domain: user.sip_domain,
+            auth_password: user.sip_password,
+            register_expires: 3600,
+            auto_register: true,
+            transport: :udp,
+            supported_codecs: [:opus, :pcma]
+          }
+
+          {:ok, config, %{user_id: user.id}}
+        end
+
         @impl true
         def handle_registered(info, state) do
           Logger.info("Registered as \#{info.aor}")
@@ -48,10 +67,18 @@ defmodule Parrot.SoftphoneHandler do
         end
       end
 
+  Then start the client:
+
+      {:ok, phone} = Parrot.SoftphoneClient.start_link(
+        handler: MyApp.PhoneHandler,
+        user_id: 123  # Passed to init/1
+      )
+
   ## Required Callbacks
 
   The following callbacks must be implemented:
 
+  - `init/1` - Returns config and initial state (allows dynamic config from DB, etc.)
   - `handle_registered/2` - Called when registration succeeds
   - `handle_presence_update/3` - Called when a watched presentity's status changes
   - `handle_incoming_call/2` - Called when an incoming call arrives
@@ -78,6 +105,28 @@ defmodule Parrot.SoftphoneHandler do
 
   @type state :: term()
 
+  @type config :: %{
+          # Identity (required)
+          username: String.t(),
+          domain: String.t(),
+          # Authentication
+          auth_username: String.t() | nil,
+          auth_password: String.t() | nil,
+          # Registration
+          registrar: String.t() | nil,
+          register_expires: non_neg_integer(),
+          auto_register: boolean(),
+          # Transport
+          transport: :udp | :tcp | :tls | :ws,
+          local_ip: String.t() | nil,
+          local_port: non_neg_integer(),
+          outbound_proxy: String.t() | nil,
+          # Media
+          supported_codecs: [atom()],
+          # Optional
+          display_name: String.t() | nil
+        }
+
   @type registration_info :: %{
           aor: String.t(),
           expires: non_neg_integer(),
@@ -94,6 +143,62 @@ defmodule Parrot.SoftphoneHandler do
           from: String.t(),
           to: String.t()
         }
+
+  # ============================================================================
+  # Initialization Callback
+  # ============================================================================
+
+  @doc """
+  Called when the softphone client starts to obtain configuration.
+
+  This callback allows dynamic configuration - fetch from database,
+  environment variables, external services, etc.
+
+  ## Parameters
+
+  - `opts` - Arbitrary options passed to `SoftphoneClient.start_link/1`
+
+  ## Returns
+
+  - `{:ok, config, initial_state}` - Config map and initial handler state
+  - `{:error, reason}` - Initialization failed, client won't start
+
+  ## Example
+
+      def init(opts) do
+        user = MyApp.Repo.get!(User, opts.user_id)
+        config = %{
+          username: user.sip_username,
+          domain: user.sip_domain,
+          auth_password: decrypt(user.sip_password),
+          register_expires: 3600,
+          auto_register: true,
+          transport: :udp,
+          supported_codecs: [:opus, :pcma]
+        }
+        {:ok, config, %{user_id: user.id}}
+      end
+
+  ## Required Config Keys
+
+  - `:username` - SIP username
+  - `:domain` - SIP domain
+
+  ## Optional Config Keys
+
+  - `:display_name` - Display name for From header
+  - `:auth_username` - Auth username (defaults to username)
+  - `:auth_password` - Auth password
+  - `:registrar` - Registrar URI (defaults to "sip:{domain}")
+  - `:register_expires` - Registration expiry in seconds (default: 3600)
+  - `:auto_register` - Auto-register on start (default: true)
+  - `:transport` - :udp | :tcp | :tls | :ws (default: :udp)
+  - `:local_ip` - Local IP to bind
+  - `:local_port` - Local port to bind (default: 0 = ephemeral)
+  - `:outbound_proxy` - Outbound proxy URI
+  - `:supported_codecs` - List of codec atoms (default: [:pcma, :opus])
+  """
+  @callback init(opts :: map()) :: {:ok, config(), state()} | {:error, reason :: term()}
 
   # ============================================================================
   # Registration Callbacks

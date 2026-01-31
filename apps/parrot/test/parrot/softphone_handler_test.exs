@@ -7,6 +7,9 @@ defmodule Parrot.SoftphoneHandlerTest do
     test "defines required callbacks" do
       callbacks = SoftphoneHandler.behaviour_info(:callbacks)
 
+      # Init callback
+      assert {:init, 1} in callbacks
+
       # Registration callbacks
       assert {:handle_registered, 2} in callbacks
       assert {:handle_registration_failed, 2} in callbacks
@@ -37,6 +40,7 @@ defmodule Parrot.SoftphoneHandlerTest do
       assert {:handle_ringing, 2} in optional
 
       # Required callbacks should NOT be optional
+      refute {:init, 1} in optional
       refute {:handle_registered, 2} in optional
       refute {:handle_presence_update, 3} in optional
       refute {:handle_incoming_call, 2} in optional
@@ -49,6 +53,20 @@ defmodule Parrot.SoftphoneHandlerTest do
   describe "__using__/1 macro" do
     defmodule MinimalHandler do
       use Parrot.SoftphoneHandler
+
+      @impl true
+      def init(opts) do
+        config = %{
+          username: opts[:username] || "test",
+          domain: opts[:domain] || "example.com",
+          register_expires: 3600,
+          auto_register: true,
+          transport: :udp,
+          supported_codecs: [:pcma]
+        }
+
+        {:ok, config, %{}}
+      end
 
       @impl true
       def handle_registered(_info, state), do: {:ok, state}
@@ -75,7 +93,14 @@ defmodule Parrot.SoftphoneHandlerTest do
       # Optional callbacks should have defaults
       assert {:ok, ^state} = MinimalHandler.handle_registration_failed(:timeout, state)
       assert {:ok, ^state} = MinimalHandler.handle_unregistered(state)
-      assert {:ok, ^state} = MinimalHandler.handle_subscription_terminated("sip:bob@example.com", :expired, state)
+
+      assert {:ok, ^state} =
+               MinimalHandler.handle_subscription_terminated(
+                 "sip:bob@example.com",
+                 :expired,
+                 state
+               )
+
       assert {:ok, ^state} = MinimalHandler.handle_publish_success(state)
       assert {:ok, ^state} = MinimalHandler.handle_publish_failed(:network_error, state)
       assert {:ok, ^state} = MinimalHandler.handle_ringing("call-123", state)
@@ -84,6 +109,11 @@ defmodule Parrot.SoftphoneHandlerTest do
     test "allows overriding optional callbacks" do
       defmodule OverrideHandler do
         use Parrot.SoftphoneHandler
+
+        @impl true
+        def init(_opts) do
+          {:ok, %{username: "test", domain: "example.com"}, %{}}
+        end
 
         @impl true
         def handle_registered(_info, state), do: {:ok, state}
@@ -126,9 +156,98 @@ defmodule Parrot.SoftphoneHandlerTest do
     end
   end
 
+  describe "init/1 callback" do
+    defmodule DynamicConfigHandler do
+      use Parrot.SoftphoneHandler
+
+      @impl true
+      def init(opts) do
+        # Simulate fetching config from external source
+        config = %{
+          username: opts.user_data.username,
+          domain: opts.user_data.domain,
+          auth_password: opts.user_data.password,
+          register_expires: opts[:expires] || 3600,
+          auto_register: true,
+          transport: :udp,
+          supported_codecs: [:opus, :pcma]
+        }
+
+        initial_state = %{user_id: opts.user_data.id, connected_at: nil}
+        {:ok, config, initial_state}
+      end
+
+      @impl true
+      def handle_registered(_info, state), do: {:ok, state}
+      @impl true
+      def handle_presence_update(_p, _s, state), do: {:ok, state}
+      @impl true
+      def handle_incoming_call(_c, state), do: {:ring, state}
+      @impl true
+      def handle_call_answered(_c, state), do: {:ok, state}
+      @impl true
+      def handle_call_rejected(_c, _r, state), do: {:ok, state}
+      @impl true
+      def handle_call_ended(_c, _r, state), do: {:ok, state}
+    end
+
+    test "init/1 receives opts and returns config and state" do
+      opts = %{
+        user_data: %{id: 123, username: "alice", domain: "pbx.example.com", password: "secret"},
+        expires: 1800
+      }
+
+      assert {:ok, config, state} = DynamicConfigHandler.init(opts)
+
+      assert config.username == "alice"
+      assert config.domain == "pbx.example.com"
+      assert config.auth_password == "secret"
+      assert config.register_expires == 1800
+      assert config.supported_codecs == [:opus, :pcma]
+
+      assert state.user_id == 123
+    end
+
+    test "init/1 can return error" do
+      defmodule FailingInitHandler do
+        use Parrot.SoftphoneHandler
+
+        @impl true
+        def init(%{fail: true}) do
+          {:error, :config_not_found}
+        end
+
+        def init(_opts) do
+          {:ok, %{username: "test", domain: "example.com"}, %{}}
+        end
+
+        @impl true
+        def handle_registered(_info, state), do: {:ok, state}
+        @impl true
+        def handle_presence_update(_p, _s, state), do: {:ok, state}
+        @impl true
+        def handle_incoming_call(_c, state), do: {:ring, state}
+        @impl true
+        def handle_call_answered(_c, state), do: {:ok, state}
+        @impl true
+        def handle_call_rejected(_c, _r, state), do: {:ok, state}
+        @impl true
+        def handle_call_ended(_c, _r, state), do: {:ok, state}
+      end
+
+      assert {:error, :config_not_found} = FailingInitHandler.init(%{fail: true})
+      assert {:ok, _, _} = FailingInitHandler.init(%{})
+    end
+  end
+
   describe "callback return types" do
     defmodule TypeTestHandler do
       use Parrot.SoftphoneHandler
+
+      @impl true
+      def init(_opts) do
+        {:ok, %{username: "test", domain: "example.com"}, %{}}
+      end
 
       @impl true
       def handle_registered(info, state) do
@@ -208,6 +327,8 @@ defmodule Parrot.SoftphoneHandlerTest do
       defmodule RetryHandler do
         use Parrot.SoftphoneHandler
 
+        @impl true
+        def init(_opts), do: {:ok, %{username: "test", domain: "example.com"}, %{}}
         @impl true
         def handle_registered(_info, state), do: {:ok, state}
         @impl true
