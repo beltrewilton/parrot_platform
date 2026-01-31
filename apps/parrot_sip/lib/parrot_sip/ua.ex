@@ -54,7 +54,11 @@ defmodule ParrotSip.UA do
     :registrations,
     :port,
     :transport,
-    :local_host
+    :local_host,
+    # Authentication state for 401/407 challenge handling (RFC 3261 Section 22)
+    auth_retry_state: %{},
+    # Nonce count tracking per realm/nonce pair
+    auth_nc: %{}
   ]
 
   # ============================================================================
@@ -628,6 +632,22 @@ defmodule ParrotSip.UA do
     end
   end
 
+  # UAC response - 401/407 Authentication Challenge (RFC 3261 Section 22)
+  # This handler MUST be before the generic 4xx handler
+  def handle_cast(
+        {:uac_response, entity_id, {:response, %Message{status_code: code, call_id: call_id} = response}},
+        state
+      )
+      when code in [401, 407] do
+    case Map.get(state.entities, entity_id) do
+      nil ->
+        {:noreply, state}
+
+      entity ->
+        handle_auth_challenge(entity_id, entity, call_id, response, state)
+    end
+  end
+
   # UAC response - 4xx-6xx Failure
   def handle_cast(
         {:uac_response, entity_id, {:response, %Message{status_code: code} = response}},
@@ -1052,4 +1072,152 @@ defmodule ParrotSip.UA do
   end
 
   defp extract_host_port(_), do: {"127.0.0.1", 5060}
+
+  # ============================================================================
+  # Authentication Challenge Handling (RFC 3261 Section 22)
+  # ============================================================================
+
+  defp handle_auth_challenge(entity_id, entity, call_id, response, state) do
+    # Get auth header (WWW-Authenticate for 401, Proxy-Authenticate for 407)
+    auth_header = get_auth_header(response)
+
+    if auth_header do
+      # Parse the challenge
+      case ParrotSip.Auth.parse_auth_header(auth_header) do
+        {:ok, challenge} ->
+          # Look up auth retry state by Call-ID
+          case Map.get(state.auth_retry_state, call_id) do
+            nil ->
+              # No auth retry state for this call - no credentials provided
+              call_handle_rejected(entity_id, entity, response, state)
+
+            auth_retry_data ->
+              attempt_auth_retry(entity_id, entity, call_id, auth_retry_data, challenge, response, state)
+          end
+
+        {:error, _reason} ->
+          # Failed to parse auth challenge - treat as regular rejection
+          call_handle_rejected(entity_id, entity, response, state)
+      end
+    else
+      # No auth header in response - treat as regular rejection
+      call_handle_rejected(entity_id, entity, response, state)
+    end
+  end
+
+  defp get_auth_header(%Message{status_code: 401, other_headers: headers}) do
+    headers["WWW-Authenticate"] || headers["www-authenticate"]
+  end
+
+  defp get_auth_header(%Message{status_code: 407, other_headers: headers}) do
+    headers["Proxy-Authenticate"] || headers["proxy-authenticate"]
+  end
+
+  defp get_auth_header(_), do: nil
+
+  defp attempt_auth_retry(entity_id, entity, call_id, auth_retry_data, challenge, response, state) do
+    # Check if we already attempted auth for this call
+    if auth_retry_data.auth_attempted do
+      # Already tried auth, don't retry again - call user's handle_rejected
+      call_handle_rejected(entity_id, entity, response, state)
+    else
+      # Check if we have credentials
+      username = Map.get(auth_retry_data, :username)
+      password = Map.get(auth_retry_data, :password)
+
+      if username && password do
+        retry_with_auth(
+          entity_id,
+          entity,
+          call_id,
+          auth_retry_data,
+          challenge,
+          username,
+          password,
+          response,
+          state
+        )
+      else
+        # No credentials available, call handle_rejected
+        call_handle_rejected(entity_id, entity, response, state)
+      end
+    end
+  end
+
+  defp retry_with_auth(entity_id, _entity, call_id, auth_retry_data, challenge, username, password, response, state) do
+    original_request = auth_retry_data.original_request
+
+    # Get or increment nonce count
+    realm = challenge["realm"]
+    nonce = challenge["nonce"]
+    nonce_key = {realm, nonce}
+    nc = Map.get(state.auth_nc, nonce_key, 0) + 1
+    nc_hex = :io_lib.format("~8.16.0b", [nc]) |> IO.iodata_to_binary()
+
+    # Determine the method (string or atom)
+    method = case original_request.method do
+      m when is_atom(m) -> m
+      m when is_binary(m) -> String.downcase(m) |> String.to_atom()
+    end
+
+    # Get the request URI as string
+    uri_string = case original_request.request_uri do
+      uri when is_binary(uri) -> uri
+      %ParrotSip.Uri{} = uri -> ParrotSip.Uri.to_string(uri)
+    end
+
+    # Create authorization header
+    auth_credentials =
+      ParrotSip.Auth.create_authorization(
+        method,
+        uri_string,
+        challenge,
+        username,
+        password,
+        nc: nc_hex
+      )
+
+    auth_header_value = ParrotSip.Auth.format_auth_header(auth_credentials)
+
+    # Add auth header to request (Authorization for 401, Proxy-Authorization for 407)
+    auth_header_name = if response.status_code == 401, do: "Authorization", else: "Proxy-Authorization"
+
+    updated_headers =
+      Map.put(original_request.other_headers || %{}, auth_header_name, auth_header_value)
+
+    authenticated_request = %{original_request | other_headers: updated_headers}
+
+    # TODO: Send authenticated request via UAC
+    # For now, we just update state to track that auth was attempted
+    # In a complete implementation, we would:
+    # callback = make_uac_callback(state.handler_module)
+    # _new_transaction_id = ParrotSip.UAC.request(authenticated_request, callback)
+
+    # Update auth retry state - mark as attempted
+    updated_auth_retry = %{
+      auth_retry_data |
+      original_request: authenticated_request,
+      auth_attempted: true
+    }
+
+    new_auth_retry_state = Map.put(state.auth_retry_state, call_id, updated_auth_retry)
+    new_auth_nc = Map.put(state.auth_nc, nonce_key, nc)
+
+    # Update entity to keep it active (not terminated)
+    entities = Map.put(state.entities, entity_id, Map.get(state.entities, entity_id))
+
+    {:noreply, %{state | auth_retry_state: new_auth_retry_state, auth_nc: new_auth_nc, entities: entities}}
+  end
+
+  defp call_handle_rejected(entity_id, entity, response, state) do
+    # Update entity state
+    entity = %{entity | state: :terminated}
+    entities = Map.put(state.entities, entity_id, entity)
+
+    # Call user handler
+    {:ok, new_handler_state} =
+      state.handler_module.handle_rejected(self(), response, entity, state.handler_state)
+
+    {:noreply, %{state | entities: entities, handler_state: new_handler_state}}
+  end
 end
