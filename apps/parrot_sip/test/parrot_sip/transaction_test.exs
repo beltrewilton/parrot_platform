@@ -1467,7 +1467,9 @@ defmodule ParrotSip.TransactionTest do
 
     test "returns error when UPDATE missing Contact header" do
       update = build_update_request("z9hG4bK-update-2", contact: false)
-      assert {:error, "UPDATE request must have Contact header"} = Transaction.validate_message(update)
+
+      assert {:error, "UPDATE request must have Contact header"} =
+               Transaction.validate_message(update)
     end
 
     test "UPDATE is a non-INVITE server transaction type" do

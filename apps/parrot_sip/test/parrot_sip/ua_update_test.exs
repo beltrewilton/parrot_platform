@@ -87,6 +87,7 @@ defmodule ParrotSip.UAUpdateTest do
       on_exit(fn ->
         if Process.alive?(ua), do: GenServer.stop(ua)
       end)
+
       {:ok, ua: ua, entity: entity}
     end
 
@@ -100,7 +101,8 @@ defmodule ParrotSip.UAUpdateTest do
       entity = %Entity{
         id: Entity.generate_id(),
         type: :client,
-        state: :trying,  # Not confirmed
+        # Not confirmed
+        state: :trying,
         remote_uri: "sip:bob@127.0.0.1:5060",
         local_uri: "sip:alice@127.0.0.1:5060",
         call_id: "test-call@127.0.0.1",

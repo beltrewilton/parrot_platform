@@ -430,7 +430,13 @@ defmodule ParrotSip.DialogStatem do
 
     # RFC 3261 Section 12: Generate dialog ID from call-id, local-tag, remote-tag
     # For recovered dialogs, we assume UAS perspective (local=to_tag, remote=from_tag)
-    dialog_id = Dialog.generate_id(:uas, stored_state.call_id, stored_state.local_tag, stored_state.remote_tag)
+    dialog_id =
+      Dialog.generate_id(
+        :uas,
+        stored_state.call_id,
+        stored_state.local_tag,
+        stored_state.remote_tag
+      )
 
     # Build Dialog struct from stored state
     dialog = %Dialog{
@@ -457,7 +463,9 @@ defmodule ParrotSip.DialogStatem do
         Logger.info("[DialogStatem] Recovered dialog registered with ID #{inspect(dialog_id)}")
 
       {:error, {:already_registered, _}} ->
-        Logger.warning("[DialogStatem] Recovered dialog already registered: #{inspect(dialog_id)}")
+        Logger.warning(
+          "[DialogStatem] Recovered dialog already registered: #{inspect(dialog_id)}"
+        )
     end
 
     # For recovered dialogs, use stored timing or fall back to current time
@@ -477,7 +485,9 @@ defmodule ParrotSip.DialogStatem do
       media_session_id: Keyword.get(opts, :media_session_id)
     }
 
-    Logger.info("[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state")
+    Logger.info(
+      "[DialogStatem] Dialog #{inspect(dialog_id)} recovered successfully in :confirmed state"
+    )
 
     {:ok, :confirmed, data}
   end
@@ -850,7 +860,8 @@ defmodule ParrotSip.DialogStatem do
       DialogStatem.get_timing_data(pid)
       # => {:ok, %{invite_received_at: ~U[2026-01-10 10:00:00Z], answered_at: ~U[2026-01-10 10:00:05Z]}}
   """
-  @spec get_timing_data(pid()) :: {:ok, %{invite_received_at: DateTime.t() | nil, answered_at: DateTime.t() | nil}}
+  @spec get_timing_data(pid()) ::
+          {:ok, %{invite_received_at: DateTime.t() | nil, answered_at: DateTime.t() | nil}}
   def get_timing_data(pid) when is_pid(pid) do
     :gen_statem.call(pid, :get_timing_data)
   end
@@ -969,7 +980,18 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :early}]}
   end
 
-  def early({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher, :get_media_session_id] do
+  def early({:call, from}, request, data)
+      when request in [
+             :get_dialog_id,
+             :get_early_branch,
+             :get_dialog_type,
+             :get_dialog_info,
+             :is_recovered?,
+             :get_timing_data,
+             :get_dialog_data,
+             :get_mos_fetcher,
+             :get_media_session_id
+           ] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -1018,7 +1040,18 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :confirmed}]}
   end
 
-  def confirmed({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher, :get_media_session_id] do
+  def confirmed({:call, from}, request, data)
+      when request in [
+             :get_dialog_id,
+             :get_early_branch,
+             :get_dialog_type,
+             :get_dialog_info,
+             :is_recovered?,
+             :get_timing_data,
+             :get_dialog_data,
+             :get_mos_fetcher,
+             :get_media_session_id
+           ] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -1072,7 +1105,18 @@ defmodule ParrotSip.DialogStatem do
     {:keep_state_and_data, [{:reply, from, :terminated}]}
   end
 
-  def terminated({:call, from}, request, data) when request in [:get_dialog_id, :get_early_branch, :get_dialog_type, :get_dialog_info, :is_recovered?, :get_timing_data, :get_dialog_data, :get_mos_fetcher, :get_media_session_id] do
+  def terminated({:call, from}, request, data)
+      when request in [
+             :get_dialog_id,
+             :get_early_branch,
+             :get_dialog_type,
+             :get_dialog_info,
+             :is_recovered?,
+             :get_timing_data,
+             :get_dialog_data,
+             :get_mos_fetcher,
+             :get_media_session_id
+           ] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -1101,20 +1145,24 @@ defmodule ParrotSip.DialogStatem do
   end
 
   defp handle_introspection_call(:get_dialog_info, %Data{dialog: dialog}) do
-    {:ok, %{
-      id: dialog.id,
-      call_id: dialog.call_id,
-      state: dialog.state,
-      local_tag: dialog.local_tag,
-      remote_tag: dialog.remote_tag
-    }}
+    {:ok,
+     %{
+       id: dialog.id,
+       call_id: dialog.call_id,
+       state: dialog.state,
+       local_tag: dialog.local_tag,
+       remote_tag: dialog.remote_tag
+     }}
   end
 
   defp handle_introspection_call(:is_recovered?, %Data{recovered: recovered}) do
     {:ok, recovered}
   end
 
-  defp handle_introspection_call(:get_timing_data, %Data{invite_received_at: invite_received_at, answered_at: answered_at}) do
+  defp handle_introspection_call(:get_timing_data, %Data{
+         invite_received_at: invite_received_at,
+         answered_at: answered_at
+       }) do
     {:ok, %{invite_received_at: invite_received_at, answered_at: answered_at}}
   end
 
@@ -1544,7 +1592,10 @@ defmodule ParrotSip.DialogStatem do
         handlers = CDR.list_handlers()
 
         if handlers != [] do
-          Logger.debug("dialog #{inspect(data.id)}: dispatching CDR to #{length(handlers)} handlers")
+          Logger.debug(
+            "dialog #{inspect(data.id)}: dispatching CDR to #{length(handlers)} handlers"
+          )
+
           Dispatcher.dispatch(cdr, handlers)
         else
           Logger.debug("dialog #{inspect(data.id)}: no CDR handlers registered")

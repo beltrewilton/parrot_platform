@@ -82,12 +82,13 @@ defmodule ParrotSip.RegistrarTest do
     test "returns 401 challenge for REGISTER without Authorization header", ctx do
       register_msg = build_register_request()
 
-      result = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      result =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       assert {:challenge, response} = result
       assert response.status_code == 401
@@ -104,19 +105,21 @@ defmodule ParrotSip.RegistrarTest do
     test "generates unique nonces for each 401 challenge", ctx do
       register_msg = build_register_request()
 
-      {:challenge, response1} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:challenge, response1} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
-      {:challenge, response2} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:challenge, response2} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       www_auth1 = Message.get_header(response1, "www-authenticate")
       www_auth2 = Message.get_header(response2, "www-authenticate")
@@ -134,24 +137,26 @@ defmodule ParrotSip.RegistrarTest do
       # First get a challenge to get a valid nonce
       register_msg = build_register_request()
 
-      {:challenge, challenge_response} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:challenge, challenge_response} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       www_auth = Message.get_header(challenge_response, "www-authenticate")
       {:ok, challenge_params} = Auth.parse_auth_header(www_auth)
 
       # Build authorization response
-      auth = Auth.create_authorization(
-        :register,
-        "sip:example.com",
-        challenge_params,
-        "alice",
-        "secret123"
-      )
+      auth =
+        Auth.create_authorization(
+          :register,
+          "sip:example.com",
+          challenge_params,
+          "alice",
+          "secret123"
+        )
 
       auth_header = Auth.format_auth_header(auth)
 
@@ -159,12 +164,13 @@ defmodule ParrotSip.RegistrarTest do
       auth_register = build_register_request()
       auth_register = Message.put_header(auth_register, "Authorization", auth_header)
 
-      result = Registrar.process_register(
-        auth_register,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      result =
+        Registrar.process_register(
+          auth_register,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       assert {:ok, response} = result
       assert response.status_code == 200
@@ -175,36 +181,39 @@ defmodule ParrotSip.RegistrarTest do
       # Get a valid nonce first
       register_msg = build_register_request()
 
-      {:challenge, challenge_response} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:challenge, challenge_response} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       www_auth = Message.get_header(challenge_response, "www-authenticate")
       {:ok, challenge_params} = Auth.parse_auth_header(www_auth)
 
       # Build authorization with WRONG password
-      auth = Auth.create_authorization(
-        :register,
-        "sip:example.com",
-        challenge_params,
-        "alice",
-        "wrongpassword"
-      )
+      auth =
+        Auth.create_authorization(
+          :register,
+          "sip:example.com",
+          challenge_params,
+          "alice",
+          "wrongpassword"
+        )
 
       auth_header = Auth.format_auth_header(auth)
 
       auth_register = build_register_request()
       auth_register = Message.put_header(auth_register, "Authorization", auth_header)
 
-      result = Registrar.process_register(
-        auth_register,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      result =
+        Registrar.process_register(
+          auth_register,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       assert {:error, response} = result
       assert response.status_code == 403
@@ -215,36 +224,39 @@ defmodule ParrotSip.RegistrarTest do
       # Get a valid nonce first
       register_msg = build_register_request()
 
-      {:challenge, challenge_response} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:challenge, challenge_response} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       www_auth = Message.get_header(challenge_response, "www-authenticate")
       {:ok, challenge_params} = Auth.parse_auth_header(www_auth)
 
       # Build authorization for unknown user
-      auth = Auth.create_authorization(
-        :register,
-        "sip:example.com",
-        challenge_params,
-        "unknown_user",
-        "anypassword"
-      )
+      auth =
+        Auth.create_authorization(
+          :register,
+          "sip:example.com",
+          challenge_params,
+          "unknown_user",
+          "anypassword"
+        )
 
       auth_header = Auth.format_auth_header(auth)
 
       auth_register = build_register_request()
       auth_register = Message.put_header(auth_register, "Authorization", auth_header)
 
-      result = Registrar.process_register(
-        auth_register,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      result =
+        Registrar.process_register(
+          auth_register,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       assert {:error, response} = result
       assert response.status_code == 403
@@ -257,12 +269,13 @@ defmodule ParrotSip.RegistrarTest do
 
       register_msg = build_register_request()
 
-      {:challenge, challenge_response} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        short_ttl_store
-      )
+      {:challenge, challenge_response} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          short_ttl_store
+        )
 
       www_auth = Message.get_header(challenge_response, "www-authenticate")
       {:ok, challenge_params} = Auth.parse_auth_header(www_auth)
@@ -271,33 +284,36 @@ defmodule ParrotSip.RegistrarTest do
       Process.sleep(1100)
 
       # Try to authenticate with expired nonce
-      auth = Auth.create_authorization(
-        :register,
-        "sip:example.com",
-        challenge_params,
-        "alice",
-        "secret123"
-      )
+      auth =
+        Auth.create_authorization(
+          :register,
+          "sip:example.com",
+          challenge_params,
+          "alice",
+          "secret123"
+        )
 
       auth_header = Auth.format_auth_header(auth)
 
       auth_register = build_register_request()
       auth_register = Message.put_header(auth_register, "Authorization", auth_header)
 
-      result = Registrar.process_register(
-        auth_register,
-        ctx.handler,
-        ctx.realm,
-        short_ttl_store
-      )
+      result =
+        Registrar.process_register(
+          auth_register,
+          ctx.handler,
+          ctx.realm,
+          short_ttl_store
+        )
 
       # Should get 401 with stale=true
       assert {:challenge, response} = result
       assert response.status_code == 401
 
       www_auth_stale = Message.get_header(response, "www-authenticate")
+
       assert String.contains?(www_auth_stale, "stale=true") or
-             String.contains?(www_auth_stale, ~s(stale="true"))
+               String.contains?(www_auth_stale, ~s(stale="true"))
 
       GenServer.stop(short_ttl_store)
     end
@@ -305,25 +321,27 @@ defmodule ParrotSip.RegistrarTest do
     test "detects replay attacks", ctx do
       register_msg = build_register_request()
 
-      {:challenge, challenge_response} = Registrar.process_register(
-        register_msg,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:challenge, challenge_response} =
+        Registrar.process_register(
+          register_msg,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       www_auth = Message.get_header(challenge_response, "www-authenticate")
       {:ok, challenge_params} = Auth.parse_auth_header(www_auth)
 
       # Build authorization with specific nc
-      auth = Auth.create_authorization(
-        :register,
-        "sip:example.com",
-        challenge_params,
-        "alice",
-        "secret123",
-        nc: "00000001"
-      )
+      auth =
+        Auth.create_authorization(
+          :register,
+          "sip:example.com",
+          challenge_params,
+          "alice",
+          "secret123",
+          nc: "00000001"
+        )
 
       auth_header = Auth.format_auth_header(auth)
 
@@ -331,20 +349,22 @@ defmodule ParrotSip.RegistrarTest do
       auth_register = Message.put_header(auth_register, "Authorization", auth_header)
 
       # First request should succeed
-      {:ok, _} = Registrar.process_register(
-        auth_register,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      {:ok, _} =
+        Registrar.process_register(
+          auth_register,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       # Replay with same nc should fail
-      result = Registrar.process_register(
-        auth_register,
-        ctx.handler,
-        ctx.realm,
-        ctx.nonce_store
-      )
+      result =
+        Registrar.process_register(
+          auth_register,
+          ctx.handler,
+          ctx.realm,
+          ctx.nonce_store
+        )
 
       assert {:error, response} = result
       assert response.status_code == 403
@@ -390,7 +410,8 @@ defmodule ParrotSip.RegistrarTest do
 
   describe "extract_credentials/1" do
     test "extracts credentials from Authorization header" do
-      auth_header = ~s(Digest username="alice", realm="example.com", nonce="abc123", uri="sip:example.com", response="xyz789", algorithm=MD5, qop=auth, nc=00000001, cnonce="client123")
+      auth_header =
+        ~s(Digest username="alice", realm="example.com", nonce="abc123", uri="sip:example.com", response="xyz789", algorithm=MD5, qop=auth, nc=00000001, cnonce="client123")
 
       register_msg = build_register_request()
       register_msg = Message.put_header(register_msg, "Authorization", auth_header)
@@ -444,17 +465,18 @@ defmodule ParrotSip.RegistrarTest do
       parameters: %{}
     }
 
-    %{msg |
-      via: [via],
-      from: from,
-      to: to,
-      cseq: cseq,
-      call_id: "test-call-id@example.com",
-      contact: contact,
-      expires: 3600,
-      max_forwards: 70,
-      type: :request,
-      direction: :incoming
+    %{
+      msg
+      | via: [via],
+        from: from,
+        to: to,
+        cseq: cseq,
+        call_id: "test-call-id@example.com",
+        contact: contact,
+        expires: 3600,
+        max_forwards: 70,
+        type: :request,
+        direction: :incoming
     }
   end
 
@@ -465,24 +487,26 @@ defmodule ParrotSip.RegistrarTest do
     register_msg = build_register_request()
     register_msg = %{register_msg | expires: expires}
 
-    {:challenge, challenge_response} = Registrar.process_register(
-      register_msg,
-      ctx.handler,
-      ctx.realm,
-      ctx.nonce_store
-    )
+    {:challenge, challenge_response} =
+      Registrar.process_register(
+        register_msg,
+        ctx.handler,
+        ctx.realm,
+        ctx.nonce_store
+      )
 
     www_auth = Message.get_header(challenge_response, "www-authenticate")
     {:ok, challenge_params} = Auth.parse_auth_header(www_auth)
 
     # Build authenticated request
-    auth = Auth.create_authorization(
-      :register,
-      "sip:example.com",
-      challenge_params,
-      username,
-      password
-    )
+    auth =
+      Auth.create_authorization(
+        :register,
+        "sip:example.com",
+        challenge_params,
+        username,
+        password
+      )
 
     auth_header = Auth.format_auth_header(auth)
 

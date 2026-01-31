@@ -2047,9 +2047,7 @@ defmodule ParrotSip.TransactionStatem do
   end
 
   def trying({:call, from}, {:send, response}, %{data: %{transaction: transaction}} = state) do
-    Logger.debug(
-      "trying({:call, from}, {:send, response}, ...)"
-    )
+    Logger.debug("trying({:call, from}, {:send, response}, ...)")
 
     event = classify_to_event(response.status_code)
 
@@ -2641,7 +2639,6 @@ defmodule ParrotSip.TransactionStatem do
       send_response: true
     )
   end
-
 
   defp handle_common_event(
          {:received, %{type: :response, status_code: status_code} = sip_msg},

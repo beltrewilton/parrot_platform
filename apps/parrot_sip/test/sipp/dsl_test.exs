@@ -134,7 +134,10 @@ defmodule SippTest.DSLTest do
           if String.contains?(output, "raw") and String.contains?(output, "socket") do
             # SIPp play_dtmf requires raw socket access (root/sudo)
             IO.puts("\n⚠️  Skipping: SIPp play_dtmf requires root for raw sockets")
-            IO.puts("   Run with: sudo mix test test/sipp/dsl_test.exs --include rtp_dtmf --include sipp\n")
+
+            IO.puts(
+              "   Run with: sudo mix test test/sipp/dsl_test.exs --include rtp_dtmf --include sipp\n"
+            )
           else
             flunk("SIPp failed: #{output}")
           end

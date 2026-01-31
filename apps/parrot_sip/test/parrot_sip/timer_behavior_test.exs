@@ -57,6 +57,7 @@ defmodule ParrotSip.TimerBehaviorTest do
   # Assert the transaction state
   defp assert_state(pid, expected_state) do
     actual_state = TransactionStatem.get_state(pid)
+
     assert actual_state == expected_state,
            "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
   end

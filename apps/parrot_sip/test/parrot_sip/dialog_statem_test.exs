@@ -12,6 +12,7 @@ defmodule ParrotSip.DialogStatemTest do
   # Assert that the dialog is in the expected state
   defp assert_state(pid, expected_state) do
     actual_state = DialogStatem.get_state(pid)
+
     assert actual_state == expected_state,
            "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
   end
@@ -1384,7 +1385,8 @@ defmodule ParrotSip.DialogStatemTest do
       call_id: call_id,
       cseq: %CSeq{number: 1, method: :invite},
       other_headers: %{},
-      body: "v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
+      body:
+        "v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
     }
   end
 
@@ -1419,7 +1421,8 @@ defmodule ParrotSip.DialogStatemTest do
         parameters: %{}
       },
       other_headers: %{},
-      body: "v=0\r\no=- 789 012 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
+      body:
+        "v=0\r\no=- 789 012 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\n"
     }
   end
 

@@ -83,6 +83,7 @@ defmodule ParrotSip.ClusterFailoverTest do
   # Assert the dialog state
   defp assert_state(pid, expected_state) do
     actual_state = DialogStatem.get_state(pid)
+
     assert actual_state == expected_state,
            "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
   end

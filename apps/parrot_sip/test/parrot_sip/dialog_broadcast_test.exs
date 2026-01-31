@@ -177,6 +177,7 @@ defmodule ParrotSip.DialogBroadcastTest do
       Phoenix.PubSub.subscribe(ctx.pubsub, "parrot:dialogs")
 
       dialog_id = "delete-broadcast@example.com"
+
       :ok =
         DialogBroadcast.broadcast_create(ctx.broadcast, dialog_id, %{call_id: dialog_id})
 
@@ -252,7 +253,7 @@ defmodule ParrotSip.DialogBroadcastTest do
       state = %{call_id: dialog_id, state: :confirmed}
 
       # Simulate a broadcast from another node
-      other_node = :"other@host"
+      other_node = :other@host
 
       Phoenix.PubSub.broadcast(
         ctx.pubsub,
@@ -276,7 +277,7 @@ defmodule ParrotSip.DialogBroadcastTest do
       :ok = DialogBroadcast.broadcast_create(ctx.broadcast, dialog_id, initial_state)
 
       # Simulate an update from another node
-      other_node = :"other@host"
+      other_node = :other@host
       changes = %{state: :confirmed}
 
       Phoenix.PubSub.broadcast(
@@ -299,7 +300,7 @@ defmodule ParrotSip.DialogBroadcastTest do
         DialogBroadcast.broadcast_create(ctx.broadcast, dialog_id, %{call_id: dialog_id})
 
       # Simulate a delete from another node
-      other_node = :"other@host"
+      other_node = :other@host
 
       Phoenix.PubSub.broadcast(
         ctx.pubsub,

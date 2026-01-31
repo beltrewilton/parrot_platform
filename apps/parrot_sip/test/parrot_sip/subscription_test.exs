@@ -28,6 +28,7 @@ defmodule ParrotSip.SubscriptionTest do
   # Assert that the subscription is in the expected state
   defp assert_state(pid, expected_state) do
     actual_state = Subscription.get_state(pid)
+
     assert actual_state == expected_state,
            "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
   end
@@ -53,6 +54,7 @@ defmodule ParrotSip.SubscriptionTest do
   describe "Subscription gen_statem initialization - RFC 6665 Section 4" do
     test "starts subscriber in pending state" do
       _subscribe_msg = build_subscribe_message()
+
       opts = [
         id: unique_subscription_id(),
         role: :subscriber,
@@ -99,6 +101,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       spec = Subscription.child_spec(opts)
 
       assert spec.id == Subscription
@@ -109,6 +112,7 @@ defmodule ParrotSip.SubscriptionTest do
 
     test "registers in Registry with subscription ID" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -127,6 +131,7 @@ defmodule ParrotSip.SubscriptionTest do
   describe "Subscription state transitions - RFC 6665 Section 4.1.2" do
     setup do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -134,6 +139,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       %{pid: pid, sub_id: sub_id}
@@ -212,6 +218,7 @@ defmodule ParrotSip.SubscriptionTest do
   describe "Notifier role - RFC 6665 Section 4.2" do
     setup do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :notifier,
@@ -219,6 +226,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       %{pid: pid, sub_id: sub_id}
@@ -279,6 +287,7 @@ defmodule ParrotSip.SubscriptionTest do
   describe "Refresh timer handling - RFC 6665 Section 4.2.2" do
     test "subscriber sets refresh timer based on expires" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -287,6 +296,7 @@ defmodule ParrotSip.SubscriptionTest do
         # Very short expiry for testing
         expires: 1
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       # Activate the subscription with nil expires so original value is preserved
@@ -303,6 +313,7 @@ defmodule ParrotSip.SubscriptionTest do
 
     test "notifier sets expiry timer" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :notifier,
@@ -310,6 +321,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 1
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       :gen_statem.cast(pid, :authorize)
@@ -321,6 +333,7 @@ defmodule ParrotSip.SubscriptionTest do
 
     test "updates expires on re-SUBSCRIBE response" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -328,6 +341,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       # Initial activation
@@ -347,6 +361,7 @@ defmodule ParrotSip.SubscriptionTest do
   describe "PUBLISH handling - RFC 3903" do
     test "notifier can receive PUBLISH request" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :notifier,
@@ -354,6 +369,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       :gen_statem.cast(pid, :authorize)
@@ -368,6 +384,7 @@ defmodule ParrotSip.SubscriptionTest do
 
     test "PUBLISH updates subscription state" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :notifier,
@@ -375,6 +392,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       :gen_statem.cast(pid, :authorize)
@@ -392,6 +410,7 @@ defmodule ParrotSip.SubscriptionTest do
     test "handles dialog termination" do
       dialog_pid = spawn(fn -> Process.sleep(5000) end)
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -399,6 +418,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       # Activate
@@ -416,6 +436,7 @@ defmodule ParrotSip.SubscriptionTest do
 
     test "handles unknown events gracefully" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -423,6 +444,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       :gen_statem.cast(pid, {:unknown_event, "data"})
@@ -435,6 +457,7 @@ defmodule ParrotSip.SubscriptionTest do
 
     test "handles unexpected call in pending state" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -442,6 +465,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       result = :gen_statem.call(pid, {:unexpected_call, "data"})
@@ -454,6 +478,7 @@ defmodule ParrotSip.SubscriptionTest do
   describe "Subscription lookup and management" do
     test "finds subscription by ID" do
       sub_id = unique_subscription_id()
+
       opts = [
         id: sub_id,
         role: :subscriber,
@@ -461,6 +486,7 @@ defmodule ParrotSip.SubscriptionTest do
         event_package: "presence",
         expires: 3600
       ]
+
       {:ok, pid} = Subscription.start_link(opts)
 
       assert {:ok, ^pid} = Subscription.find(sub_id)
@@ -480,6 +506,7 @@ defmodule ParrotSip.SubscriptionTest do
           event_package: "presence",
           expires: 3600
         ]
+
         ParrotSip.Subscription.Supervisor.start_child(opts)
       end
 

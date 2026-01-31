@@ -61,7 +61,8 @@ defmodule ParrotSip.Auth.NonceStoreTest do
       {:ok, pid} = NonceStore.start_link(name: :test_nonce_store_5)
 
       # Never generated this nonce
-      assert NonceStore.validate_nonce(pid, "unknown-nonce-xyz", "00000001") == {:error, :invalid_nonce}
+      assert NonceStore.validate_nonce(pid, "unknown-nonce-xyz", "00000001") ==
+               {:error, :invalid_nonce}
 
       GenServer.stop(pid)
     end
@@ -139,7 +140,8 @@ defmodule ParrotSip.Auth.NonceStoreTest do
     end
 
     test "cleanup removes expired nonces" do
-      {:ok, pid} = NonceStore.start_link(name: :test_nonce_store_11, ttl_seconds: 1, cleanup_interval: 500)
+      {:ok, pid} =
+        NonceStore.start_link(name: :test_nonce_store_11, ttl_seconds: 1, cleanup_interval: 500)
 
       nonce = NonceStore.generate_nonce(pid)
 

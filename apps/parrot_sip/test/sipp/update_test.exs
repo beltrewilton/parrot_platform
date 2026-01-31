@@ -34,8 +34,7 @@ defmodule SippTest.UpdateTest do
       # Scenario: INVITE -> 200 -> ACK -> UPDATE (sendonly) -> 200 -> BYE
       assert :ok ==
                SippRunner.run_scenario(
-                 scenario_file:
-                   "test/sipp/scenarios/update/uac_update_hold.xml",
+                 scenario_file: "test/sipp/scenarios/update/uac_update_hold.xml",
                  remote_host: "127.0.0.1",
                  remote_port: stack.port,
                  calls: 1,
@@ -65,8 +64,7 @@ defmodule SippTest.UpdateTest do
 
       assert :ok ==
                SippRunner.run_scenario(
-                 scenario_file:
-                   "test/sipp/scenarios/update/uac_update_hold.xml",
+                 scenario_file: "test/sipp/scenarios/update/uac_update_hold.xml",
                  remote_host: "127.0.0.1",
                  remote_port: stack.port,
                  calls: 3,
@@ -95,8 +93,7 @@ defmodule SippTest.UpdateTest do
       # Scenario: INVITE -> UPDATE (hold) -> UPDATE (resume) -> BYE
       assert :ok ==
                SippRunner.run_scenario(
-                 scenario_file:
-                   "test/sipp/scenarios/update/uac_update_hold_resume.xml",
+                 scenario_file: "test/sipp/scenarios/update/uac_update_hold_resume.xml",
                  remote_host: "127.0.0.1",
                  remote_port: stack.port,
                  calls: 1,
@@ -124,8 +121,7 @@ defmodule SippTest.UpdateTest do
 
       assert :ok ==
                SippRunner.run_scenario(
-                 scenario_file:
-                   "test/sipp/scenarios/update/uac_update_hold_resume.xml",
+                 scenario_file: "test/sipp/scenarios/update/uac_update_hold_resume.xml",
                  remote_host: "127.0.0.1",
                  remote_port: stack.port,
                  calls: 3,

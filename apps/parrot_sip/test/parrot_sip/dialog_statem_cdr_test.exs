@@ -22,6 +22,7 @@ defmodule ParrotSip.DialogStatemCdrTest do
   # Assert that the dialog is in the expected state
   defp assert_state(pid, expected_state) do
     actual_state = DialogStatem.get_state(pid)
+
     assert actual_state == expected_state,
            "Expected state #{inspect(expected_state)}, got #{inspect(actual_state)}"
   end
@@ -233,6 +234,7 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       # Verify invite_received_at is preserved after transition
       confirmed_timing = get_timing_data(pid)
+
       assert confirmed_timing.invite_received_at == invite_time,
              "invite_received_at should be preserved across state transitions"
     end
@@ -369,7 +371,8 @@ defmodule ParrotSip.DialogStatemCdrTest do
         parameters: %{}
       },
       other_headers: %{},
-      body: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 10000 RTP/AVP 0\r\n"
+      body:
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 10000 RTP/AVP 0\r\n"
     }
   end
 
@@ -468,6 +471,7 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       # Verify mos_fetcher is stored
       mos_fetcher_from_dialog = DialogStatem.get_mos_fetcher(pid)
+
       assert is_function(mos_fetcher_from_dialog, 1),
              "mos_fetcher should be stored and retrievable"
 
@@ -597,10 +601,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
         }
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       # Verify both are stored
       assert DialogStatem.get_mos_fetcher(pid) != nil
@@ -618,10 +622,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
         raise "Simulated MOS fetch error"
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       # Dialog should be created successfully despite faulty fetcher
       assert Process.alive?(pid)
@@ -682,10 +686,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
         }
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       assert_state(pid, :confirmed)
 
@@ -722,10 +726,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
       # Create MOS fetcher that returns nil
       mos_fetcher = fn _session_id -> nil end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       assert_state(pid, :confirmed)
 
@@ -774,15 +778,26 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       # mos_fetcher provided but no media_session_id
       mos_fetcher = fn _session_id ->
-        %{avg_mos: 4.0, min_mos: 3.8, max_mos: 4.2, status: :good,
-          total_packets: 1000, total_lost: 5, overall_loss_percent: 0.5,
-          quality_events: []}
+        %{
+          avg_mos: 4.0,
+          min_mos: 3.8,
+          max_mos: 4.2,
+          status: :good,
+          total_packets: 1000,
+          total_lost: 5,
+          overall_loss_percent: 0.5,
+          quality_events: []
+        }
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher
-        # No media_session_id!
-      })
+      {:ok, pid} =
+        DialogStatem.start_link({
+          :uas,
+          response,
+          invite,
+          mos_fetcher: mos_fetcher
+          # No media_session_id!
+        })
 
       assert_state(pid, :confirmed)
 
@@ -812,10 +827,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
         raise "Simulated MOS fetch failure"
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       assert_state(pid, :confirmed)
 
@@ -855,10 +870,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
         }
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       bye = build_bye_message()
       :gen_statem.call(pid, {:uas_request, bye})
@@ -871,7 +886,8 @@ defmodule ParrotSip.DialogStatemCdrTest do
 
       # Verify packet counts are derived from MOS summary
       assert cdr.media_info.packets_sent == 5000
-      assert cdr.media_info.packets_received == 4950  # total_packets - total_lost
+      # total_packets - total_lost
+      assert cdr.media_info.packets_received == 4950
     end
 
     test "CDR includes jitter extracted from quality events" do
@@ -898,10 +914,10 @@ defmodule ParrotSip.DialogStatemCdrTest do
         }
       end
 
-      {:ok, pid} = DialogStatem.start_link({:uas, response, invite,
-        mos_fetcher: mos_fetcher,
-        media_session_id: session_id
-      })
+      {:ok, pid} =
+        DialogStatem.start_link(
+          {:uas, response, invite, mos_fetcher: mos_fetcher, media_session_id: session_id}
+        )
 
       bye = build_bye_message()
       :gen_statem.call(pid, {:uas_request, bye})

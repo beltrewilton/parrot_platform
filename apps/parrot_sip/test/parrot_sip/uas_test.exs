@@ -244,7 +244,12 @@ defmodule ParrotSip.Transaction.ServerTest do
 
       # Add an existing To tag
       existing_tag = "existing-tag-123"
-      to_with_tag = %{resp_msg.to | parameters: Map.put(resp_msg.to.parameters, "tag", existing_tag)}
+
+      to_with_tag = %{
+        resp_msg.to
+        | parameters: Map.put(resp_msg.to.parameters, "tag", existing_tag)
+      }
+
       resp_msg_with_tag = %{resp_msg | to: to_with_tag}
 
       # Response should preserve the existing tag

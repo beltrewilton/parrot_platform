@@ -200,7 +200,8 @@ defmodule ParrotSip.CDR.Serializer do
       total_lost: summary[:total_lost] || summary.total_lost,
       overall_loss_percent: summary[:overall_loss_percent] || summary.overall_loss_percent,
       status: format_status(summary[:status] || Map.get(summary, :status)),
-      quality_events: format_quality_events(summary[:quality_events] || Map.get(summary, :quality_events))
+      quality_events:
+        format_quality_events(summary[:quality_events] || Map.get(summary, :quality_events))
     }
   end
 
@@ -209,6 +210,7 @@ defmodule ParrotSip.CDR.Serializer do
   defp format_status(status), do: status
 
   defp format_quality_events(nil), do: []
+
   defp format_quality_events(events) when is_list(events) do
     Enum.map(events, fn event ->
       %{

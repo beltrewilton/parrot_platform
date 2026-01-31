@@ -155,5 +155,4 @@ defmodule SippTest.MediaTest do
       SipStackHelper.stop(stack)
     end
   end
-
 end

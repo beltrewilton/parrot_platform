@@ -73,7 +73,13 @@ defmodule ParrotSip.CDR.MediaInfoTest do
         overall_loss_percent: 0.5,
         status: :excellent,
         quality_events: [
-          %{timestamp: DateTime.utc_now(), mos: 3.5, type: :degradation, jitter: 25.0, loss_percent: 2.0}
+          %{
+            timestamp: DateTime.utc_now(),
+            mos: 3.5,
+            type: :degradation,
+            jitter: 25.0,
+            loss_percent: 2.0
+          }
         ]
       }
 
@@ -228,7 +234,8 @@ defmodule ParrotSip.CDR.MediaInfoTest do
       media_info = %MediaInfo{
         codec: "PCMU",
         codec_payload_type: 0,
-        mos_summary: sample_mos_summary(avg_mos: 5.0, min_mos: 4.8, max_mos: 5.0, status: :excellent)
+        mos_summary:
+          sample_mos_summary(avg_mos: 5.0, min_mos: 4.8, max_mos: 5.0, status: :excellent)
       }
 
       assert media_info.mos_summary.avg_mos == 5.0

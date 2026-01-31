@@ -111,9 +111,24 @@ defmodule SippTest.DTMFTestHandler do
                 # Build proper Contact header with our local address
                 {local_ip, local_port} = sip_msg.source.local
                 local_ip_str = local_ip |> Tuple.to_list() |> Enum.join(".")
-                contact_uri = %ParrotSip.Uri{scheme: "sip", host: local_ip_str, port: local_port, parameters: %{}, headers: %{}}
+
+                contact_uri = %ParrotSip.Uri{
+                  scheme: "sip",
+                  host: local_ip_str,
+                  port: local_port,
+                  parameters: %{},
+                  headers: %{}
+                }
+
                 contact = %ParrotSip.Headers.Contact{uri: contact_uri, parameters: %{}}
-                response = %{response | body: sdp_answer, content_type: content_type, contact: contact}
+
+                response = %{
+                  response
+                  | body: sdp_answer,
+                    content_type: content_type,
+                    contact: contact
+                }
+
                 Server.response(response, uas)
                 :ok
 

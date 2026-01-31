@@ -263,9 +263,7 @@ defmodule ParrotSip.Subscription do
     event_package = Keyword.fetch!(opts, :event_package)
     expires = Keyword.fetch!(opts, :expires)
 
-    Logger.info(
-      "subscription #{id}: initializing as #{role} for event package #{event_package}"
-    )
+    Logger.info("subscription #{id}: initializing as #{role} for event package #{event_package}")
 
     # Monitor the dialog process
     dialog_mon = Process.monitor(dialog_pid)
@@ -292,7 +290,8 @@ defmodule ParrotSip.Subscription do
     {:keep_state_and_data, [{:reply, from, :pending}]}
   end
 
-  def pending({:call, from}, request, data) when request in [:get_role, :get_expires, :get_state_body] do
+  def pending({:call, from}, request, data)
+      when request in [:get_role, :get_expires, :get_state_body] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -386,7 +385,8 @@ defmodule ParrotSip.Subscription do
     {:keep_state_and_data, [{:reply, from, :active}]}
   end
 
-  def active({:call, from}, request, data) when request in [:get_role, :get_expires, :get_state_body] do
+  def active({:call, from}, request, data)
+      when request in [:get_role, :get_expires, :get_state_body] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
@@ -465,7 +465,8 @@ defmodule ParrotSip.Subscription do
     {:keep_state_and_data, [{:reply, from, :terminated}]}
   end
 
-  def terminated({:call, from}, request, data) when request in [:get_role, :get_expires, :get_state_body] do
+  def terminated({:call, from}, request, data)
+      when request in [:get_role, :get_expires, :get_state_body] do
     result = handle_introspection_call(request, data)
     {:keep_state_and_data, [{:reply, from, result}]}
   end
