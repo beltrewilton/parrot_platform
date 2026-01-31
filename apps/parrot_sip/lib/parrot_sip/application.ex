@@ -16,8 +16,8 @@ defmodule ParrotSip.Application do
       ParrotSip.Dialog.Supervisor,
       # Subscription supervisor - RFC 6665 event subscriptions
       ParrotSip.Subscription.Supervisor,
-      # Presence server - manages presence subscriptions and notifications
-      ParrotSip.Presence.Server,
+      # NOTE: ParrotSip.Presence.Server removed - functionality consolidated into
+      # Parrot.Subscription.Server which handles the full SUBSCRIBE/NOTIFY flow
       # UAS supervisor - incoming call legs
       ParrotSip.UAS.Supervisor,
       # UAC supervisor - outgoing call legs
