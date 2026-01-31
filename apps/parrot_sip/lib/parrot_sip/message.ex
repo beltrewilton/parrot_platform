@@ -403,14 +403,37 @@ defmodule ParrotSip.Message do
   end
 
   @doc """
-  Sets a header in other_headers map for unknown/extension headers.
-  For known headers, use the specific put_* functions instead.
+  Sets a header value. Routes known headers to their struct fields,
+  and puts unknown/extension headers in other_headers map.
   """
   @spec put_header(t(), String.t(), any()) :: t()
   def put_header(%__MODULE__{} = message, name, value) do
-    downcased = String.downcase(name)
-    other_headers = Map.put(message.other_headers || %{}, downcased, value)
-    %{message | other_headers: other_headers}
+    case String.downcase(name) do
+      "from" -> %{message | from: value}
+      "to" -> %{message | to: value}
+      "call-id" -> %{message | call_id: value}
+      "cseq" -> %{message | cseq: value}
+      "contact" -> %{message | contact: value}
+      "via" -> %{message | via: if(is_list(value), do: value, else: [value])}
+      "max-forwards" -> %{message | max_forwards: value}
+      "route" -> %{message | route: value}
+      "record-route" -> %{message | record_route: value}
+      "content-type" -> %{message | content_type: value}
+      "content-length" -> %{message | content_length: value}
+      "expires" -> %{message | expires: value}
+      "allow" -> %{message | allow: value}
+      "supported" -> %{message | supported: value}
+      "accept" -> %{message | accept: value}
+      "event" -> %{message | event: value}
+      "subscription-state" -> %{message | subscription_state: value}
+      "refer-to" -> %{message | refer_to: value}
+      "subject" -> %{message | subject: value}
+      "sip-etag" -> %{message | sip_etag: value}
+      "sip-if-match" -> %{message | sip_if_match: value}
+      downcased ->
+        other_headers = Map.put(message.other_headers || %{}, downcased, value)
+        %{message | other_headers: other_headers}
+    end
   end
 
   @spec get_header(t(), String.t()) :: any()

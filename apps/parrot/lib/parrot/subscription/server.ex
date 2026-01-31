@@ -54,7 +54,8 @@ defmodule Parrot.Subscription.Server do
   use GenServer
   require Logger
 
-  alias ParrotSip.Message
+  alias ParrotSip.{Message, Branch, Source}
+  alias ParrotSip.Headers.{Via, From, To, CSeq, Event, SubscriptionState, Contact}
 
   defstruct [
     :subscription,
@@ -69,11 +70,19 @@ defmodule Parrot.Subscription.Server do
     defstruct [
       :id,
       :watcher,
+      :watcher_contact,
       :presentity,
       :expires,
       :dialog_id,
       :call_id,
-      :state
+      :state,
+      # Dialog info for building in-dialog requests without DialogStatem
+      :local_tag,
+      :remote_tag,
+      :local_cseq,
+      # Transport info for building NOTIFY requests
+      :local_host,
+      :local_port
     ]
   end
 
@@ -333,8 +342,33 @@ defmodule Parrot.Subscription.Server do
 
     Logger.debug("Subscription.Server: Sent 200 OK, dialog_id=#{inspect(dialog_id)}")
 
-    # Update subscription with dialog_id
-    updated_subscription = %{subscription | dialog_id: dialog_id}
+    # Extract watcher's Contact URI for sending NOTIFY
+    watcher_contact = extract_contact_uri(sip_msg)
+
+    # Extract dialog tags for building NOTIFY without DialogStatem
+    # For UAS: local_tag is our To tag, remote_tag is their From tag
+    local_tag = get_to_tag(final_response)
+    remote_tag = get_from_tag(sip_msg)
+
+    # Extract local transport info from request source for building Via header
+    {local_host, local_port} = extract_local_transport(sip_msg)
+
+    Logger.debug(
+      "Subscription.Server: Dialog info - watcher_contact=#{inspect(watcher_contact)}, " <>
+        "local_tag=#{local_tag}, remote_tag=#{remote_tag}, local=#{local_host}:#{local_port}"
+    )
+
+    # Update subscription with dialog info
+    updated_subscription = %{
+      subscription
+      | dialog_id: dialog_id,
+        watcher_contact: watcher_contact,
+        local_tag: local_tag,
+        remote_tag: remote_tag,
+        local_cseq: 0,
+        local_host: local_host,
+        local_port: local_port
+    }
 
     # Step 3: Store subscription (via handler callback)
     subscription_data = %{
@@ -441,53 +475,102 @@ defmodule Parrot.Subscription.Server do
   end
 
   defp send_notify_via_transaction(subscription, presence_state) do
-    # Convert dialog_id map to string for Registry lookup
-    dialog_id_str = ParrotSip.Dialog.to_string(subscription.dialog_id)
-
     # Build PIDF+XML body
     pidf_body = ParrotSip.Presence.Pidf.build(subscription.presentity, presence_state)
 
-    # Build NOTIFY message template
-    notify_template =
-      Parrot.Presence.build_notify_message(
-        subscription.presentity,
-        pidf_body,
-        subscription.expires
-      )
+    # Build NOTIFY request directly (bypass DialogStatem since no dialog exists for SUBSCRIBE)
+    # RFC 6665 Section 4.1: NOTIFY is sent in-dialog to the subscriber
+    notify_request = build_notify_request(subscription, pidf_body)
 
-    # Build in-dialog request with proper headers
-    case ParrotSip.DialogStatem.uac_request(dialog_id_str, notify_template) do
-      {:ok, notify_request} ->
-        Logger.debug("Subscription.Server: Built NOTIFY request, sending via client transaction")
+    Logger.debug("Subscription.Server: Built NOTIFY request, sending via client transaction")
 
-        # Send via client transaction layer
-        callback = fn result ->
-          case result do
-            {:message, response} ->
-              Logger.debug(
-                "Subscription.Server: NOTIFY response: #{response.status_code} #{response.reason_phrase}"
-              )
+    # Send via client transaction layer
+    callback = fn result ->
+      case result do
+        {:message, response} ->
+          Logger.debug(
+            "Subscription.Server: NOTIFY response: #{response.status_code} #{response.reason_phrase}"
+          )
 
-            {:stop, reason} ->
-              Logger.warning("Subscription.Server: NOTIFY transaction stopped: #{inspect(reason)}")
+        {:stop, reason} ->
+          Logger.warning("Subscription.Server: NOTIFY transaction stopped: #{inspect(reason)}")
 
-            other ->
-              Logger.debug("Subscription.Server: NOTIFY callback: #{inspect(other)}")
-          end
-        end
-
-        # Extract destination from request_uri
-        nexthop = notify_request.request_uri
-
-        Logger.debug("Subscription.Server: Sending NOTIFY to nexthop: #{nexthop}")
-        ParrotSip.Transaction.Client.request(notify_request, nexthop, callback)
-
-      {:error, reason} ->
-        Logger.warning(
-          "Subscription.Server: Failed to build NOTIFY for #{subscription.watcher}: #{inspect(reason)}"
-        )
+        other ->
+          Logger.debug("Subscription.Server: NOTIFY callback: #{inspect(other)}")
+      end
     end
+
+    # Extract destination from watcher_contact or request_uri
+    nexthop = subscription.watcher_contact || notify_request.request_uri
+
+    Logger.debug("Subscription.Server: Sending NOTIFY to nexthop: #{nexthop}")
+    ParrotSip.Transaction.Client.request(notify_request, nexthop, callback)
   end
+
+  # Build a complete NOTIFY request for in-dialog use without DialogStatem
+  # RFC 6665 Section 4.1: NOTIFY requests are sent in-dialog
+  # Uses proper SIP header structs as per ParrotSip conventions
+  defp build_notify_request(subscription, pidf_body) do
+    # For UAS (notifier): we were the called party, now sending as UAC
+    # From = our local identity (the presentity), To = the watcher
+    cseq = (subscription.local_cseq || 0) + 1
+
+    # Build in-dialog NOTIFY: From is us (presentity), To is them (watcher)
+    request_uri = subscription.watcher_contact || subscription.watcher
+
+    # Build Via header with proper branch parameter (RFC 3261 Section 8.1.1.7)
+    via = %Via{
+      protocol: "SIP",
+      version: "2.0",
+      transport: :udp,
+      host: subscription.local_host || "127.0.0.1",
+      port: subscription.local_port || 5060,
+      parameters: %{"branch" => Branch.generate()}
+    }
+
+    # Build From header with our tag (we are the notifier/presentity)
+    from = %From{
+      display_name: nil,
+      uri: subscription.presentity,
+      parameters: build_tag_params(subscription.local_tag)
+    }
+
+    # Build To header with their tag (the watcher/subscriber)
+    to = %To{
+      display_name: nil,
+      uri: subscription.watcher,
+      parameters: build_tag_params(subscription.remote_tag)
+    }
+
+    # Build Subscription-State header (RFC 6665 Section 4.1.3)
+    subscription_state = SubscriptionState.set_expires(
+      to_string(subscription.expires),
+      SubscriptionState.new(:active)
+    )
+
+    %Message{
+      type: :request,
+      method: :notify,
+      request_uri: request_uri,
+      version: "SIP/2.0",
+      via: [via],  # Via must be a list for serializer
+      from: from,
+      to: to,
+      call_id: subscription.call_id,
+      cseq: %CSeq{number: cseq, method: :notify},
+      contact: %Contact{uri: subscription.presentity, parameters: %{}},
+      event: %Event{event: "presence", parameters: %{}},
+      subscription_state: subscription_state,
+      content_type: "application/pidf+xml",
+      content_length: byte_size(pidf_body),
+      other_headers: %{},
+      body: pidf_body
+    }
+  end
+
+  # Build tag parameters map for From/To headers
+  defp build_tag_params(tag) when is_binary(tag) and tag != "", do: %{"tag" => tag}
+  defp build_tag_params(_), do: %{}
 
   defp build_notify_message(subscription, presence_state) do
     # Build a minimal NOTIFY message for testing
@@ -505,6 +588,44 @@ defmodule Parrot.Subscription.Server do
     random = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
     "sub-#{:erlang.unique_integer([:positive])}-#{random}"
   end
+
+  # Extract local transport info (host, port) from SIP message source
+  # Uses ParrotSip.Source module for consistent transport info extraction
+  defp extract_local_transport(%{source: %Source{} = source}) do
+    case Source.local(source) do
+      {{a, b, c, d}, port} -> {"#{a}.#{b}.#{c}.#{d}", port}
+      {host, port} when is_binary(host) -> {host, port}
+      _ -> {"127.0.0.1", 5060}
+    end
+  end
+
+  defp extract_local_transport(%{source: %{local: local}}) when is_tuple(local) do
+    case local do
+      {{a, b, c, d}, port} -> {"#{a}.#{b}.#{c}.#{d}", port}
+      {host, port} when is_binary(host) -> {host, port}
+      _ -> {"127.0.0.1", 5060}
+    end
+  end
+
+  defp extract_local_transport(_), do: {"127.0.0.1", 5060}
+
+  # Extract Contact URI from SIP message
+  defp extract_contact_uri(%{contact: %{uri: %ParrotSip.Uri{} = uri}}), do: ParrotSip.Uri.to_string(uri)
+  defp extract_contact_uri(%{contact: %{uri: uri}}) when is_binary(uri), do: uri
+
+  defp extract_contact_uri(%{contact: [%{uri: %ParrotSip.Uri{} = uri} | _]}),
+    do: ParrotSip.Uri.to_string(uri)
+
+  defp extract_contact_uri(%{contact: [%{uri: uri} | _]}) when is_binary(uri), do: uri
+  defp extract_contact_uri(_), do: nil
+
+  # Extract From tag from request
+  defp get_from_tag(%{from: %{parameters: %{"tag" => tag}}}), do: tag
+  defp get_from_tag(_), do: nil
+
+  # Extract To tag from response
+  defp get_to_tag(%{to: %{parameters: %{"tag" => tag}}}), do: tag
+  defp get_to_tag(_), do: nil
 
   defp authorization_state(:allow), do: :active
   defp authorization_state(:deny), do: :terminated
