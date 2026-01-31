@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  NOTIFY Receiver Scenario
+
+  UAS that receives and acknowledges NOTIFY messages.
+  Used as coordination endpoint for presence state change tests.
+-->
+
+<scenario name="NOTIFY Receiver">
+
+  <!-- Wait for and receive NOTIFY -->
+  <recv request="NOTIFY" timeout="60000"/>
+
+  <!-- Send 200 OK for NOTIFY -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+    ]]>
+  </send>
+
+</scenario>

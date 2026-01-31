@@ -850,7 +850,16 @@ defmodule ParrotSip.Serializer do
   defp build_other_headers(nil, headers), do: headers
 
   defp build_other_headers(other_headers, headers) when map_size(other_headers) > 0 do
+    # Filter out headers that have dedicated struct fields to prevent duplication
+    # This handles cases where CSeq or other known headers end up in other_headers
+    known_headers = ~w(via from to call-id cseq max-forwards route record-route contact
+                       content-type content-length expires allow supported accept event
+                       subscription-state refer-to subject sip-etag sip-if-match)
+
     other_headers
+    |> Enum.reject(fn {name, _value} ->
+      String.downcase(to_string(name)) in known_headers
+    end)
     |> Enum.map(fn {name, value} -> format_header(name, value) end)
     |> Enum.concat(headers)
   end

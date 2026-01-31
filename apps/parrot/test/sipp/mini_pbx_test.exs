@@ -34,6 +34,10 @@ defmodule Parrot.Sipp.MiniPBXTest do
   # ===========================================================================
 
   setup do
+    # Small delay to allow SIPp from previous test to fully release port 5060
+    # SIPp uses this port by default and may briefly hold it after test completion
+    Process.sleep(300)
+
     # Ensure Mnesia is started and tables exist
     :mnesia.start()
 
@@ -61,6 +65,9 @@ defmodule Parrot.Sipp.MiniPBXTest do
       if Process.alive?(stack.transport_handler) do
         GenServer.stop(stack.transport_handler)
       end
+
+      # Allow time for SIPp to fully release port 5060
+      Process.sleep(200)
     end)
 
     %{stack: stack, port: stack.port}

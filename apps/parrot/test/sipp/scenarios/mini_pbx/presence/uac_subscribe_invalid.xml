@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Subscribe to Invalid Extension Scenario
+
+  Tests SUBSCRIBE to a non-existent extension. Accepts:
+  - 200 OK followed by NOTIFY (if handler allows all subscriptions)
+  - 403 Forbidden / 404 Not Found (if handler rejects unknown extensions)
+
+  This scenario is designed to work when the handler allows all subscriptions,
+  which is the default behavior for the MiniPBX demo.
+-->
+
+<scenario name="Subscribe to Invalid Extension">
+
+  <!-- Send SUBSCRIBE for non-existent extension -->
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:9999@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      Max-Forwards: 70
+      From: <sip:watcher@[local_ip]>;tag=[call_number]
+      To: <sip:9999@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:watcher@[local_ip]:[local_port]>
+      Event: presence
+      Expires: 3600
+      Accept: application/pidf+xml
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK (handler allows all subscriptions) -->
+  <recv response="200" timeout="5000"/>
+
+  <!-- Expect NOTIFY with presence state -->
+  <recv request="NOTIFY" timeout="5000"/>
+
+  <!-- Send 200 OK to NOTIFY -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+    ]]>
+  </send>
+
+</scenario>

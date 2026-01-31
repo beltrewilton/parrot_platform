@@ -318,10 +318,46 @@ defmodule ParrotSip.TransactionStatem do
   - RFC 3261 Section 17.2.1: INVITE Server Transaction
   - RFC 3261 Section 17.2.2: Non-INVITE Server Transaction
   """
-  @spec server_response(term(), ParrotSip.Transaction.t()) :: :ok
+  @spec server_response(term(), ParrotSip.Transaction.t()) :: :ok | {:error, :no_process}
   def server_response(resp, %ParrotSip.Transaction{} = transaction) do
     Logger.debug("Sending response: #{inspect(resp)}")
-    :gen_statem.cast(via_tuple(transaction), {:send, resp})
+
+    # Detect if we're being called from within the transaction process.
+    # If so, use cast to avoid deadlock (process calling itself).
+    # If called externally (e.g., from Subscription.Server), use call
+    # for synchronous behavior to ensure proper response ordering per RFC 6665.
+    via = via_tuple(transaction)
+
+    # Registry lookup may return empty if:
+    # 1. Transaction not registered (test scenarios with mock transactions)
+    # 2. Transaction already terminated
+    # In these cases, try cast since we can't determine internal vs external
+    case Registry.lookup(ParrotSip.Registry, transaction.id) do
+      [{pid, _}] when pid == self() ->
+        # Called from within the transaction - use cast to avoid deadlock
+        Logger.debug("server_response: Internal call, using cast")
+        :gen_statem.cast(via, {:send, resp})
+
+      [{_pid, _}] ->
+        # Called from external process - use call for synchronous send
+        Logger.debug("server_response: External call, using call")
+        :gen_statem.call(via, {:send, resp})
+
+      [] ->
+        # Transaction not in registry - could be test scenario or terminated
+        # Try cast as a fallback (won't deadlock, but may not block)
+        Logger.debug("server_response: Transaction not in registry, using cast")
+        :gen_statem.cast(via, {:send, resp})
+    end
+  rescue
+    # Handle case where transaction process doesn't exist
+    ArgumentError ->
+      Logger.warning("server_response: No transaction process found")
+      {:error, :no_process}
+  catch
+    :exit, {:noproc, _} ->
+      Logger.warning("server_response: Transaction process not running")
+      {:error, :no_process}
   end
 
   @doc """
@@ -359,13 +395,19 @@ defmodule ParrotSip.TransactionStatem do
     trans_id = Transaction.generate_id(req_sip_msg)
 
     case Registry.lookup(ParrotSip.Registry, trans_id) do
-      [{pid, _}] when is_pid(pid) ->
-        Logger.debug("Found transaction to create reponse: #{inspect(trans_id, @inspect_opts)}")
+      [{pid, _}] when pid == self() ->
+        # Internal call from within the state machine - use cast to avoid deadlock
+        Logger.debug("Found transaction (internal call): #{inspect(trans_id, @inspect_opts)}")
         :gen_statem.cast(pid, {:send, resp_sip_msg})
+        :ok
 
-      _ ->
+      [{pid, _}] when is_pid(pid) ->
+        # External call - use synchronous call for proper ordering
+        Logger.debug("Found transaction (external call): #{inspect(trans_id, @inspect_opts)}")
+        :gen_statem.call(pid, {:send, resp_sip_msg})
+
+      [] ->
         Logger.error("No transaction found for response")
-        # TODO: should we support stateless responses. If so, when?
         {:error, "No transaction found"}
     end
   end
@@ -1250,96 +1292,102 @@ defmodule ParrotSip.TransactionStatem do
   # 2. Optionally update last_response
   # 3. Check if gen_statem state should transition
   # 4. Process actions
+  # 5. Optionally reply to caller (for synchronous calls)
   defp apply_state_transition(transaction, event, state, opts \\ []) do
     update_response = Keyword.get(opts, :update_response, nil)
     send_response = Keyword.get(opts, :send_response, false)
+    reply_to = Keyword.get(opts, :reply_to, nil)
 
     Logger.debug(
       "[apply_state_transition] Event: #{inspect(event)}, current state: #{transaction.state}, transaction_id: #{transaction.id}"
     )
 
-    case Transaction.next_state(transaction, event) do
-      {:ok, new_state_atom, actions} ->
-        Logger.debug(
-          "[apply_state_transition] Transition: #{transaction.state} -> #{new_state_atom}, actions: #{inspect(actions)}"
-        )
-
-        # Update transaction struct
-        new_transaction =
-          if update_response do
-            transaction
-            |> Transaction.update_state(new_state_atom)
-            |> Transaction.update_last_response(update_response)
-          else
-            Transaction.update_state(transaction, new_state_atom)
-          end
-
-        new_data = %{state.data | transaction: new_transaction}
-        new_state = %{state | data: new_data}
-
-        # Optionally send response via transport
-        if send_response && update_response do
-          source = extract_source(state, update_response)
-
-          if source do
-            send_via_transport_handler(:send_response, update_response, source)
-          end
-        end
-
-        # Check if gen_statem state should transition
-        if transaction.state != new_state_atom do
+    result =
+      case Transaction.next_state(transaction, event) do
+        {:ok, new_state_atom, actions} ->
           Logger.debug(
-            "[apply_state_transition] State changing, will call process_actions and return :next_state"
+            "[apply_state_transition] Transition: #{transaction.state} -> #{new_state_atom}, actions: #{inspect(actions)}"
           )
 
-          # Call state transition callback if handler exists (only for server transactions with Handler struct)
-          if state.data.handler && is_struct(state.data.handler, ParrotSip.Handler) &&
-               state.data[:origmsg] do
-            call_state_transition_callback(
-              new_state_atom,
-              new_transaction,
-              state.data.origmsg,
-              state.data.handler
+          # Update transaction struct
+          new_transaction =
+            if update_response do
+              transaction
+              |> Transaction.update_state(new_state_atom)
+              |> Transaction.update_last_response(update_response)
+            else
+              Transaction.update_state(transaction, new_state_atom)
+            end
+
+          new_data = %{state.data | transaction: new_transaction}
+          new_state = %{state | data: new_data}
+
+          # Optionally send response via transport
+          if send_response && update_response do
+            source = extract_source(state, update_response)
+
+            if source do
+              send_via_transport_handler(:send_response, update_response, source)
+            end
+          end
+
+          # Check if gen_statem state should transition
+          if transaction.state != new_state_atom do
+            Logger.debug(
+              "[apply_state_transition] State changing, will call process_actions and return :next_state"
             )
-          end
 
-          action_result = process_actions(actions, new_state)
-
-          Logger.debug(
-            "[apply_state_transition] process_actions returned: #{inspect(action_result)}"
-          )
-
-          case action_result do
-            :stop ->
-              Logger.debug("[apply_state_transition] Returning {:stop, :normal, new_state}")
-              {:stop, :normal, new_state}
-
-            {:keep_state, result_state} ->
-              Logger.debug(
-                "[apply_state_transition] Returning {:next_state, #{new_state_atom}, ...}"
+            # Call state transition callback if handler exists (only for server transactions with Handler struct)
+            if state.data.handler && is_struct(state.data.handler, ParrotSip.Handler) &&
+                 state.data[:origmsg] do
+              call_state_transition_callback(
+                new_state_atom,
+                new_transaction,
+                state.data.origmsg,
+                state.data.handler
               )
+            end
 
-              {:next_state, new_state_atom, result_state}
+            action_result = process_actions(actions, new_state)
 
-            other ->
-              Logger.debug("[apply_state_transition] Returning other: #{inspect(other)}")
-              other
+            Logger.debug(
+              "[apply_state_transition] process_actions returned: #{inspect(action_result)}"
+            )
+
+            case action_result do
+              :stop ->
+                Logger.debug("[apply_state_transition] Returning {:stop, :normal, new_state}")
+                {:stop, :normal, new_state}
+
+              {:keep_state, result_state} ->
+                Logger.debug(
+                  "[apply_state_transition] Returning {:next_state, #{new_state_atom}, ...}"
+                )
+
+                {:next_state, new_state_atom, result_state}
+
+              other ->
+                Logger.debug("[apply_state_transition] Returning other: #{inspect(other)}")
+                other
+            end
+          else
+            Logger.debug(
+              "[apply_state_transition] State not changing, will call process_actions and keep current state"
+            )
+
+            process_actions(actions, new_state)
           end
-        else
+
+        {:error, reason} ->
           Logger.debug(
-            "[apply_state_transition] State not changing, will call process_actions and keep current state"
+            "[apply_state_transition] Transaction.next_state returned error: #{inspect(reason)}"
           )
 
-          process_actions(actions, new_state)
-        end
+          {:keep_state, state}
+      end
 
-      {:error, reason} ->
-        Logger.debug(
-          "[apply_state_transition] Transaction.next_state returned error: #{inspect(reason)}"
-        )
-
-        {:keep_state, state}
-    end
+    # Add reply action if this was a synchronous call
+    add_reply_action(result, reply_to)
   end
 
   # Real implementation of process_actions/2 to handle SIP actions and timers.
@@ -1904,7 +1952,11 @@ defmodule ParrotSip.TransactionStatem do
       ParrotSip.Message.reply(sip_msg, 100, "Trying")
       |> Map.put(:body, "")
 
-    Server.response(trying_resp, transaction)
+    # Send 100 Trying directly via transport (not through public API to avoid deadlock)
+    # The public server_response uses a synchronous call, which would deadlock
+    # when called from within the state machine's own callback.
+    source = extract_source(state, trying_resp)
+    if source, do: send_via_transport_handler(:send_response, trying_resp, source)
 
     # After sending 100 Trying, INVITE server transactions move to proceeding
     # Store the provisional response we sent
@@ -1994,10 +2046,24 @@ defmodule ParrotSip.TransactionStatem do
     {:keep_state, state}
   end
 
-  def trying(:cast, {:send, response}, %{data: %{transaction: transaction}} = state) do
+  def trying({:call, from}, {:send, response}, %{data: %{transaction: transaction}} = state) do
     Logger.debug(
-      "trying(:cast, {:send, response}, %{data: %{transaction: transaction} = data} = state)"
+      "trying({:call, from}, {:send, response}, ...)"
     )
+
+    event = classify_to_event(response.status_code)
+
+    apply_state_transition(transaction, event, state,
+      update_response: response,
+      send_response: true,
+      reply_to: from
+    )
+  end
+
+  # Cast version of {:send, response} - used when called from within the transaction process
+  # to avoid deadlock. This is typically used by handler callbacks.
+  def trying(:cast, {:send, response}, %{data: %{transaction: transaction}} = state) do
+    Logger.debug("trying(:cast, {:send, response}, ...)")
 
     event = classify_to_event(response.status_code)
 
@@ -2020,8 +2086,14 @@ defmodule ParrotSip.TransactionStatem do
 
     Server.process_cancel(transaction, handler)
     resp = Server.make_reply(487, "Request Terminated", transaction, transaction.request)
-    server_response(resp, transaction)
-    {:keep_state, state}
+
+    # Send response directly via transport (not through public API to avoid deadlock)
+    source = extract_source(state, resp)
+    if source, do: send_via_transport_handler(:send_response, resp, source)
+
+    # Update transaction state and move to completed
+    event = classify_to_event(resp.status_code)
+    apply_state_transition(transaction, event, state, update_response: resp)
   end
 
   # CANCEL for non-INVITE server transactions
@@ -2160,8 +2232,14 @@ defmodule ParrotSip.TransactionStatem do
 
     Server.process_cancel(transaction, handler)
     resp = Server.make_reply(487, "Request Terminated", transaction, transaction.request)
-    server_response(resp, transaction)
-    {:keep_state, state}
+
+    # Send response directly via transport (not through public API to avoid deadlock)
+    source = extract_source(state, resp)
+    if source, do: send_via_transport_handler(:send_response, resp, source)
+
+    # Update transaction state and move to completed
+    event = classify_to_event(resp.status_code)
+    apply_state_transition(transaction, event, state, update_response: resp)
   end
 
   # CANCEL for non-INVITE server transactions in proceeding
@@ -2212,6 +2290,19 @@ defmodule ParrotSip.TransactionStatem do
   def proceeding(:cast, :cancel, %{type: :client, data: %{cancelled: true}} = state) do
     Logger.debug("trans: transaction is already cancelled in proceeding state")
     {:keep_state, state}
+  end
+
+  # Handle synchronous response sending in proceeding state (server transactions)
+  def proceeding({:call, from}, {:send, response}, %{data: %{transaction: transaction}} = state) do
+    Logger.debug("proceeding({:call, from}, {:send, response}, ...)")
+
+    event = classify_to_event(response.status_code)
+
+    apply_state_transition(transaction, event, state,
+      update_response: response,
+      send_response: true,
+      reply_to: from
+    )
   end
 
   def proceeding(:cast, event, state), do: handle_common_event(event, state)
@@ -2360,10 +2451,27 @@ defmodule ParrotSip.TransactionStatem do
   - RFC 3261 Section 17.2.1: INVITE Server Transaction (completed state)
   - RFC 3261 Section 17.2.2: Non-INVITE Server Transaction (completed state)
   """
-  def completed(:cast, {:send, _response}, %{data: %{transaction: transaction}} = state) do
+  def completed({:call, from}, {:send, _response}, %{data: %{transaction: transaction}} = state) do
     Logger.debug(
       "completed state: processing {:send, response} for transaction type: #{transaction.type}"
     )
+
+    # In completed state, we can only retransmit the last response
+    if transaction.last_response do
+      Logger.debug("Retransmitting last response in completed state")
+      source = extract_source(state, transaction.last_response)
+
+      if source do
+        send_via_transport_handler(:send_response, transaction.last_response, source)
+      end
+    end
+
+    {:keep_state, state, [{:reply, from, :ok}]}
+  end
+
+  # Cast version for when called from within the transaction process
+  def completed(:cast, {:send, _response}, %{data: %{transaction: transaction}} = state) do
+    Logger.debug("completed state: processing cast {:send, response}")
 
     # In completed state, we can only retransmit the last response
     if transaction.last_response do
@@ -2533,6 +2641,7 @@ defmodule ParrotSip.TransactionStatem do
       send_response: true
     )
   end
+
 
   defp handle_common_event(
          {:received, %{type: :response, status_code: status_code} = sip_msg},
@@ -3245,4 +3354,30 @@ defmodule ParrotSip.TransactionStatem do
       Logger.warning("No transport handler available - message not sent")
     end
   end
+
+  # Helper to add reply action to gen_statem return values.
+  # Used when handling synchronous calls (e.g., server_response).
+  defp add_reply_action(result, nil), do: result
+
+  defp add_reply_action({:next_state, state, data}, from) do
+    {:next_state, state, data, [{:reply, from, :ok}]}
+  end
+
+  defp add_reply_action({:next_state, state, data, actions}, from) when is_list(actions) do
+    {:next_state, state, data, [{:reply, from, :ok} | actions]}
+  end
+
+  defp add_reply_action({:keep_state, data}, from) do
+    {:keep_state, data, [{:reply, from, :ok}]}
+  end
+
+  defp add_reply_action({:keep_state, data, actions}, from) when is_list(actions) do
+    {:keep_state, data, [{:reply, from, :ok} | actions]}
+  end
+
+  defp add_reply_action({:stop, reason, data}, from) do
+    {:stop_and_reply, reason, [{:reply, from, :ok}], data}
+  end
+
+  defp add_reply_action(other, _from), do: other
 end

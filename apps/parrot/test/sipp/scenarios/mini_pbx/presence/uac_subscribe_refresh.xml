@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Subscription Refresh Scenario
+
+  Tests subscription refresh flow:
+  1. Initial SUBSCRIBE (Expires: 60)
+  2. Receive 200 OK + NOTIFY
+  3. Wait
+  4. Re-SUBSCRIBE (Expires: 60)
+  5. Receive 200 OK + NOTIFY
+-->
+
+<scenario name="Subscription Refresh">
+
+  <!-- Initial SUBSCRIBE to extension 1001 -->
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:1001@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      Max-Forwards: 70
+      From: <sip:watcher@[local_ip]>;tag=[call_number]
+      To: <sip:1001@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:watcher@[local_ip]:[local_port]>
+      Event: presence
+      Expires: 60
+      Accept: application/pidf+xml
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK -->
+  <recv response="200" timeout="5000"/>
+
+  <!-- Expect initial NOTIFY with presence state -->
+  <recv request="NOTIFY" timeout="5000"/>
+
+  <!-- Send 200 OK for NOTIFY -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Wait before re-subscribing -->
+  <pause milliseconds="1000"/>
+
+  <!-- Re-SUBSCRIBE to refresh subscription -->
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:1001@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]-2
+      Max-Forwards: 70
+      From: <sip:watcher@[local_ip]>;tag=[call_number]
+      To: <sip:1001@[remote_ip]:[remote_port]>;tag=[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 SUBSCRIBE
+      Contact: <sip:watcher@[local_ip]:[local_port]>
+      Event: presence
+      Expires: 60
+      Accept: application/pidf+xml
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Expect 200 OK for refresh -->
+  <recv response="200" timeout="5000"/>
+
+  <!-- Expect NOTIFY after refresh -->
+  <recv request="NOTIFY" timeout="5000"/>
+
+  <!-- Send 200 OK for NOTIFY -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+    ]]>
+  </send>
+
+</scenario>

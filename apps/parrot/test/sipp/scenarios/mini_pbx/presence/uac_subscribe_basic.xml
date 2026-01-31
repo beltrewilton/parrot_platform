@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  Basic Presence Subscription Scenario
+
+  Tests the fundamental SUBSCRIBE/NOTIFY flow:
+  1. UAC sends SUBSCRIBE for extension presence
+  2. Receives 200 OK for SUBSCRIBE
+  3. Receives NOTIFY with presence state
+  4. Sends 200 OK for NOTIFY
+
+  RFC References:
+  - RFC 3856: A Presence Event Package for SIP
+  - RFC 6665: SIP-Specific Event Notification
+-->
+
+<scenario name="Basic Presence Subscription">
+
+  <!-- Send SUBSCRIBE for presence of extension 1001 -->
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:1001@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      Max-Forwards: 70
+      From: <sip:watcher@[local_ip]>;tag=[call_number]
+      To: <sip:1001@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:watcher@[local_ip]:[local_port]>
+      Event: presence
+      Expires: 3600
+      Accept: application/pidf+xml
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Receive 200 OK for SUBSCRIBE -->
+  <recv response="200" rtd="true">
+  </recv>
+
+  <!-- Receive NOTIFY with presence state -->
+  <recv request="NOTIFY" crlf="true">
+  </recv>
+
+  <!-- Send 200 OK for NOTIFY -->
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:watcher@[local_ip]:[local_port]>
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <!-- Done -->
+  <pause milliseconds="50"/>
+
+</scenario>
