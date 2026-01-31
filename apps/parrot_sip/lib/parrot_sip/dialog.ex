@@ -858,10 +858,10 @@ defmodule ParrotSip.Dialog do
       method: template.method
     }
 
-    # Get local host from dialog or fall back to application config
+    # Get local host/port from dialog or fall back to application config
     # RFC 3261 Section 12.2.1.1: Via header must use local address for response routing
     local_host = dialog.local_host || Application.get_env(:parrot_sip, :local_host, "127.0.0.1")
-    local_port = dialog.local_port
+    local_port = dialog.local_port || Application.get_env(:parrot_sip, :local_port, 5060)
     transport = dialog.transport || :udp
 
     # Create a basic request structure
@@ -871,14 +871,17 @@ defmodule ParrotSip.Dialog do
       type: :request,
       direction: :outgoing,
       version: "SIP/2.0",
-      via: %Headers.Via{
-        protocol: "SIP",
-        version: "2.0",
-        transport: transport,
-        host: local_host,
-        port: local_port,
-        parameters: %{"branch" => Headers.generate_branch()}
-      },
+      via: [
+        %Headers.Via{
+          protocol: "SIP",
+          version: "2.0",
+          transport: transport,
+          host: local_host,
+          port: local_port,
+          host_type: :ipv4,
+          parameters: %{"branch" => Headers.generate_branch()}
+        }
+      ],
       from: from,
       to: to,
       call_id: dialog.call_id,

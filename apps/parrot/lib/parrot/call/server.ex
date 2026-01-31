@@ -297,13 +297,24 @@ defmodule Parrot.Call.Server do
     # Handlers use pipeline operations (answer, play, etc.) on the struct
     result = handler.handle_invite(call)
 
-    # Process the result and execute operations
+    # Process the result (but defer operation execution)
+    # Operations are executed in handle_continue to avoid deadlock:
+    # The transaction state machine is blocked waiting for start_link to return,
+    # and operations may need to synchronously call back to it (e.g., answer sends 200 OK).
+    # By using {:continue, :execute_operations}, start_link returns first.
     call = process_callback_result(call, result)
-    call = execute_operations_if_context(call, context)
 
     Logger.debug("Call.Server started: id=#{call.id} handler=#{inspect(handler)}")
 
-    {:ok, %__MODULE__{call: call, handler: handler, context: context}}
+    {:ok, %__MODULE__{call: call, handler: handler, context: context},
+     {:continue, :execute_operations}}
+  end
+
+  @impl true
+  def handle_continue(:execute_operations, %__MODULE__{call: call, context: context} = state) do
+    # Execute operations after init completes, avoiding deadlock with transaction state machine
+    updated_call = execute_operations_if_context(call, context)
+    {:noreply, %{state | call: updated_call}}
   end
 
   @impl true
