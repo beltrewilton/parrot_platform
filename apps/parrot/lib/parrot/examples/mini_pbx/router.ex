@@ -41,7 +41,7 @@ defmodule Parrot.Examples.MiniPBX.Router do
 
   use Parrot.Router
 
-  alias Parrot.Examples.MiniPBX.{Extensions, Outbound, AutoAttendant, Registration}
+  alias Parrot.Examples.MiniPBX.{Extensions, Outbound, AutoAttendant, Registration, Presence}
 
   # ============================================================================
   # Pipelines
@@ -81,5 +81,5 @@ defmodule Parrot.Examples.MiniPBX.Router do
   register Registration
 
   # Presence handler for SUBSCRIBE requests
-  # presence Presence  # TODO: Enable when Presence handler is implemented
+  presence Presence
 end

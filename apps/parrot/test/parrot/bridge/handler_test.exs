@@ -1968,7 +1968,10 @@ defmodule Parrot.Bridge.HandlerTest do
       assert is_integer(subscription.expires)
     end
 
-    test "returns 500 when store_subscription fails" do
+    test "sends 200 OK even when store_subscription fails (RFC 6665 compliance)" do
+      # RFC 6665 Section 4.2.2: Response is sent before subscription is stored.
+      # If storage fails AFTER response is sent, we can't undo the response.
+      # This is correct RFC behavior - the subscription just won't be persisted.
       test_pid = self()
       subscribe_msg = create_test_subscribe()
 
@@ -1978,9 +1981,11 @@ defmodule Parrot.Bridge.HandlerTest do
 
       :ok = Handler.handle_subscribe(uas, subscribe_msg, args)
 
+      # Per RFC 6665, 200 OK is sent before storage is attempted
+      # Storage failure is logged but doesn't change the response
       assert_receive {:sip_response, response}, 500
-      assert response.status_code == 500
-      assert response.reason_phrase == "Internal Server Error"
+      assert response.status_code == 200
+      assert response.reason_phrase == "OK"
     end
 
     test "includes Expires header in successful response" do
