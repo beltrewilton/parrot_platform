@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAC scenario: Caller to Softphone
+
+  Simulates an incoming call to the softphone:
+  1. Send INVITE
+  2. Receive 180 Ringing
+  3. Receive 200 OK
+  4. Send ACK
+  5. Wait
+  6. Send BYE
+  7. Receive 200 OK
+
+  This is used to test SoftphoneClient's incoming call handling.
+
+  RFC References:
+  - RFC 3261: SIP: Session Initiation Protocol
+-->
+
+<scenario name="UAC Caller">
+  <!-- Step 1: Send INVITE -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:alice@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:bob@[local_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:alice@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:bob@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP4 [local_ip]
+      s=SIPp Call
+      c=IN IP4 [local_ip]
+      t=0 0
+      m=audio [local_port+100] RTP/AVP 8
+      a=rtpmap:8 PCMA/8000
+
+    ]]>
+  </send>
+
+  <!-- Step 2: Receive 100 Trying (optional) -->
+  <recv response="100" optional="true"/>
+
+  <!-- Step 3: Receive 180 Ringing -->
+  <recv response="180" optional="true"/>
+
+  <!-- Step 4: Receive 200 OK -->
+  <recv response="200" crlf="true">
+    <action>
+      <ereg regexp="Contact: *<([^>]+)>" search_in="msg" check_it="true" assign_to="1,contact"/>
+    </action>
+  </recv>
+
+  <!-- Step 5: Send ACK -->
+  <send>
+    <![CDATA[
+
+      ACK [$contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:bob@[local_ip]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Step 6: Wait a bit -->
+  <pause milliseconds="500"/>
+
+  <!-- Step 7: Send BYE -->
+  <send retrans="500">
+    <![CDATA[
+
+      BYE [$contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:bob@[local_ip]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Step 8: Receive 200 OK for BYE -->
+  <recv response="200" crlf="true"/>
+
+</scenario>

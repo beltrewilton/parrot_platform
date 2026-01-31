@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAS scenario: Registrar with 401 challenge
+
+  Simulates a SIP registrar that:
+  1. Receives REGISTER request
+  2. Responds with 401 Unauthorized (challenge)
+  3. Receives REGISTER with Authorization
+  4. Responds with 200 OK
+
+  This is used to test SoftphoneClient's registration flow.
+
+  RFC References:
+  - RFC 3261 Section 10: Registrations
+  - RFC 3261 Section 22: Digest Authentication
+-->
+
+<scenario name="UAS Registrar with Auth">
+  <!-- Step 1: Receive initial REGISTER -->
+  <recv request="REGISTER" crlf="true">
+    <action>
+      <ereg regexp="From: *<sip:([^@]+)@" search_in="msg" check_it="true" assign_to="1,user"/>
+    </action>
+  </recv>
+
+  <!-- Step 2: Send 401 Unauthorized with challenge -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 401 Unauthorized
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag00[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      WWW-Authenticate: Digest realm="example.com", nonce="abc123", algorithm=MD5
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Step 3: Receive REGISTER with Authorization -->
+  <recv request="REGISTER" crlf="true">
+  </recv>
+
+  <!-- Step 4: Send 200 OK -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag00[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[$user]@[remote_ip]:[remote_port]>;expires=3600
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>

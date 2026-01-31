@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAS scenario: PUBLISH Server
+
+  Simulates a presence server that:
+  1. Receives PUBLISH request with PIDF+XML
+  2. Responds with 200 OK and SIP-ETag
+
+  This is used to test SoftphoneClient's presence publishing.
+
+  RFC References:
+  - RFC 3903: SIP Extension for Event State Publication
+  - RFC 3863: PIDF+XML format
+-->
+
+<scenario name="UAS PUBLISH Server">
+  <!-- Receive PUBLISH -->
+  <recv request="PUBLISH" crlf="true"/>
+
+  <!-- Send 200 OK with SIP-ETag -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag00[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      SIP-ETag: entity-tag-[call_number]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+</scenario>

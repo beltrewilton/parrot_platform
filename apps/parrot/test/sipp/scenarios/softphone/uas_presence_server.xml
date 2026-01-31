@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+
+<!--
+  UAS scenario: Presence Server (SUBSCRIBE/NOTIFY)
+
+  Simulates a presence server that:
+  1. Receives SUBSCRIBE request
+  2. Responds with 200 OK
+  3. Sends initial NOTIFY with presence state
+  4. Receives 200 OK for NOTIFY
+
+  This is used to test SoftphoneClient's presence subscription.
+
+  RFC References:
+  - RFC 3265: SIP-Specific Event Notification
+  - RFC 3856: Presence Event Package
+  - RFC 3863: PIDF+XML format
+-->
+
+<scenario name="UAS Presence Server">
+  <!-- Step 1: Receive SUBSCRIBE -->
+  <recv request="SUBSCRIBE" crlf="true">
+    <action>
+      <ereg regexp="Contact: *<([^>]+)>" search_in="msg" check_it="true" assign_to="1,contact"/>
+      <ereg regexp="From: *<([^>]+)>" search_in="msg" check_it="true" assign_to="2,from_uri"/>
+      <ereg regexp="From:.*tag=([^;>\r\n]+)" search_in="msg" check_it="true" assign_to="3,from_tag"/>
+    </action>
+  </recv>
+
+  <!-- Step 2: Send 200 OK for SUBSCRIBE -->
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag00[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Expires: 3600
+      Contact: <sip:presence@[local_ip]:[local_port]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Small delay before sending NOTIFY -->
+  <pause milliseconds="100"/>
+
+  <!-- Step 3: Send initial NOTIFY -->
+  <send>
+    <![CDATA[
+
+      NOTIFY [$contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:bob@[local_ip]>;tag=[pid]SIPpTag00[call_number]
+      To: <[$from_uri]>;tag=[$from_tag]
+      Call-ID: [call_id]
+      CSeq: 1 NOTIFY
+      Max-Forwards: 70
+      Event: presence
+      Subscription-State: active;expires=3600
+      Content-Type: application/pidf+xml
+      Content-Length: [len]
+
+      <?xml version="1.0" encoding="UTF-8"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:bob@[local_ip]">
+        <tuple id="tuple1">
+          <status>
+            <basic>open</basic>
+          </status>
+          <note>Available</note>
+        </tuple>
+      </presence>
+    ]]>
+  </send>
+
+  <!-- Step 4: Receive 200 OK for NOTIFY -->
+  <recv response="200" crlf="true"/>
+
+</scenario>
