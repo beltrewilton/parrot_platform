@@ -776,7 +776,9 @@ defmodule Parrot.Bridge.HandlerTest do
       hosts =
         Enum.map(contacts, fn contact ->
           case contact.uri do
-            %ParrotSip.Uri{host: host} -> host
+            %ParrotSip.Uri{host: host} ->
+              host
+
             uri when is_binary(uri) ->
               # Parse the SIP URI string to extract host
               case Regex.run(~r/@([^:;>]+)/, uri) do
@@ -2778,6 +2780,64 @@ defmodule Parrot.Bridge.HandlerTest do
       assert response.call_id == update.call_id
       assert response.from == update.from
       assert response.cseq == update.cseq
+    end
+
+    test "200 OK includes SDP answer when UPDATE has SDP offer (RFC 3311)" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      # Create UPDATE with SDP offer
+      update = create_test_update_with_sdp()
+      call_id = update.call_id
+      session_id = "call_#{call_id}"
+
+      # Start a MediaSession before sending UPDATE (simulating established call)
+      media_opts = [
+        id: session_id,
+        dialog_id: call_id,
+        role: :uas,
+        media_handler: Parrot.DSL.MediaHandler,
+        handler_args: %{call_id: call_id},
+        audio_source: :silence,
+        audio_sink: :none,
+        supported_codecs: [:pcma]
+      ]
+
+      {:ok, _media_pid} = ParrotMedia.MediaSessionSupervisor.start_session(media_opts)
+
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      assert_receive {:sip_response, response}, 1000
+
+      # Per RFC 3311 Section 4.1: 200 OK MUST contain SDP answer when UPDATE had offer
+      assert response.status_code == 200
+      assert response.content_type == "application/sdp"
+      assert is_binary(response.body)
+      assert response.body =~ "v=0"
+      assert response.body =~ "m=audio"
+    end
+
+    test "200 OK has empty body when UPDATE has no SDP" do
+      test_pid = self()
+      Application.put_env(:parrot, :test_pid, test_pid)
+
+      # UPDATE without SDP
+      update = create_test_update()
+      uas = :test_uas
+      response_fn = fn response, _uas -> send(test_pid, {:sip_response, response}) end
+      args = %{router: UpdateTrackingRouter, response_fn: response_fn}
+
+      Handler.handle_update(uas, update, args)
+
+      assert_receive {:sip_response, response}, 1000
+
+      # No SDP in UPDATE means no SDP in response
+      assert response.status_code == 200
+      assert response.body == nil or response.body == ""
     end
   end
 end

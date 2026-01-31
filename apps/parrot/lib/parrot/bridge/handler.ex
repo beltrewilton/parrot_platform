@@ -593,13 +593,13 @@ defmodule Parrot.Bridge.Handler do
   end
 
   # Send SIP response based on handler's UPDATE decision
-  # RFC 3311 Section 5.2: Receiving UPDATE
+  # RFC 3311 Section 4.1: If UPDATE contains SDP offer, 200 OK MUST contain SDP answer
   defp send_update_response(result, uas, req_sip_msg, args) do
     case result do
       {:noreply, _updated_call} ->
-        # Accept UPDATE - send 200 OK
+        # Accept UPDATE - send 200 OK with SDP answer if offer was present
         Logger.debug("[Bridge.Handler] Handler accepted UPDATE, sending 200 OK")
-        response = Message.reply(req_sip_msg, 200, "OK")
+        response = build_update_200_ok(req_sip_msg)
         send_response(uas, response, args)
         :ok
 
@@ -618,6 +618,55 @@ defmodule Parrot.Bridge.Handler do
         send_response(uas, response, args)
         :ok
     end
+  end
+
+  # Build 200 OK response for UPDATE, including SDP answer if offer was present
+  # Per RFC 3311 Section 4.1: "If the request contained an offer, and the UAS
+  # generates a 2xx response, that response MUST contain an answer"
+  defp build_update_200_ok(req_sip_msg) do
+    base_response = Message.reply(req_sip_msg, 200, "OK")
+
+    case extract_sdp_offer(req_sip_msg) do
+      {:ok, sdp_offer} ->
+        # UPDATE has SDP offer - generate answer
+        generate_update_sdp_answer(base_response, req_sip_msg.call_id, sdp_offer)
+
+      {:error, :no_sdp} ->
+        # No SDP in UPDATE - send empty body (RFC 3311 allows this)
+        base_response
+    end
+  end
+
+  # Generate SDP answer for UPDATE request by calling MediaSession.process_offer
+  defp generate_update_sdp_answer(response, call_id, sdp_offer) do
+    session_id = "call_#{call_id}"
+
+    case ParrotMedia.MediaSessionSupervisor.find_session(session_id) do
+      {:ok, media_pid} ->
+        case ParrotMedia.MediaSession.process_offer(media_pid, sdp_offer) do
+          {:ok, sdp_answer} ->
+            Logger.debug("[Bridge.Handler] UPDATE SDP answer generated")
+            put_sdp_body(response, sdp_answer)
+
+          {:error, reason} ->
+            Logger.warning("[Bridge.Handler] UPDATE SDP negotiation failed: #{inspect(reason)}")
+            # Return response without SDP - better than failing the UPDATE
+            response
+        end
+
+      {:error, :not_found} ->
+        Logger.warning("[Bridge.Handler] No MediaSession found for UPDATE SDP: #{session_id}")
+        # Return response without SDP - session may not have media yet
+        response
+    end
+  end
+
+  # Set SDP body on response
+  defp put_sdp_body(response, sdp_answer) when is_binary(sdp_answer) do
+    response
+    |> Map.put(:body, sdp_answer)
+    |> Map.put(:content_length, byte_size(sdp_answer))
+    |> Map.put(:content_type, "application/sdp")
   end
 
   # Map status codes to reason phrases for UPDATE rejection
@@ -707,9 +756,7 @@ defmodule Parrot.Bridge.Handler do
            context: context
          ) do
       {:ok, subscription_pid} ->
-        Logger.debug(
-          "[Bridge.Handler] Started Subscription.Server #{inspect(subscription_pid)}"
-        )
+        Logger.debug("[Bridge.Handler] Started Subscription.Server #{inspect(subscription_pid)}")
 
         :ok
 
@@ -797,9 +844,7 @@ defmodule Parrot.Bridge.Handler do
     # RFC 3903 Section 4.4: PUBLISH body contains the event state document
     case parse_pidf_body(req_sip_msg.body) do
       {:ok, presence_state} ->
-        Logger.debug(
-          "[Bridge.Handler] Parsed presence state: #{inspect(presence_state)}"
-        )
+        Logger.debug("[Bridge.Handler] Parsed presence state: #{inspect(presence_state)}")
 
         # Call handler to store the presence state
         # RFC 3903 Section 4.4: ESC stores the event state
