@@ -26,6 +26,7 @@ defmodule ParrotMedia.OpusPipeline do
   alias ParrotMedia.ForkConfig
   alias ParrotMedia.ForkSink
   alias ParrotMedia.Elements.TelephoneEventParser
+  alias ParrotMedia.Elements.DirectionGate
   alias ParrotMedia.MOS.Observer
 
   @type direction :: :sendrecv | :sendonly | :recvonly | :inactive
@@ -129,17 +130,20 @@ defmodule ParrotMedia.OpusPipeline do
             application: :voip,
             bitrate: 32_000
           }),
+          # Direction gate for send path - mutes outbound audio in :recvonly/:inactive
+          child(:send_gate, %DirectionGate{role: :send, initial_direction: :sendrecv}),
           # Tee element for media forking - MUST be present from pipeline start
           # Fork sinks are dynamically linked to push_output pads
           child(:media_tee, Membrane.Tee),
           child(:realtimer, Membrane.Realtimer),
 
           # Links (using get_child to connect defined elements)
-          # Audio source -> processing -> Tee -> main output -> RTP
+          # Audio source -> processing -> DirectionGate -> Tee -> main output -> RTP
           get_child(:audio_source)
           |> get_child(:resampler)
           |> get_child(:timestamp_generator)
           |> get_child(:opus_encoder)
+          |> get_child(:send_gate)
           |> get_child(:media_tee)
           |> via_out(Pad.ref(:output, :main))
           |> via_in(Pad.ref(:input, ssrc),
@@ -175,7 +179,9 @@ defmodule ParrotMedia.OpusPipeline do
        # :sendonly - We send, remote on hold (mute local playback)
        # :recvonly - We receive, we're on hold (send silence)
        # :inactive - Completely muted
-       direction: :sendrecv
+       direction: :sendrecv,
+       # Track if audio path exists (for direction gate notifications)
+       has_audio: has_audio?
      }}
   end
 
@@ -318,6 +324,7 @@ defmodule ParrotMedia.OpusPipeline do
 
   # Opus audio stream (dynamic PT, typically 111)
   # MOS Observer collects metrics for quality monitoring
+  # DirectionGate controls receive path muting for hold/resume
   defp handle_rtp_stream_by_encoding(ssrc, pt, "opus", state) do
     Logger.info("OpusPipeline #{state.session_id}: Detected Opus audio stream (PT=#{pt})")
 
@@ -326,6 +333,10 @@ defmodule ParrotMedia.OpusPipeline do
       |> via_out(Pad.ref(:output, ssrc),
         options: [depayloader: Membrane.RTP.Opus.Depayloader]
       )
+      |> child({:receive_gate, ssrc}, %DirectionGate{
+        role: :receive,
+        initial_direction: state.direction
+      })
       |> child({:mos_observer, ssrc}, %Observer{
         session_id: state.session_id,
         stats_interval_ms: 1000
@@ -334,7 +345,9 @@ defmodule ParrotMedia.OpusPipeline do
       |> child({:audio_sink, ssrc}, %Membrane.Debug.Sink{})
     ]
 
-    {[spec: receive_audio_spec], state}
+    # Track this SSRC so we can forward direction changes to its receive_gate
+    updated_state = Map.update(state, :receive_ssrcs, [ssrc], fn ssrcs -> [ssrc | ssrcs] end)
+    {[spec: receive_audio_spec], updated_state}
   end
 
   # No dynamic encoding found - check static payload types
@@ -451,20 +464,21 @@ defmodule ParrotMedia.OpusPipeline do
 
   # Handle direction change for hold/resume support
   # The direction affects whether we send/receive audio
+  # Per RFC 3264:
+  # - :sendrecv - Normal bidirectional audio
+  # - :sendonly - We send, remote on hold (mute receive path)
+  # - :recvonly - We receive, we're on hold (mute send path)
+  # - :inactive - Completely muted
   @impl true
   def handle_info({:set_direction, direction}, _ctx, state)
       when direction in [:sendrecv, :sendonly, :recvonly, :inactive] do
     Logger.info("OpusPipeline #{state.session_id}: Setting direction to #{direction}")
 
-    # Store the new direction in state
-    # Note: Actual muting/unmuting of pipeline elements would be implemented here
-    # For now, we just track the direction for future pipeline control
-    # TODO: Implement actual audio path muting based on direction:
-    # - :sendonly - mute receive path (don't play incoming audio)
-    # - :recvonly - mute send path (send silence instead of audio)
-    # - :inactive - mute both paths
+    # Build actions to notify DirectionGate children
+    # The send_gate and receive_gate elements will handle the actual muting
+    actions = build_direction_change_actions(direction, state)
 
-    {[], %{state | direction: direction}}
+    {actions, %{state | direction: direction}}
   end
 
   # Handle get_direction request for testing/debugging
@@ -481,6 +495,23 @@ defmodule ParrotMedia.OpusPipeline do
   end
 
   # Private helpers
+
+  # Build notify_child actions for direction gates
+  defp build_direction_change_actions(direction, state) do
+    send_gate_actions(direction, state) ++ receive_gate_actions(direction, state)
+  end
+
+  defp send_gate_actions(direction, %{has_audio: true}) do
+    [{:notify_child, {:send_gate, {:set_direction, direction}}}]
+  end
+
+  defp send_gate_actions(_direction, _state), do: []
+
+  defp receive_gate_actions(direction, %{receive_ssrcs: ssrcs}) when is_list(ssrcs) do
+    Enum.map(ssrcs, &{:notify_child, {{:receive_gate, &1}, {:set_direction, direction}}})
+  end
+
+  defp receive_gate_actions(_direction, _state), do: []
 
   defp format_address(address) when is_tuple(address) do
     address |> Tuple.to_list() |> Enum.join(".")
