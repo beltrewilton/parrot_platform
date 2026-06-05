@@ -71,6 +71,11 @@ defmodule Parrot.Sip.UAC do
 
   @spec ack_request(Message.t()) :: :ok
   def ack_request(%Message{} = sip_msg) do
+    ack_request(sip_msg, [])
+  end
+
+  @spec ack_request(Message.t(), keyword()) :: :ok
+  def ack_request(%Message{} = sip_msg, opts) when is_list(opts) do
     # Generate a random branch for this transaction
     branch = Branch.generate()
 
@@ -79,7 +84,7 @@ defmodule Parrot.Sip.UAC do
 
     # ACK is sent directly, not through transaction layer
     # Extract destination from request URI
-    case extract_destination_from_request_uri(sip_msg.request_uri) do
+    case ack_destination(sip_msg, opts) do
       {:ok, host, port} ->
         # Create outbound request map for Transport
         out_req = %{
@@ -144,6 +149,31 @@ defmodule Parrot.Sip.UAC do
     # Update the message with the new Via headers
     %{msg | headers: Map.put(headers, "via", updated_via_headers)}
   end
+
+  defp ack_destination(%Message{} = sip_msg, opts) do
+    case Keyword.get(opts, :destination) do
+      {host, port} when is_binary(host) and is_integer(port) ->
+        {:ok, host, port}
+
+      _other ->
+        with [first_route | _rest] <- Message.get_headers(sip_msg, "route"),
+             {:ok, host, port} <- extract_destination_from_route(first_route) do
+          {:ok, host, port}
+        else
+          _other -> extract_destination_from_request_uri(sip_msg.request_uri)
+        end
+    end
+  end
+
+  defp extract_destination_from_route(%Parrot.Sip.Headers.Route{uri: %Uri{} = uri}) do
+    {:ok, uri.host, uri.port || 5060}
+  end
+
+  defp extract_destination_from_route(%Parrot.Sip.Headers.Route{uri: uri}) when is_binary(uri) do
+    extract_destination_from_request_uri(uri)
+  end
+
+  defp extract_destination_from_route(_other), do: {:error, :invalid_route}
 
   @spec create_client_transaction(Message.t(), String.t()) :: {:ok, Transaction.t()}
   defp create_client_transaction(%Message{method: method} = request, branch) do

@@ -53,6 +53,7 @@ defmodule Parrot.MixProject do
       {:membrane_ffmpeg_swresample_plugin, "~> 0.20"},
       {:membrane_realtimer_plugin, "~> 0.10.1"},
       {:membrane_portaudio_plugin, "~> 0.19.2"},
+      {:membrane_tee_plugin, "~> 0.12.0"},
 
       # Documentation
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}

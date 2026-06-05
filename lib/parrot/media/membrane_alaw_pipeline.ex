@@ -144,9 +144,6 @@ defmodule Parrot.Media.MembraneAlawPipeline do
         Logger.info("MembraneAlawPipeline #{state.session_id}: Started streaming")
         Logger.info("  Streaming RTP to #{inspect(get_in(state, [:udp_sink_config]))}")
 
-      # Note: We could call a handler callback here when playback starts,
-      # but our MediaHandler behaviour doesn't define this callback yet
-
       :file_source ->
         Logger.info(
           "MembraneAlawPipeline #{state.session_id}: File source started reading #{state.audio_file}"

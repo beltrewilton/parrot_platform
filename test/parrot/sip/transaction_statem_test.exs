@@ -223,6 +223,52 @@ defmodule Parrot.Sip.TransactionStatemTest do
   end
 
   describe "response handling improvements" do
+    test "client INVITE sends ACK for non-2xx final responses" do
+      parent = self()
+
+      request =
+        create_invite_request_with_branch("z9hG4bKclient603")
+        |> Map.put(:direction, :outgoing)
+        |> then(fn message ->
+          headers =
+            message.headers
+            |> Map.put("max-forwards", 70)
+            |> Map.put("user-agent", "ParrotTest")
+
+          %{message | headers: headers}
+        end)
+
+      response =
+        Message.reply(request, 603, "Decline")
+        |> then(fn message ->
+          to_header = %{message.headers["to"] | parameters: %{"tag" => "remote-tag-603"}}
+          %{message | headers: Map.put(message.headers, "to", to_header)}
+        end)
+
+      state = %{
+        type: :client,
+        data: %{
+          handler: fn {:response, resp} -> send(parent, {:callback_response, resp}) end,
+          origmsg: request,
+          options: %{test_pid: parent, destination: {"proxy.example.com", 5060}}
+        }
+      }
+
+      assert {:next_state, :completed, ^state} =
+               TransactionStatem.calling(:cast, {:received, response}, state)
+
+      assert_receive {:callback_response, ^response}
+
+      assert_receive {:non_2xx_ack_sent, ack_request, {"proxy.example.com", 5060}}
+
+      assert ack_request.method == :ack
+      assert ack_request.request_uri == request.request_uri
+      assert ack_request.headers["via"] == request.headers["via"]
+      assert ack_request.headers["to"] == response.headers["to"]
+      assert ack_request.headers["call-id"] == request.headers["call-id"]
+      assert %CSeq{number: 314_159, method: :ack} = ack_request.headers["cseq"]
+    end
+
     test "creates proper response structure" do
       request = create_invite_request_with_branch("z9hG4bKtest789")
       response = Message.reply(request, 180, "Ringing")

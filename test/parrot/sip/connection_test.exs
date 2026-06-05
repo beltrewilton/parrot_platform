@@ -150,6 +150,43 @@ defmodule Parrot.Sip.ConnectionTest do
       via_header = Message.get_header(message, "via")
       refute via_header.parameters["rport"] == "5070"
     end
+
+    test "updates only the top Via header when multiple Via headers are present" do
+      conn = Connection.new({127, 0, 0, 1}, 5060, {172, 240, 232, 26}, 5060, :udp)
+
+      request = """
+      BYE sip:agent08@186.148.93.191:5060 SIP/2.0\r
+      Via: SIP/2.0/UDP 172.240.232.26;branch=z9hG4bKtop;rport\r
+      Via: SIP/2.0/UDP 172.240.232.17:5081;received=172.240.232.17;rport=5081;branch=z9hG4bKinner\r
+      From: <sip:+5493813367663@monedadelmundo.voiso.com>;tag=remote-tag\r
+      To: <sip:agent08@monedadelmundo.voiso.com>;tag=local-tag\r
+      Call-ID: voiso-bye-test@monedadelmundo.voiso.com\r
+      CSeq: 5140 BYE\r
+      Max-Forwards: 69\r
+      Content-Length: 0\r
+      \r
+      """
+
+      {_conn, {:new_request, message}} = Connection.conn_data(request, conn)
+
+      vias = Message.get_header(message, "via")
+      assert is_list(vias)
+      assert length(vias) == 2
+
+      top_via = Enum.at(vias, 0)
+      inner_via = Enum.at(vias, 1)
+
+      assert top_via.host == "172.240.232.26"
+      assert top_via.parameters["branch"] == "z9hG4bKtop"
+      assert top_via.parameters["received"] == "172.240.232.26"
+      assert top_via.parameters["rport"] == "5060"
+
+      assert inner_via.host == "172.240.232.17"
+      assert inner_via.port == 5081
+      assert inner_via.parameters["branch"] == "z9hG4bKinner"
+      assert inner_via.parameters["received"] == "172.240.232.17"
+      assert inner_via.parameters["rport"] == "5081"
+    end
   end
 
   describe "source/1" do

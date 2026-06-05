@@ -89,7 +89,9 @@ defmodule Parrot.Media.MediaSession do
       :output_file,
       # PortAudio device IDs
       :input_device_id,
-      :output_device_id
+      :output_device_id,
+      # Whether handle_session_stop/3 has already been emitted
+      session_stop_notified?: false
     ]
 
     @type t :: %__MODULE__{
@@ -224,7 +226,7 @@ defmodule Parrot.Media.MediaSession do
   """
   @spec terminate_session(String.t() | pid()) :: :ok
   def terminate_session(session) do
-    :gen_statem.stop(get_pid(session))
+    :gen_statem.call(get_pid(session), :terminate_session, :infinity)
   end
 
   # Callbacks
@@ -482,7 +484,11 @@ defmodule Parrot.Media.MediaSession do
           "MediaSession #{data.id}: Membrane pipeline terminated: #{inspect(reason)}"
         )
 
-        updated_data = %{data | pipeline_pid: nil}
+        updated_data =
+          data
+          |> notify_stream_stop(reason)
+          |> Map.put(:pipeline_pid, nil)
+
         {:next_state, :ready, updated_data}
 
       true ->
@@ -503,6 +509,17 @@ defmodule Parrot.Media.MediaSession do
     }
 
     {:keep_state_and_data, [{:reply, from, state_info}]}
+  end
+
+  defp handle_common_event({:call, from}, :terminate_session, _state, data) do
+    Logger.info("MediaSession #{data.id}: Explicit terminate requested")
+
+    updated_data =
+      data
+      |> cleanup_session()
+      |> notify_session_stop(:normal)
+
+    {:stop_and_reply, :normal, [{:reply, from, :ok}], updated_data}
   end
 
   defp handle_common_event(event_type, event_content, state, data) do
@@ -827,6 +844,26 @@ defmodule Parrot.Media.MediaSession do
   end
 
   defp process_sdp_answer(sdp_answer, data) do
+    if data.media_handler do
+      case data.media_handler.handle_answer(sdp_answer, :outbound, data.handler_state) do
+        {:ok, modified_sdp, new_state} ->
+          data = %{data | handler_state: new_state}
+          process_sdp_answer_internal(modified_sdp, data)
+
+        {:reject, reason, _new_state} ->
+          Logger.warning("MediaSession #{data.id}: Handler rejected answer: #{inspect(reason)}")
+          {:error, {:handler_rejected, reason}}
+
+        {:noreply, new_state} ->
+          data = %{data | handler_state: new_state}
+          process_sdp_answer_internal(sdp_answer, data)
+      end
+    else
+      process_sdp_answer_internal(sdp_answer, data)
+    end
+  end
+
+  defp process_sdp_answer_internal(sdp_answer, data) do
     # Parse remote SDP using ex_sdp
     case ExSDP.parse(sdp_answer) do
       {:ok, parsed_sdp} ->
@@ -858,7 +895,32 @@ defmodule Parrot.Media.MediaSession do
 
           # Extract selected codec from answer
           answered_codecs = extract_offered_codecs(audio_media)
-          selected_codec = List.first(answered_codecs, :pcma)
+
+          {selected_codec, data} =
+            if data.media_handler do
+              case data.media_handler.handle_codec_negotiation(
+                     answered_codecs,
+                     data.supported_codecs,
+                     data.handler_state
+                   ) do
+                {:ok, codec, new_state} when is_atom(codec) ->
+                  {codec, %{data | handler_state: new_state}}
+
+                {:ok, codec_list, new_state} when is_list(codec_list) ->
+                  codec =
+                    Enum.find(codec_list, fn codec -> codec in answered_codecs end) ||
+                      List.first(answered_codecs) ||
+                      hd(codec_list)
+
+                  {codec, %{data | handler_state: new_state}}
+
+                {:error, :no_common_codec, new_state} ->
+                  Logger.warning("MediaSession #{data.id}: Handler found no common codec in answer")
+                  {List.first(answered_codecs, :pcma), %{data | handler_state: new_state}}
+              end
+            else
+              {List.first(answered_codecs, :pcma), data}
+            end
 
           # Determine pipeline module based on selected codec and audio config
           pipeline_module = get_pipeline_module_for_config(selected_codec, data)
@@ -872,7 +934,29 @@ defmodule Parrot.Media.MediaSession do
               pipeline_module: pipeline_module
           }
 
-          {:ok, updated_data}
+          final_data =
+            if updated_data.media_handler do
+              case updated_data.media_handler.handle_negotiation_complete(
+                     updated_data.local_sdp,
+                     sdp_answer,
+                     selected_codec,
+                     updated_data.handler_state
+                   ) do
+                {:ok, new_state} ->
+                  %{updated_data | handler_state: new_state}
+
+                {:error, reason, new_state} ->
+                  Logger.error(
+                    "MediaSession #{data.id}: Handler negotiation complete error: #{inspect(reason)}"
+                  )
+
+                  %{updated_data | handler_state: new_state}
+              end
+            else
+              updated_data
+            end
+
+          {:ok, final_data}
         else
           {:error, :no_audio_media}
         end
@@ -1054,10 +1138,14 @@ defmodule Parrot.Media.MediaSession do
   defp stop_media_pipeline(data) do
     if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
       Logger.info("MediaSession #{data.id}: Stopping pipeline")
-      ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
-    end
 
-    %{data | pipeline_pid: nil}
+      data = notify_stream_stop(data, :stopped)
+      ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
+
+      %{data | pipeline_pid: nil}
+    else
+      %{data | pipeline_pid: nil}
+    end
   end
 
   defp pause_media_pipeline(data) do
@@ -1083,14 +1171,39 @@ defmodule Parrot.Media.MediaSession do
   end
 
   defp cleanup_session(data) do
-    # Stop media pipeline if running
-    if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
-      Logger.debug("MediaSession #{data.id}: Stopping Membrane pipeline")
-      # Use ensure_pipeline_termination for proper cleanup
-      ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
-    end
+    data =
+      if data.pipeline_pid && Process.alive?(data.pipeline_pid) do
+        Logger.debug("MediaSession #{data.id}: Stopping Membrane pipeline")
+
+        data = notify_stream_stop(data, :session_cleanup)
+        ensure_pipeline_termination(data.pipeline_pid, data.pipeline_module)
+
+        %{data | pipeline_pid: nil}
+      else
+        data
+      end
 
     Logger.info("MediaSession #{data.id}: Cleaned up resources")
+    data
+  end
+
+  defp notify_stream_stop(%{media_handler: nil} = data, _reason), do: data
+
+  defp notify_stream_stop(data, reason) do
+    case data.media_handler.handle_stream_stop(data.id, reason, data.handler_state) do
+      {:ok, new_state} ->
+        %{data | handler_state: new_state}
+    end
+  end
+
+  defp notify_session_stop(%{media_handler: nil} = data, _reason), do: data
+  defp notify_session_stop(%{session_stop_notified?: true} = data, _reason), do: data
+
+  defp notify_session_stop(data, reason) do
+    case data.media_handler.handle_session_stop(data.id, reason, data.handler_state) do
+      {:ok, new_state} ->
+        %{data | handler_state: new_state, session_stop_notified?: true}
+    end
   end
 
   defp ensure_pipeline_termination(pipeline_pid, pipeline_module) when is_pid(pipeline_pid) do
@@ -1140,7 +1253,12 @@ defmodule Parrot.Media.MediaSession do
   @impl true
   def terminate(reason, _state, data) do
     Logger.info("MediaSession #{data.id}: Terminating due to #{inspect(reason)}")
-    cleanup_session(data)
+    data =
+      data
+      |> cleanup_session()
+      |> notify_session_stop(reason)
+
+    _ = data
     :ok
   end
 end

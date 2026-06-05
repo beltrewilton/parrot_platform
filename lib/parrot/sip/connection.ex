@@ -153,17 +153,19 @@ defmodule Parrot.Sip.Connection do
   # Process the Via header in a request
   @spec process_request_via(Message.t(), t()) :: {:ok, Message.t()} | {:error, term()}
   defp process_request_via(message, conn) do
-    case Message.get_header(message, "via") do
-      nil ->
+    vias = normalized_vias(message)
+
+    case vias do
+      [] ->
         {:error, :no_via}
 
-      via ->
-        updated_via =
-          via
+      [top_via | rest] ->
+        updated_top_via =
+          top_via
           |> maybe_add_received(conn)
           |> maybe_fill_rport(conn)
 
-        updated_message = Message.set_header(message, "via", updated_via)
+        updated_message = update_top_via(message, [updated_top_via | rest])
         {:ok, updated_message}
     end
   end
@@ -196,6 +198,25 @@ defmodule Parrot.Sip.Connection do
     else
       via
     end
+  end
+
+  @spec update_top_via(Message.t(), [Via.t()]) :: Message.t()
+  defp update_top_via(message, updated_vias) do
+    case Message.get_header(message, "via") do
+      original_vias when is_list(original_vias) ->
+        Message.set_header(message, "via", updated_vias)
+
+      _single_via ->
+        Message.set_header(message, "via", List.first(updated_vias))
+    end
+  end
+
+  @spec normalized_vias(Message.t()) :: [Via.t()]
+  defp normalized_vias(message) do
+    message
+    |> Message.get_header("via")
+    |> List.wrap()
+    |> List.flatten()
   end
 
   # Check if transport is message-oriented (datagram)

@@ -48,7 +48,8 @@ defmodule Parrot.Media.PortAudioPipeline do
       audio_source: opts.audio_source,
       audio_sink: opts.audio_sink,
       playing: false,
-      output_device_id: opts[:output_device_id]
+      output_device_id: opts[:output_device_id],
+      recording_output_file: opts[:output_file]
     }
 
     {[spec: structure], state}
@@ -66,13 +67,9 @@ defmodule Parrot.Media.PortAudioPipeline do
       "PortAudioPipeline #{state.session_id}: New RTP stream detected - SSRC: #{ssrc}, PT: #{pt}"
     )
 
-    # Only handle if we're expecting to receive audio
-    if state.audio_sink == :device do
+    if receive_audio?(state) do
       Logger.debug("Creating receive pipeline for SSRC #{ssrc}, payload type #{pt}")
-      # Create the decoder pipeline for this specific SSRC
-      device_id = Map.get(state, :output_device_id)
 
-      # Select appropriate depayloader and decoder based on payload type
       {depayloader, decoder} =
         case pt do
           8 ->
@@ -86,40 +83,7 @@ defmodule Parrot.Media.PortAudioPipeline do
             {Membrane.RTP.G711.Depayloader, Membrane.G711.Decoder}
         end
 
-      structure = [
-        get_child(:rtp)
-        |> via_out(Pad.ref(:output, ssrc),
-          options: [depayloader: depayloader]
-        )
-        |> child({:decoder, ssrc}, decoder)
-        |> then(fn builder ->
-          # Only add resampler for G.711 (8kHz -> 48kHz)
-          # Opus already outputs at 48kHz
-          if pt == 8 do
-            builder
-            |> child({:speaker_resampler, ssrc}, %Membrane.FFmpeg.SWResample.Converter{
-              input_stream_format: %Membrane.RawAudio{
-                sample_format: :s16le,
-                sample_rate: 8000,
-                channels: 1
-              },
-              output_stream_format: %Membrane.RawAudio{
-                sample_format: :s16le,
-                sample_rate: 48000,
-                channels: 1
-              }
-            })
-          else
-            # Opus doesn't need resampling
-            builder
-          end
-        end)
-        |> child({:speaker_sink, ssrc}, %Membrane.PortAudio.Sink{
-          device_id: device_id || :default,
-          portaudio_buffer_size: 1024,
-          latency: :high
-        })
-      ]
+      structure = build_receive_pipeline(state, ssrc, pt, depayloader, decoder)
 
       {[spec: structure], state}
     else
@@ -205,17 +169,14 @@ defmodule Parrot.Media.PortAudioPipeline do
   defp build_source_pipeline(:device, opts, ssrc, _udp, _rtp) do
     device_id = opts[:input_device_id]
 
-    [
-      # Microphone input
+    children = [
       child(:mic_source, %PortAudio.Source{
         device_id: device_id || :default,
-        # Match sink buffer size
         portaudio_buffer_size: 512,
-        # High latency for stability
-        latency: :high
+        latency: :high,
+        channels: 1,
+        sample_rate: 48_000
       }),
-
-      # Resample from 48kHz to 8kHz for G.711 using high-quality FFmpeg resampler
       child(:resampler, %Membrane.FFmpeg.SWResample.Converter{
         output_stream_format: %Membrane.RawAudio{
           sample_format: :s16le,
@@ -223,29 +184,52 @@ defmodule Parrot.Media.PortAudioPipeline do
           channels: 1
         }
       }),
-
-      # Convert to G.711 A-law
       child(:g711_encoder, Membrane.G711.Encoder),
-
-      # Chunk for RTP
       child(:g711_chunker, %G711Chunker{chunk_duration: 20}),
-
-      # Add timing
-      child(:realtimer, Membrane.Realtimer),
-
-      # Links
-      get_child(:mic_source)
-      |> get_child(:resampler)
-      |> get_child(:g711_encoder)
-      |> get_child(:g711_chunker)
-      |> get_child(:realtimer)
-      |> via_in(Pad.ref(:input, ssrc),
-        options: [payloader: Membrane.RTP.G711.Payloader]
-      )
-      |> get_child(:rtp)
-      |> via_out(Pad.ref(:rtp_output, ssrc), options: [encoding: :PCMA])
-      |> get_child(:udp_endpoint)
+      child(:realtimer, Membrane.Realtimer)
     ]
+
+    if recording_enabled?(opts) do
+      caller_raw_path = caller_recording_path(opts.output_file)
+
+      children ++
+        [
+          child(:caller_recording_tee, Membrane.Tee.Master),
+          child(:caller_file_sink, %Membrane.File.Sink{location: caller_raw_path}),
+          get_child(:mic_source)
+          |> get_child(:resampler)
+          |> get_child(:caller_recording_tee),
+          get_child(:caller_recording_tee)
+          |> via_out(:master)
+          |> get_child(:g711_encoder)
+          |> get_child(:g711_chunker)
+          |> get_child(:realtimer)
+          |> via_in(Pad.ref(:input, ssrc),
+            options: [payloader: Membrane.RTP.G711.Payloader]
+          )
+          |> get_child(:rtp)
+          |> via_out(Pad.ref(:rtp_output, ssrc), options: [encoding: :PCMA])
+          |> get_child(:udp_endpoint),
+          get_child(:caller_recording_tee)
+          |> via_out(Pad.ref(:copy, :caller_recording))
+          |> get_child(:caller_file_sink)
+        ]
+    else
+      children ++
+        [
+          get_child(:mic_source)
+          |> get_child(:resampler)
+          |> get_child(:g711_encoder)
+          |> get_child(:g711_chunker)
+          |> get_child(:realtimer)
+          |> via_in(Pad.ref(:input, ssrc),
+            options: [payloader: Membrane.RTP.G711.Payloader]
+          )
+          |> get_child(:rtp)
+          |> via_out(Pad.ref(:rtp_output, ssrc), options: [encoding: :PCMA])
+          |> get_child(:udp_endpoint)
+        ]
+    end
   end
 
   defp build_source_pipeline(:file, opts, ssrc, _udp, _rtp) do
@@ -293,11 +277,66 @@ defmodule Parrot.Media.PortAudioPipeline do
   end
 
   defp build_sink_pipeline(:device, _opts, _udp, _rtp) do
-    # For device sink, we only set up the UDP -> RTP SessionBin connection
-    # The actual decoder/resampler/sink chain will be created dynamically
-    # when we receive the :new_rtp_stream notification with the actual SSRC
+    rtp_input_route()
+  end
+
+  defp build_sink_pipeline(:file, _opts, _udp, _rtp) do
+    rtp_input_route()
+  end
+
+  defp build_sink_pipeline(sink, opts, _udp, _rtp) when sink in [:none, nil] do
+    if recording_enabled?(opts), do: rtp_input_route(), else: []
+  end
+
+  defp build_receive_pipeline(state, ssrc, pt, depayloader, decoder) do
+    decoder_id = {:decoder, ssrc}
+    speaker? = speaker_enabled?(state)
+    recording? = recording_enabled?(state)
+    tee_id = {:remote_recording_tee, ssrc}
+    recording_resampler_id = {:recording_resampler, ssrc}
+    speaker_resampler_id = {:speaker_resampler, ssrc}
+    speaker_sink_id = {:speaker_sink, ssrc}
+    callee_sink_id = {:callee_file_sink, ssrc}
+
+    children =
+      [
+        get_child(:rtp)
+        |> via_out(Pad.ref(:output, ssrc), options: [depayloader: depayloader])
+        |> child(decoder_id, decoder)
+      ] ++
+        if(recording?, do: [child(tee_id, Membrane.Tee.Master)], else: []) ++
+        if(recording?,
+          do: [
+            child(callee_sink_id, %Membrane.File.Sink{
+              location: callee_recording_path(state.recording_output_file)
+            })
+          ],
+          else: []
+        ) ++
+        if(recording? and pt == 111,
+          do: [recording_resampler_spec(recording_resampler_id)],
+          else: []
+        ) ++
+        if(speaker? and pt == 8, do: [speaker_resampler_spec(speaker_resampler_id)], else: []) ++
+        if(speaker?, do: [speaker_sink_spec(speaker_sink_id, state.output_device_id)], else: [])
+
+    links =
+      if recording? do
+        [
+          get_child(decoder_id)
+          |> get_child(tee_id)
+        ] ++
+          recording_link(tee_id, callee_sink_id, recording_resampler_id, ssrc, pt) ++
+          speaker_links(tee_id, speaker_sink_id, speaker_resampler_id, pt, true, speaker?)
+      else
+        speaker_links(decoder_id, speaker_sink_id, speaker_resampler_id, pt, false, speaker?)
+      end
+
+    children ++ links
+  end
+
+  defp rtp_input_route do
     [
-      # Route UDP packets to RTP SessionBin
       get_child(:udp_endpoint)
       |> via_out(:output)
       |> via_in(Pad.ref(:rtp_input, make_ref()))
@@ -305,38 +344,110 @@ defmodule Parrot.Media.PortAudioPipeline do
     ]
   end
 
-  defp build_sink_pipeline(:file, opts, _udp, _rtp) do
+  defp recording_link(tee_id, callee_sink_id, recording_resampler_id, ssrc, 111) do
     [
-      # Custom RTP receiver that extracts audio from RTP packets
-      child(:rtp_receiver, %Parrot.Media.SimpleRTPReceiver{
-        clock_rate: 8000,
-        selected_codec: opts[:selected_codec]
-      }),
-
-      # G.711 A-law decoder
-      child(:g711_decoder, Membrane.G711.Decoder),
-
-      # WAV writer
-      child(:wav_writer, Membrane.WAV.Writer),
-
-      # File sink
-      child(:file_sink, %Membrane.File.Sink{
-        location: opts.output_file
-      }),
-
-      # Direct link from UDP endpoint
-      get_child(:udp_endpoint)
-      |> via_out(:output)
-      |> get_child(:rtp_receiver)
-      |> get_child(:g711_decoder)
-      |> get_child(:wav_writer)
-      |> get_child(:file_sink)
+      get_child(tee_id)
+      |> via_out(Pad.ref(:copy, {:callee_recording, ssrc}))
+      |> get_child(recording_resampler_id)
+      |> get_child(callee_sink_id)
     ]
   end
 
-  defp build_sink_pipeline(sink, _opts, _udp, _rtp) when sink in [:none, nil] do
-    []
+  defp recording_link(tee_id, callee_sink_id, _recording_resampler_id, ssrc, _pt) do
+    [
+      get_child(tee_id)
+      |> via_out(Pad.ref(:copy, {:callee_recording, ssrc}))
+      |> get_child(callee_sink_id)
+    ]
   end
+
+  defp speaker_links(_source_id, _speaker_sink_id, _speaker_resampler_id, _pt, _from_tee?, false),
+    do: []
+
+  defp speaker_links(source_id, speaker_sink_id, speaker_resampler_id, 8, from_tee?, true) do
+    [speaker_chain(source_id, speaker_resampler_id, speaker_sink_id, from_tee?)]
+  end
+
+  defp speaker_links(source_id, speaker_sink_id, _speaker_resampler_id, _pt, from_tee?, true) do
+    [speaker_chain(source_id, nil, speaker_sink_id, from_tee?)]
+  end
+
+  defp speaker_chain(source_id, nil, speaker_sink_id, true) do
+    get_child(source_id)
+    |> via_out(:master)
+    |> get_child(speaker_sink_id)
+  end
+
+  defp speaker_chain(source_id, nil, speaker_sink_id, false) do
+    get_child(source_id)
+    |> get_child(speaker_sink_id)
+  end
+
+  defp speaker_chain(source_id, speaker_resampler_id, speaker_sink_id, true) do
+    get_child(source_id)
+    |> via_out(:master)
+    |> get_child(speaker_resampler_id)
+    |> get_child(speaker_sink_id)
+  end
+
+  defp speaker_chain(source_id, speaker_resampler_id, speaker_sink_id, false) do
+    get_child(source_id)
+    |> get_child(speaker_resampler_id)
+    |> get_child(speaker_sink_id)
+  end
+
+  defp speaker_resampler_spec(id) do
+    child(id, %Membrane.FFmpeg.SWResample.Converter{
+      input_stream_format: %Membrane.RawAudio{
+        sample_format: :s16le,
+        sample_rate: 8_000,
+        channels: 1
+      },
+      output_stream_format: %Membrane.RawAudio{
+        sample_format: :s16le,
+        sample_rate: 48_000,
+        channels: 1
+      }
+    })
+  end
+
+  defp recording_resampler_spec(id) do
+    child(id, %Membrane.FFmpeg.SWResample.Converter{
+      input_stream_format: %Membrane.RawAudio{
+        sample_format: :s16le,
+        sample_rate: 48_000,
+        channels: 1
+      },
+      output_stream_format: %Membrane.RawAudio{
+        sample_format: :s16le,
+        sample_rate: 8_000,
+        channels: 1
+      }
+    })
+  end
+
+  defp speaker_sink_spec(id, output_device_id) do
+    child(id, %Membrane.PortAudio.Sink{
+      device_id: output_device_id || :default,
+      portaudio_buffer_size: 1024,
+      latency: :high
+    })
+  end
+
+  defp receive_audio?(state), do: speaker_enabled?(state) or recording_enabled?(state)
+
+  defp speaker_enabled?(%{audio_sink: :device}), do: true
+  defp speaker_enabled?(_state), do: false
+
+  defp recording_enabled?(%{recording_output_file: output_file}),
+    do: recording_enabled?(output_file)
+
+  defp recording_enabled?(%{output_file: output_file}), do: recording_enabled?(output_file)
+  defp recording_enabled?(output_file) when is_binary(output_file), do: output_file != ""
+  defp recording_enabled?(_output_file), do: false
+
+  defp caller_recording_path(output_file), do: output_file <> ".caller.s16le"
+  defp callee_recording_path(output_file), do: output_file <> ".callee.s16le"
 
   defp parse_ip!(ip_string) when is_binary(ip_string) do
     case :inet.parse_address(String.to_charlist(ip_string)) do

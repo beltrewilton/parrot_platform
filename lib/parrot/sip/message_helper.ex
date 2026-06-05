@@ -18,6 +18,7 @@ defmodule Parrot.Sip.MessageHelper do
   """
 
   alias Parrot.Sip.Message
+  alias Parrot.Sip.Headers.{RecordRoute, Route}
 
   @doc """
   Adds or updates the 'received' parameter in the top Via header.
@@ -361,6 +362,14 @@ defmodule Parrot.Sip.MessageHelper do
       iex> updated = Parrot.Sip.MessageHelper.add_record_route(message, rr)
       iex> length(Parrot.Sip.Message.get_headers(updated, "record-route"))
   """
+  @spec build_route_set(Message.t()) :: [Route.t()]
+  def build_route_set(message) do
+    message
+    |> Message.get_headers("record-route")
+    |> Enum.reverse()
+    |> Enum.map(&record_route_to_route/1)
+  end
+
   @spec add_record_route(Message.t(), String.t()) :: Message.t()
   def add_record_route(message, record_route) do
     current_record_routes = Message.get_headers(message, "record-route")
@@ -417,6 +426,16 @@ defmodule Parrot.Sip.MessageHelper do
         new_vias = if rest == [], do: updated_via, else: [updated_via | rest]
         Message.set_header(message, "via", new_vias)
     end
+  end
+
+  defp record_route_to_route(%RecordRoute{} = record_route) do
+    Route.new(record_route.uri, record_route.display_name, record_route.parameters)
+  end
+
+  defp record_route_to_route(record_route) when is_binary(record_route) do
+    record_route
+    |> RecordRoute.parse()
+    |> record_route_to_route()
   end
 
   # Extracts the host from a Via header

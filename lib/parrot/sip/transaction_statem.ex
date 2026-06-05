@@ -324,8 +324,8 @@ defmodule Parrot.Sip.TransactionStatem do
         "trans: client: #{method} #{request_uri}; call-id: #{call_id}; branch: #{branch}"
       )
 
-      # Send the initial request
-      Parrot.Sip.Transport.send_request(sip_msg)
+      # Send the initial request, optionally to an explicit next-hop proxy.
+      send_client_request(sip_msg, options)
 
       # Start in calling state for client transactions
       {:ok, :calling, state}
@@ -376,70 +376,12 @@ defmodule Parrot.Sip.TransactionStatem do
     case action do
       {:send_response, response} ->
         Logger.debug("[process_actions] Action is :send_response. Response: #{inspect(response)}")
-        # Try to get the source from state, transaction, or response
-        source =
-          cond do
-            Map.has_key?(data, :source) and not is_nil(data.source) ->
-              Logger.debug(
-                "[process_actions] Found source in data.source: #{inspect(data.source)}"
-              )
-
-              data.source
-
-            Map.has_key?(data, :trans) and Map.has_key?(data.trans, :source) and
-                not is_nil(data.trans.source) ->
-              Logger.debug(
-                "[process_actions] Found source in data.trans.source: #{inspect(data.trans.source)}"
-              )
-
-              data.trans.source
-
-            Map.has_key?(data, :data) and Map.has_key?(data.data, :source) and
-                not is_nil(data.data.source) ->
-              Logger.debug(
-                "[process_actions] Found source in data.data.source: #{inspect(data.data.source)}"
-              )
-
-              data.data.source
-
-            Map.has_key?(data, :transaction) and Map.has_key?(data.transaction, :source) and
-                not is_nil(data.transaction.source) ->
-              Logger.debug(
-                "[process_actions] Found source in data.transaction.source: #{inspect(data.transaction.source)}"
-              )
-
-              data.transaction.source
-
-            Map.has_key?(data, :origmsg) and Map.has_key?(data.origmsg, :source) and
-                not is_nil(data.origmsg.source) ->
-              Logger.debug(
-                "[process_actions] Found source in data.origmsg.source: #{inspect(data.origmsg.source)}"
-              )
-
-              data.origmsg.source
-
-            Map.has_key?(data, :origmsg) and is_map(data.origmsg) and
-              Map.has_key?(data.origmsg, :headers) and Map.has_key?(data.origmsg.headers, "via") ->
-              # fallback: try to build a source from Via header if possible
-              via = data.origmsg.headers["via"]
-              Logger.debug("[process_actions] Built source from Via header: #{inspect(via)}")
-              %Parrot.Sip.Source{remote: {via.host, via.port}, transport: via.transport}
-
-            Map.has_key?(response, :source) and not is_nil(response.source) ->
-              Logger.debug(
-                "[process_actions] Found source in response.source: #{inspect(response.source)}"
-              )
-
-              response.source
-
-            true ->
-              Logger.debug("[process_actions] No source found in any known location.")
-              nil
-          end
+        source = response_source_for_send(data, response)
 
         if source do
           Logger.debug("[process_actions] Sending response using source: #{inspect(source)}")
-          Parrot.Sip.Transport.send_response(response, source)
+          maybe_inspect_bye_response_destination(response, source)
+          Parrot.Sip.Transport.send_response(%{response | source: source}, source)
         else
           require Logger
 
@@ -456,7 +398,7 @@ defmodule Parrot.Sip.TransactionStatem do
 
       {:send_request, request} ->
         Logger.debug("[process_actions] Action is :send_request. Request: #{inspect(request)}")
-        Parrot.Sip.Transport.send_request(request)
+        send_client_request(request, Map.get(data, :options, %{}))
 
         Logger.debug(
           "[process_actions] Finished :send_request action, processing rest: #{inspect(rest)}"
@@ -496,9 +438,18 @@ defmodule Parrot.Sip.TransactionStatem do
       :retransmit_last_response ->
         Logger.debug("[process_actions] Action is :retransmit_last_response.")
 
-        if last = get_in(data, [:trans, :last_response]) do
+        if last = last_response_for_retransmit(data) do
           Logger.debug("[process_actions] Retransmitting last response: #{inspect(last)}")
-          Parrot.Sip.Transport.send_response(last)
+          source = response_source_for_send(data, last)
+
+          if source do
+            maybe_inspect_bye_response_destination(last, source)
+            Parrot.Sip.Transport.send_response(%{last | source: source}, source)
+          else
+            Logger.error(
+              "[process_actions] No source found for retransmit_last_response; cannot retransmit SIP response!"
+            )
+          end
         else
           Logger.debug("[process_actions] No last response to retransmit.")
         end
@@ -521,6 +472,248 @@ defmodule Parrot.Sip.TransactionStatem do
         process_actions(rest, data)
     end
   end
+
+  @doc false
+  def response_source_for_send(data, response) do
+    cond do
+      source = request_source_for_response(data) ->
+        Logger.debug("[process_actions] Found request source: #{inspect(source)}")
+        source
+
+      Map.has_key?(response, :source) and not is_nil(response.source) ->
+        Logger.debug(
+          "[process_actions] Found source in response.source: #{inspect(response.source)}"
+        )
+
+        response.source
+
+      request = request_message_for_response(data) ->
+        Logger.debug("[process_actions] Falling back to top Via from request: #{inspect(request)}")
+        source_from_top_via(request)
+
+      true ->
+        Logger.debug("[process_actions] No source found in any known location.")
+        nil
+    end
+  end
+
+  defp request_source_for_response(data) do
+    cond do
+      Map.has_key?(data, :source) and not is_nil(data.source) ->
+        data.source
+
+      match?(%{source: source} when not is_nil(source), Map.get(data, :trans)) ->
+        data.trans.source
+
+      match?(%{request: %{source: source}} when not is_nil(source), Map.get(data, :trans)) ->
+        data.trans.request.source
+
+      match?(%{source: source} when not is_nil(source), Map.get(data, :data)) ->
+        data.data.source
+
+      match?(
+        %{transaction: %{request: %{source: source}}} when not is_nil(source),
+        Map.get(data, :data)
+      ) ->
+        data.data.transaction.request.source
+
+      match?(%{origmsg: %{source: source}} when not is_nil(source), Map.get(data, :data)) ->
+        data.data.origmsg.source
+
+      match?(%{source: source} when not is_nil(source), Map.get(data, :transaction)) ->
+        data.transaction.source
+
+      match?(
+        %{request: %{source: source}} when not is_nil(source),
+        Map.get(data, :transaction)
+      ) ->
+        data.transaction.request.source
+
+      match?(%{source: source} when not is_nil(source), Map.get(data, :origmsg)) ->
+        data.origmsg.source
+
+      true ->
+        nil
+    end
+  end
+
+  defp request_message_for_response(data) do
+    cond do
+      match?(%Message{}, Map.get(data, :origmsg)) ->
+        data.origmsg
+
+      match?(%{request: %Message{}}, Map.get(data, :transaction)) ->
+        data.transaction.request
+
+      match?(%{request: %Message{}}, Map.get(data, :trans)) ->
+        data.trans.request
+
+      match?(%{origmsg: %Message{}}, Map.get(data, :data)) ->
+        data.data.origmsg
+
+      match?(%{transaction: %{request: %Message{}}}, Map.get(data, :data)) ->
+        data.data.transaction.request
+
+      true ->
+        nil
+    end
+  end
+
+  defp source_from_top_via(%Message{} = message) do
+    case Message.top_via(message) do
+      %Via{} = via ->
+        Logger.debug("[process_actions] Building source from top Via: #{inspect(via)}")
+        source_from_via(via)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp source_from_via(%Via{} = via) do
+    host = Map.get(via.parameters, "received", via.host)
+    port = via_port(via)
+
+    %Parrot.Sip.Source{
+      local: {nil, nil},
+      remote: {parse_host_address(host), port},
+      transport: via_transport(via.transport),
+      source_id: nil
+    }
+  end
+
+  defp via_port(%Via{port: port, transport: transport, parameters: parameters}) do
+    default_port = port || default_port_for_transport(transport)
+
+    case Map.get(parameters, "rport") do
+      nil ->
+        default_port
+
+      "" ->
+        default_port
+
+      rport when is_integer(rport) ->
+        rport
+
+      rport when is_binary(rport) ->
+        case Integer.parse(rport) do
+          {parsed, _} -> parsed
+          :error -> default_port
+        end
+
+      _other ->
+        default_port
+    end
+  end
+
+  defp default_port_for_transport(:udp), do: 5060
+  defp default_port_for_transport(:tcp), do: 5060
+  defp default_port_for_transport(:tls), do: 5061
+  defp default_port_for_transport(:ws), do: 80
+  defp default_port_for_transport(:wss), do: 443
+  defp default_port_for_transport(_transport), do: 5060
+
+  defp via_transport(transport) when transport in [:udp, :tcp, :tls, :ws, :wss], do: transport
+  defp via_transport("UDP"), do: :udp
+  defp via_transport("TCP"), do: :tcp
+  defp via_transport("TLS"), do: :tls
+  defp via_transport("WS"), do: :ws
+  defp via_transport("WSS"), do: :wss
+  defp via_transport(_transport), do: :udp
+
+  defp parse_host_address(host) when is_binary(host) do
+    case :inet.parse_ipv4_address(String.to_charlist(host)) do
+      {:ok, ip} ->
+        ip
+
+      {:error, _} ->
+        case :inet.parse_ipv6_address(String.to_charlist(host)) do
+          {:ok, ip} -> ip
+          {:error, _} -> host
+        end
+    end
+  end
+
+  defp parse_host_address(host), do: host
+
+  defp maybe_inspect_bye_response_destination(%Message{type: :response, method: :bye}, source) do
+    IO.inspect(format_source_destination(source), label: "SIP BYE response destination")
+  end
+
+  defp maybe_inspect_bye_response_destination(_response, _source), do: :ok
+
+  defp format_source_destination(%Parrot.Sip.Source{remote: {host, port}}) do
+    "#{format_host(host)}:#{port}"
+  end
+
+  defp format_host(host) when is_tuple(host) do
+    host
+    |> :inet.ntoa()
+    |> to_string()
+  end
+
+  defp format_host(host), do: to_string(host)
+
+  defp last_response_for_retransmit(data) do
+    cond do
+      match?(%{last_response: last_response} when not is_nil(last_response), Map.get(data, :trans)) ->
+        data.trans.last_response
+
+      match?(
+        %{last_response: last_response} when not is_nil(last_response),
+        Map.get(data, :transaction)
+      ) ->
+        data.transaction.last_response
+
+      match?(
+        %{transaction: %{last_response: last_response}} when not is_nil(last_response),
+        Map.get(data, :data)
+      ) ->
+        data.data.transaction.last_response
+
+      true ->
+        nil
+    end
+  end
+
+  defp maybe_send_non_2xx_invite_ack(
+         %{status_code: status_code, headers: %{"to" => to_header}},
+         %{origmsg: %Message{method: :invite} = request, options: options}
+       )
+       when status_code >= 300 and status_code <= 699 do
+    ack_headers =
+      %{
+        "via" => request.headers["via"],
+        "from" => request.headers["from"],
+        "to" => to_header,
+        "call-id" => request.headers["call-id"],
+        "cseq" => ack_cseq(request.headers["cseq"]),
+        "max-forwards" => request.headers["max-forwards"]
+      }
+      |> maybe_put_ack_header("route", request.headers["route"])
+      |> maybe_put_ack_header("user-agent", request.headers["user-agent"])
+
+    ack_request = Message.new_request(:ack, request.request_uri, ack_headers)
+    options = options || %{}
+
+    case Map.get(options, :test_pid) do
+      pid when is_pid(pid) ->
+        send(pid, {:non_2xx_ack_sent, ack_request, Map.get(options, :destination)})
+
+      _other ->
+        send_client_request(ack_request, options)
+    end
+  end
+
+  defp maybe_send_non_2xx_invite_ack(_response, _data), do: :ok
+
+  defp ack_cseq(%{number: number}),
+    do: %Parrot.Sip.Headers.CSeq{number: number, method: :ack}
+
+  defp ack_cseq(cseq), do: cseq
+
+  defp maybe_put_ack_header(headers, _name, nil), do: headers
+  defp maybe_put_ack_header(headers, name, value), do: Map.put(headers, name, value)
 
   defp cancel_named_timer(timer_name, data) do
     timers = data.timers || %{}
@@ -609,24 +802,7 @@ defmodule Parrot.Sip.TransactionStatem do
   end
 
   def trying(:cast, :cancel, %{data: %{cancelled: false, outreq: out_req} = inner_data} = data) do
-    Logger.debug("trans: canceling client transaction. state: #{inspect(data, @inspect_opts)}")
-    # Generate CANCEL request from original request
-    cancel_req = %{
-      method: :cancel,
-      request_uri: out_req.request_uri,
-      headers: %{
-        "call-id" => out_req.headers["call-id"],
-        "from" => out_req.headers["from"],
-        "to" => out_req.headers["to"],
-        "cseq" => %{number: out_req.headers["cseq"].number, method: :cancel},
-        "via" => out_req.headers["via"]
-      }
-    }
-
-    _ = client_new(cancel_req, %{}, fn _ -> :ok end)
-    # Schedule cancel timeout
-    {:keep_state, %{data | data: %{inner_data | cancelled: true}},
-     [{:state_timeout, 32_000, :cancel_timeout}]}
+    cancel_client_transaction(data, inner_data, out_req)
   end
 
   # Handle set_owner events
@@ -690,6 +866,22 @@ defmodule Parrot.Sip.TransactionStatem do
   end
 
   # PROCEEDING STATE
+  def proceeding(:cast, :cancel, %{data: %{cancelled: true}} = state) do
+    Logger.debug(
+      "trans: transaction is already cancelled. state: #{inspect(state, @inspect_opts)}"
+    )
+
+    {:keep_state, state}
+  end
+
+  def proceeding(
+        :cast,
+        :cancel,
+        %{data: %{cancelled: false, outreq: out_req} = inner_data} = state
+      ) do
+    cancel_client_transaction(state, inner_data, out_req)
+  end
+
   def proceeding(:cast, event, data), do: handle_common_event(event, data)
 
   def proceeding(event_type, event, state) do
@@ -715,6 +907,8 @@ defmodule Parrot.Sip.TransactionStatem do
       data.handler.({:response, response})
     end
 
+    maybe_send_non_2xx_invite_ack(response, data)
+
     # Handle state transitions based on response code
     cond do
       response.status_code >= 100 and response.status_code < 200 ->
@@ -729,6 +923,18 @@ defmodule Parrot.Sip.TransactionStatem do
         # Final response - move to completed state
         {:next_state, :completed, state}
     end
+  end
+
+  def calling(:cast, :cancel, %{data: %{cancelled: true}} = state) do
+    Logger.debug(
+      "trans: transaction is already cancelled. state: #{inspect(state, @inspect_opts)}"
+    )
+
+    {:keep_state, state}
+  end
+
+  def calling(:cast, :cancel, %{data: %{cancelled: false, outreq: out_req} = inner_data} = state) do
+    cancel_client_transaction(state, inner_data, out_req)
   end
 
   def calling(:cast, event, data), do: handle_common_event(event, data)
@@ -772,11 +978,9 @@ defmodule Parrot.Sip.TransactionStatem do
   end
 
   def completed(:cast, {:received, _msg}, %{type: :client} = state) do
-    # For client transactions, retransmit last response if available
-    if last = get_in(state, [:data, :transaction, :last_response]) do
-      Parrot.Sip.Transport.send_response(last)
-    end
-
+    # Client-side final responses can be retransmitted by the provider.
+    # There is nothing to send back from this generic transaction layer here,
+    # so we simply absorb the duplicate response.
     {:keep_state, state}
   end
 
@@ -801,6 +1005,35 @@ defmodule Parrot.Sip.TransactionStatem do
   def terminated(_event_type, _event, state) do
     Logger.warning("TransactionStatem.terminated/3: Ignoring unexpected event")
     {:keep_state, state}
+  end
+
+  defp send_client_request(%Message{} = sip_msg, options) when is_map(options) do
+    case Map.get(options, :destination) do
+      {host, port} when is_binary(host) and is_integer(port) ->
+        Parrot.Sip.Transport.Udp.send_request(%{destination: {host, port}, message: sip_msg})
+
+      _other ->
+        Parrot.Sip.Transport.send_request(sip_msg)
+    end
+  end
+
+  defp cancel_client_transaction(state, inner_data, out_req) do
+    Logger.debug("trans: canceling client transaction. state: #{inspect(state, @inspect_opts)}")
+
+    cancel_req =
+      Message.new_request(:cancel, out_req.request_uri, %{
+        "call-id" => out_req.headers["call-id"],
+        "from" => out_req.headers["from"],
+        "to" => out_req.headers["to"],
+        "cseq" => %{number: out_req.headers["cseq"].number, method: :cancel},
+        "via" => out_req.headers["via"]
+      })
+
+    {:ok, cancel_transaction} = Transaction.create_non_invite_client(cancel_req)
+    _ = client_new(cancel_transaction, Map.get(inner_data, :options, %{}), fn _ -> :ok end)
+
+    {:keep_state, %{state | data: %{inner_data | cancelled: true}},
+     [{:state_timeout, 32_000, :cancel_timeout}]}
   end
 
   # Handle common events across states

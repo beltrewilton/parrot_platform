@@ -36,6 +36,7 @@ defmodule Parrot.Sip.Dialog do
   """
 
   alias Parrot.Sip.Message
+  alias Parrot.Sip.MessageHelper
   alias Parrot.Sip.Headers
   alias Parrot.Sip.Uri
 
@@ -583,9 +584,5 @@ defmodule Parrot.Sip.Dialog do
   # Private helper functions
 
   # Extract route set from a response
-  defp extract_route_set(_response) do
-    # In a real implementation, this would extract Record-Route headers
-    # from the response and reverse them for the route set
-    []
-  end
+  defp extract_route_set(response), do: MessageHelper.build_route_set(response)
 end

@@ -332,6 +332,32 @@ defmodule Parrot.Sip.MessageHelperTest do
     end
   end
 
+  describe "build_route_set/1" do
+    test "returns an empty route set when no record-route headers exist" do
+      message = Message.new_response(200, "OK", %{}, [])
+
+      assert MessageHelper.build_route_set(message) == []
+    end
+
+    test "reverses record-route headers into a route set" do
+      message = Message.new_response(200, "OK", %{}, [])
+
+      message =
+        message
+        |> MessageHelper.add_record_route(
+          Parrot.Sip.Headers.RecordRoute.parse("<sip:proxy1.biloxi.com;lr>")
+        )
+        |> MessageHelper.add_record_route(
+          Parrot.Sip.Headers.RecordRoute.parse("<sip:proxy2.biloxi.com;lr>")
+        )
+
+      [route1, route2] = MessageHelper.build_route_set(message)
+
+      assert route1.uri.host == "proxy1.biloxi.com"
+      assert route2.uri.host == "proxy2.biloxi.com"
+    end
+  end
+
   describe "extract_multipart_part/2" do
     test "extracts a part from multipart body by content type" do
       # Create a message with multipart parts in headers
