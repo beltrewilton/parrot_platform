@@ -38,7 +38,7 @@ defmodule Parrot.Media.MediaSessionManager do
     # Start MediaSession as UAC
     session_opts = Keyword.put(opts, :role, :uac)
 
-    case MediaSession.start_link(session_opts) do
+    case Parrot.Media.MediaSessionSupervisor.start_session(session_opts) do
       {:ok, session_pid} ->
         # Generate SDP offer (this allocates the port)
         case MediaSession.generate_offer(session_pid) do
@@ -80,7 +80,7 @@ defmodule Parrot.Media.MediaSessionManager do
       |> Keyword.put(:role, :uas)
       |> Keyword.delete(:sdp_offer)
 
-    case MediaSession.start_link(session_opts) do
+    case Parrot.Media.MediaSessionSupervisor.start_session(session_opts) do
       {:ok, session_pid} ->
         # Process offer and generate answer
         case MediaSession.process_offer(session_pid, sdp_offer) do

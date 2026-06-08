@@ -282,9 +282,9 @@ defmodule Parrot.Sip.Transport.Udp do
 
           :process_transaction ->
             log(state, :debug, "Handler.transp_request returned :process_transaction")
-            log(state, :debug, "spawning Transaction.server_process in new Task process")
+            log(state, :debug, "spawning Transaction.server_process in supervised task")
 
-            Task.start(fn ->
+            Task.Supervisor.start_child(Parrot.Sip.Transport.TaskSupervisor, fn ->
               TransactionStatem.server_process(msg, handler)
             end)
         end

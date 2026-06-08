@@ -87,6 +87,8 @@ defmodule Parrot.Media.MediaSession do
       :audio_sink,
       # Output file for recording
       :output_file,
+      # Allowed RTP port range
+      :rtp_port_range,
       # PortAudio device IDs
       :input_device_id,
       :output_device_id,
@@ -115,6 +117,7 @@ defmodule Parrot.Media.MediaSession do
             audio_source: :file | :device | :silence | nil,
             audio_sink: :none | :device | :file | nil,
             output_file: String.t() | nil,
+            rtp_port_range: {non_neg_integer(), non_neg_integer()} | nil,
             input_device_id: non_neg_integer() | nil,
             output_device_id: non_neg_integer() | nil
           }
@@ -250,6 +253,7 @@ defmodule Parrot.Media.MediaSession do
     audio_source = Keyword.get(opts, :audio_source, if(audio_file, do: :file, else: :silence))
     audio_sink = Keyword.get(opts, :audio_sink, :none)
     output_file = Keyword.get(opts, :output_file)
+    rtp_port_range = Keyword.get(opts, :rtp_port_range)
     input_device_id = Keyword.get(opts, :input_device_id)
     output_device_id = Keyword.get(opts, :output_device_id)
 
@@ -274,6 +278,7 @@ defmodule Parrot.Media.MediaSession do
       audio_source: audio_source,
       audio_sink: audio_sink,
       output_file: output_file,
+      rtp_port_range: rtp_port_range,
       input_device_id: input_device_id,
       output_device_id: output_device_id,
       local_rtp_port: local_rtp_port
@@ -574,7 +579,7 @@ defmodule Parrot.Media.MediaSession do
 
   defp generate_sdp_offer(data) do
     # Allocate local RTP port
-    local_rtp_port = allocate_rtp_port()
+    local_rtp_port = allocate_rtp_port(data)
 
     # Build media formats based on supported codecs
     formats = Enum.map(data.supported_codecs, &get_codec_payload_type/1)
@@ -705,7 +710,7 @@ defmodule Parrot.Media.MediaSession do
 
                 data.local_rtp_port
               else
-                port = allocate_rtp_port()
+                port = allocate_rtp_port(data)
                 Logger.info("MediaSession #{data.id}: Allocated new local RTP port: #{port}")
                 port
               end
@@ -966,9 +971,13 @@ defmodule Parrot.Media.MediaSession do
     end
   end
 
-  defp allocate_rtp_port(config \\ %{}) do
-    min_port = Map.get(config, :min_rtp_port, 16384)
-    max_port = Map.get(config, :max_rtp_port, 32768)
+  defp allocate_rtp_port(config) do
+    {min_port, max_port} =
+      case Map.get(config, :rtp_port_range) do
+        {from, to} when is_integer(from) and is_integer(to) -> {from, to}
+        _other -> {16_384, 32_768}
+      end
+
     max_attempts = Map.get(config, :max_port_attempts, 100)
 
     case find_available_port(min_port, max_port, max_attempts) do
@@ -989,7 +998,12 @@ defmodule Parrot.Media.MediaSession do
     Stream.iterate(0, &(&1 + 1))
     |> Stream.take(max_attempts)
     |> Stream.map(fn _ ->
-      port = min_port + :rand.uniform(max_port - min_port)
+      port =
+        if min_port == max_port do
+          min_port
+        else
+          min_port + :rand.uniform(max_port - min_port)
+        end
 
       case :gen_udp.open(port, [:binary, {:active, false}]) do
         {:ok, socket} ->

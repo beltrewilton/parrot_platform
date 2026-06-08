@@ -11,6 +11,7 @@ defmodule Parrot.Application do
     children = [
       {Registry, keys: :unique, name: Parrot.Registry},
       Parrot.Sip.Transport.Supervisor,
+      {Task.Supervisor, name: Parrot.Sip.Transport.TaskSupervisor},
       Parrot.Sip.Transaction.Supervisor,
       Parrot.Sip.Dialog.Supervisor,
       Parrot.Sip.HandlerAdapter.Supervisor,
