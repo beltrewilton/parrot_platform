@@ -29,6 +29,14 @@ defmodule Parrot.Media.PortAudioPipeline do
   alias Membrane.PortAudio
   alias Parrot.Media.G711Chunker
 
+  @silence_sample_rate 8_000
+  @silence_channels 1
+  @silence_bytes_per_sample 2
+  @silence_buffer_duration_ms 20
+  @silence_buffer_frames div(@silence_sample_rate * @silence_buffer_duration_ms, 1000)
+  @silence_buffer_size @silence_buffer_frames * @silence_channels * @silence_bytes_per_sample
+  @silence_payload :binary.copy(<<0>>, @silence_buffer_size)
+
   @impl true
   def handle_init(_ctx, opts) do
     Logger.info("PortAudioPipeline: Starting for session #{opts.session_id}")
@@ -266,14 +274,12 @@ defmodule Parrot.Media.PortAudioPipeline do
     ]
   end
 
-  defp build_source_pipeline(:silence, _opts, _ssrc, _udp, _rtp) do
-    # For now, don't send anything when source is silence
-    # In the future, we could generate comfort noise
-    []
+  defp build_source_pipeline(:silence, _opts, ssrc, _udp, _rtp) do
+    silent_source_pipeline(ssrc)
   end
 
-  defp build_source_pipeline(source, _opts, _ssrc, _udp, _rtp) when source in [:none, nil] do
-    []
+  defp build_source_pipeline(source, _opts, ssrc, _udp, _rtp) when source in [:none, nil] do
+    silent_source_pipeline(ssrc)
   end
 
   defp build_sink_pipeline(:device, _opts, _udp, _rtp) do
@@ -448,6 +454,42 @@ defmodule Parrot.Media.PortAudioPipeline do
 
   defp caller_recording_path(output_file), do: output_file <> ".caller.s16le"
   defp callee_recording_path(output_file), do: output_file <> ".callee.s16le"
+
+  defp silent_source_pipeline(ssrc) do
+    [
+      child(:silence_source, %Membrane.Testing.Source{
+        output: {0, &silence_generator/2},
+        stream_format: %Membrane.RawAudio{
+          sample_format: :s16le,
+          sample_rate: @silence_sample_rate,
+          channels: @silence_channels
+        }
+      }),
+      child(:g711_encoder, Membrane.G711.Encoder),
+      child(:g711_chunker, %G711Chunker{chunk_duration: @silence_buffer_duration_ms}),
+      child(:realtimer, Membrane.Realtimer),
+      get_child(:silence_source)
+      |> get_child(:g711_encoder)
+      |> get_child(:g711_chunker)
+      |> get_child(:realtimer)
+      |> via_in(Pad.ref(:input, ssrc),
+        options: [payloader: Membrane.RTP.G711.Payloader]
+      )
+      |> get_child(:rtp)
+      |> via_out(Pad.ref(:rtp_output, ssrc), options: [encoding: :PCMA])
+      |> get_child(:udp_endpoint)
+    ]
+  end
+
+  defp silence_generator(counter, size) when is_integer(size) and size > 0 do
+    buffers =
+      Enum.map(1..size, fn index ->
+        pts = Membrane.Time.milliseconds((counter + index - 1) * @silence_buffer_duration_ms)
+        %Membrane.Buffer{payload: @silence_payload, pts: pts}
+      end)
+
+    {[buffer: {:output, buffers}], counter + size}
+  end
 
   defp parse_ip!(ip_string) when is_binary(ip_string) do
     case :inet.parse_address(String.to_charlist(ip_string)) do

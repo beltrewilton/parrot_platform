@@ -92,6 +92,9 @@ defmodule Parrot.Media.MediaSession do
       # PortAudio device IDs
       :input_device_id,
       :output_device_id,
+      # Browser signaling owner for the WebRTC branch
+      :browser_owner_pid,
+      :browser_agent_id,
       # Whether handle_session_stop/3 has already been emitted
       session_stop_notified?: false
     ]
@@ -119,7 +122,9 @@ defmodule Parrot.Media.MediaSession do
             output_file: String.t() | nil,
             rtp_port_range: {non_neg_integer(), non_neg_integer()} | nil,
             input_device_id: non_neg_integer() | nil,
-            output_device_id: non_neg_integer() | nil
+            output_device_id: non_neg_integer() | nil,
+            browser_owner_pid: pid() | nil,
+            browser_agent_id: String.t() | nil
           }
   end
 
@@ -225,6 +230,14 @@ defmodule Parrot.Media.MediaSession do
   end
 
   @doc """
+  Forwards a browser WebRTC signaling event to the active media pipeline.
+  """
+  @spec webrtc_media_event(String.t() | pid(), String.t()) :: :ok | {:error, term()}
+  def webrtc_media_event(session, event_json) when is_binary(event_json) do
+    :gen_statem.call(get_pid(session), {:webrtc_media_event, event_json})
+  end
+
+  @doc """
   Terminates the media session.
   """
   @spec terminate_session(String.t() | pid()) :: :ok
@@ -256,6 +269,8 @@ defmodule Parrot.Media.MediaSession do
     rtp_port_range = Keyword.get(opts, :rtp_port_range)
     input_device_id = Keyword.get(opts, :input_device_id)
     output_device_id = Keyword.get(opts, :output_device_id)
+    browser_owner_pid = Keyword.get(opts, :browser_owner_pid)
+    browser_agent_id = Keyword.get(opts, :browser_agent_id)
 
     # Get pre-allocated RTP port if provided
     local_rtp_port = Keyword.get(opts, :local_rtp_port)
@@ -281,6 +296,8 @@ defmodule Parrot.Media.MediaSession do
       rtp_port_range: rtp_port_range,
       input_device_id: input_device_id,
       output_device_id: output_device_id,
+      browser_owner_pid: browser_owner_pid,
+      browser_agent_id: browser_agent_id,
       local_rtp_port: local_rtp_port
     }
 
@@ -516,6 +533,20 @@ defmodule Parrot.Media.MediaSession do
     {:keep_state_and_data, [{:reply, from, state_info}]}
   end
 
+  defp handle_common_event({:call, from}, {:webrtc_media_event, event_json}, _state, data) do
+    reply =
+      case data.pipeline_pid do
+        pipeline_pid when is_pid(pipeline_pid) ->
+          send(pipeline_pid, {:browser_media_event, event_json})
+          :ok
+
+        _other ->
+          {:error, :browser_media_not_ready}
+      end
+
+    {:keep_state_and_data, [{:reply, from, reply}]}
+  end
+
   defp handle_common_event({:call, from}, :terminate_session, _state, data) do
     Logger.info("MediaSession #{data.id}: Explicit terminate requested")
 
@@ -559,12 +590,16 @@ defmodule Parrot.Media.MediaSession do
   end
 
   defp get_pipeline_module_for_config(codec, data) do
-    # Use PortAudioPipeline if using device audio
-    if data.audio_source == :device || data.audio_sink == :device do
-      Parrot.Media.PortAudioPipeline
-    else
-      # Use codec-specific pipeline for file/network only
-      get_pipeline_module(codec)
+    cond do
+      is_pid(data.browser_owner_pid) ->
+        CallCenter.Media.BrowserPortAudioPipeline
+
+      data.audio_source == :device || data.audio_sink == :device ->
+        Parrot.Media.PortAudioPipeline
+
+      true ->
+        # Use codec-specific pipeline for file/network only
+        get_pipeline_module(codec)
     end
   end
 
@@ -1045,6 +1080,8 @@ defmodule Parrot.Media.MediaSession do
       output_file: data.output_file,
       input_device_id: data.input_device_id,
       output_device_id: data.output_device_id,
+      browser_owner_pid: data.browser_owner_pid,
+      browser_agent_id: data.browser_agent_id,
       # Pass the selected codec
       selected_codec: data.selected_codec
     }

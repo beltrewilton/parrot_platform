@@ -130,5 +130,24 @@ defmodule Parrot.Media.MediaSessionAudioTest do
 
       MediaSession.terminate_session(pid)
     end
+
+    test "starts PortAudioPipeline for receive-only audio without requiring microphone input", %{
+      sdp_offer: sdp_offer
+    } do
+      {:ok, pid} =
+        MediaSession.start_link(
+          id: "test-pipeline-3",
+          dialog_id: "dialog-7",
+          role: :uas,
+          audio_source: :silence,
+          audio_sink: :file,
+          output_file: "/tmp/receive-only-recording"
+        )
+
+      {:ok, _answer} = MediaSession.process_offer(pid, sdp_offer)
+      assert :ok = MediaSession.start_media(pid)
+
+      MediaSession.terminate_session(pid)
+    end
   end
 end

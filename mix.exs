@@ -40,19 +40,19 @@ defmodule Parrot.MixProject do
     [
       {:nimble_parsec, "~> 1.3"},
       # Membrane Core and plugins
-      {:membrane_core, "~> 1.0"},
-      {:membrane_rtp_plugin, "~> 0.27"},
+      {:membrane_core, "~> 1.2"},
+      {:membrane_rtp_plugin, "~> 0.30.0"},
       {:membrane_rtp_format, "~> 0.10.0"},
       {:membrane_file_plugin, "~> 0.17"},
       {:membrane_udp_plugin, "~> 0.14"},
       {:membrane_g711_plugin, "~> 0.1"},
-      {:membrane_rtp_g711_plugin, "~> 0.3.0"},
-      {:ex_sdp, "~> 0.17.0"},
+      {:membrane_rtp_g711_plugin, "0.3.0"},
+      {:ex_sdp, "~> 1.1"},
       {:membrane_wav_plugin, "~> 0.10"},
       {:membrane_mp3_mad_plugin, "~> 0.18"},
       {:membrane_ffmpeg_swresample_plugin, "~> 0.20"},
-      {:membrane_realtimer_plugin, "~> 0.10.1"},
-      {:membrane_portaudio_plugin, "~> 0.19.2"},
+      {:membrane_realtimer_plugin, "~> 0.11"},
+      {:membrane_portaudio_plugin, "~> 0.19"},
       {:membrane_tee_plugin, "~> 0.12.0"},
 
       # Documentation

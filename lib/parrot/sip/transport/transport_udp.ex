@@ -137,8 +137,8 @@ defmodule Parrot.Sip.Transport.Udp do
   end
 
   @impl true
-  def handle_call({:set_handler, handler}, _from, state) do
-    {:reply, :ok, %State{state | handler: handler}}
+  def handle_call({:set_handler, handler}, _from, %State{} = state) do
+    {:reply, :ok, %{state | handler: handler}}
   end
 
   def handle_call(:local_uri, _from, %State{local_ip: local_ip, local_port: local_port} = state) do
