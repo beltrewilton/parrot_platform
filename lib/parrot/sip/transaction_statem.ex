@@ -38,6 +38,9 @@ defmodule Parrot.Sip.TransactionStatem do
   @type client_callback :: (client_result -> any())
   @type handler :: term()
 
+  @timer_t1_ms 500
+  @timer_f_ms 64 * @timer_t1_ms
+
   # State definition for the state machine
   @type state_name :: :proceeding | :calling | :completed | :confirmed | :trying | :terminated
   @type state :: %{
@@ -310,11 +313,13 @@ defmodule Parrot.Sip.TransactionStatem do
           handler: callback,
           origmsg: sip_msg,
           transaction: transaction,
+          trans: transaction,
           options: options,
           # Store original request for client
           outreq: sip_msg,
           cancelled: false
         },
+        trans: transaction,
         timers: %{},
         log: Parrot.Config.log_transactions(),
         logbranch: branch
@@ -326,6 +331,8 @@ defmodule Parrot.Sip.TransactionStatem do
 
       # Send the initial request, optionally to an explicit next-hop proxy.
       send_client_request(sip_msg, options)
+
+      state = start_client_terminal_timers(state, transaction, options)
 
       # Start in calling state for client transactions
       {:ok, :calling, state}
@@ -363,9 +370,9 @@ defmodule Parrot.Sip.TransactionStatem do
   def callback_mode, do: :state_functions
 
   # Real implementation of process_actions/2 to handle SIP actions and timers.
-  defp process_actions([], _data) do
+  defp process_actions([], data) do
     Logger.debug("[process_actions] No more actions to process.")
-    {:keep_state_and_data, []}
+    {:keep_state, data}
   end
 
   defp process_actions([action | rest], data) do
@@ -417,11 +424,7 @@ defmodule Parrot.Sip.TransactionStatem do
 
         Logger.debug("[process_actions] Timer started. Timers map: #{inspect(timers)}")
 
-        case process_actions(rest, %{data | timers: timers}) do
-          {:keep_state_and_data, _} -> {:keep_state, data}
-          {:keep_state, _} -> {:keep_state, data}
-          :stop -> {:stop, :normal, data}
-        end
+        process_actions(rest, %{data | timers: timers})
 
       {:cancel_timer, timer_name} ->
         Logger.debug("[process_actions] Action is :cancel_timer. Timer: #{inspect(timer_name)}")
@@ -461,6 +464,11 @@ defmodule Parrot.Sip.TransactionStatem do
         # Implement user notification if needed
         process_actions(rest, data)
 
+      {:notify_stop, reason} ->
+        Logger.debug("[process_actions] Action is :notify_stop. Reason: #{inspect(reason)}")
+        notify_client_handler(data, {:stop, reason})
+        process_actions(rest, data)
+
       :ignore ->
         Logger.debug("[process_actions] Action is :ignore. Skipping.")
 
@@ -488,7 +496,10 @@ defmodule Parrot.Sip.TransactionStatem do
         response.source
 
       request = request_message_for_response(data) ->
-        Logger.debug("[process_actions] Falling back to top Via from request: #{inspect(request)}")
+        Logger.debug(
+          "[process_actions] Falling back to top Via from request: #{inspect(request)}"
+        )
+
         source_from_top_via(request)
 
       true ->
@@ -656,7 +667,10 @@ defmodule Parrot.Sip.TransactionStatem do
 
   defp last_response_for_retransmit(data) do
     cond do
-      match?(%{last_response: last_response} when not is_nil(last_response), Map.get(data, :trans)) ->
+      match?(
+        %{last_response: last_response} when not is_nil(last_response),
+        Map.get(data, :trans)
+      ) ->
         data.trans.last_response
 
       match?(
@@ -714,6 +728,59 @@ defmodule Parrot.Sip.TransactionStatem do
 
   defp maybe_put_ack_header(headers, _name, nil), do: headers
   defp maybe_put_ack_header(headers, name, value), do: Map.put(headers, name, value)
+
+  defp start_client_terminal_timers(
+         state,
+         %Transaction{type: :non_invite_client, method: :bye},
+         options
+       ) do
+    timeout = Map.get(options, :timer_f_timeout_ms, @timer_f_ms)
+
+    case process_actions([{:start_timer, :f, timeout}], state) do
+      {:keep_state, new_state} -> new_state
+      {:keep_state_and_data, _} -> state
+      :stop -> state
+    end
+  end
+
+  defp start_client_terminal_timers(state, _transaction, _options), do: state
+
+  defp notify_client_handler(%{data: %{handler: handler}}, event) when is_function(handler) do
+    handler.(event)
+  end
+
+  defp notify_client_handler(_data, _event), do: :ok
+
+  defp maybe_store_client_response(
+         %{status_code: status_code} = response,
+         %{trans: %Transaction{type: :non_invite_client} = trans} = state
+       )
+       when status_code >= 200 do
+    trans = %{trans | state: :completed, last_response: response}
+
+    state
+    |> put_client_transaction(trans)
+    |> cancel_named_timer(:f)
+  end
+
+  defp maybe_store_client_response(
+         %{status_code: status_code} = response,
+         %{trans: %Transaction{type: :non_invite_client} = trans} = state
+       )
+       when status_code >= 100 and status_code < 200 do
+    put_client_transaction(state, %{trans | state: :proceeding, last_response: response})
+  end
+
+  defp maybe_store_client_response(_response, state), do: state
+
+  defp put_client_transaction(%{data: data} = state, %Transaction{} = transaction) do
+    data =
+      data
+      |> Map.put(:transaction, transaction)
+      |> Map.put(:trans, transaction)
+
+    %{state | trans: transaction, data: data}
+  end
 
   defp cancel_named_timer(timer_name, data) do
     timers = data.timers || %{}
@@ -805,6 +872,8 @@ defmodule Parrot.Sip.TransactionStatem do
     cancel_client_transaction(data, inner_data, out_req)
   end
 
+  def trying(:info, {:event, timer_event}, data), do: handle_timer_info(timer_event, data)
+
   # Handle set_owner events
   def trying(:cast, {:set_owner, code, pid}, %{owner_mon: ref, data: data} = state) do
     Logger.debug(
@@ -884,6 +953,8 @@ defmodule Parrot.Sip.TransactionStatem do
 
   def proceeding(:cast, event, data), do: handle_common_event(event, data)
 
+  def proceeding(:info, {:event, timer_event}, data), do: handle_timer_info(timer_event, data)
+
   def proceeding(event_type, event, state) do
     Logger.warning("TransactionStatem.proceeding/3: Ignoring unexpected event")
     dbg(event_type)
@@ -908,6 +979,7 @@ defmodule Parrot.Sip.TransactionStatem do
     end
 
     maybe_send_non_2xx_invite_ack(response, data)
+    state = maybe_store_client_response(response, state)
 
     # Handle state transitions based on response code
     cond do
@@ -938,6 +1010,8 @@ defmodule Parrot.Sip.TransactionStatem do
   end
 
   def calling(:cast, event, data), do: handle_common_event(event, data)
+
+  def calling(:info, {:event, timer_event}, data), do: handle_timer_info(timer_event, data)
 
   def calling(event_type, event, state) do
     Logger.warning("TransactionStatem.calling/3: Ignoring unexpected event")
@@ -986,6 +1060,8 @@ defmodule Parrot.Sip.TransactionStatem do
 
   def completed(:cast, event, data), do: handle_common_event(event, data)
 
+  def completed(:info, {:event, timer_event}, data), do: handle_timer_info(timer_event, data)
+
   def completed(_event_type, _event, state) do
     Logger.warning("TransactionStatem.completed/3: Ignoring unexpected event")
     {:keep_state, state}
@@ -994,6 +1070,8 @@ defmodule Parrot.Sip.TransactionStatem do
   # CONFIRMED STATE
   def confirmed(:cast, event, data), do: handle_common_event(event, data)
 
+  def confirmed(:info, {:event, timer_event}, data), do: handle_timer_info(timer_event, data)
+
   def confirmed(_event_type, _event, state) do
     Logger.warning("TransactionStatem.confirmed/3: Ignoring unexpected event")
     {:keep_state, state}
@@ -1001,6 +1079,8 @@ defmodule Parrot.Sip.TransactionStatem do
 
   # TERMINATED STATE
   def terminated(:cast, event, data), do: handle_common_event(event, data)
+
+  def terminated(:info, {:event, timer_event}, data), do: handle_timer_info(timer_event, data)
 
   def terminated(_event_type, _event, state) do
     Logger.warning("TransactionStatem.terminated/3: Ignoring unexpected event")
@@ -1099,7 +1179,11 @@ defmodule Parrot.Sip.TransactionStatem do
     end
   end
 
-  def handle_event(:info, {:event, timer_event}, _state, %{trans: trans} = data) do
+  def handle_event(:info, {:event, timer_event}, _state, data) do
+    handle_timer_info(timer_event, data)
+  end
+
+  defp handle_timer_info(timer_event, %{trans: trans} = data) do
     Logger.debug(
       "trans: timer fired #{inspect(timer_event)}. state: #{inspect(data, @inspect_opts)}"
     )
@@ -1108,9 +1192,23 @@ defmodule Parrot.Sip.TransactionStatem do
     new_data = %{data | trans: new_trans}
 
     case process_actions(actions, new_data) do
+      {:keep_state_and_data, _} ->
+        keep_or_transition(trans, new_trans, new_data)
+
+      {:keep_state, processed_data} ->
+        keep_or_transition(trans, new_trans, processed_data)
+
       :continue -> {:keep_state, new_data}
       :stop -> {:stop, :normal, new_data}
     end
+  end
+
+  defp keep_or_transition(%Transaction{state: state}, %Transaction{state: state}, data) do
+    {:keep_state, data}
+  end
+
+  defp keep_or_transition(_old_trans, %Transaction{state: new_state}, data) do
+    {:next_state, new_state, data}
   end
 
   def handle_event(

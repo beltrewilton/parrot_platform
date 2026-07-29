@@ -1377,6 +1377,19 @@ defmodule Parrot.Sip.Transaction do
     end
   end
 
+  def handle_event(
+        {:timer, :f},
+        %__MODULE__{state: state, type: :non_invite_client, method: :bye} = transaction
+      )
+      when state in [:calling, :trying, :proceeding] do
+    Logger.debug(
+      "[handle_event] Timer F expired for outbound BYE client transaction: #{inspect(transaction)}"
+    )
+
+    transaction = %{transaction | state: :terminated}
+    {transaction, [{:notify_stop, :timeout}, :terminate_transaction]}
+  end
+
   # Fallback for any other state/event
   def handle_event(_event, transaction) do
     Logger.debug("[handle_event] (fallback) Any state. Transaction: #{inspect(transaction)}")

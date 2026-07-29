@@ -1,7 +1,7 @@
 defmodule Parrot.Sip.TransactionStatemTest do
   use ExUnit.Case, async: false
 
-  alias Parrot.Sip.TransactionStatem
+  alias Parrot.Sip.{Transaction, TransactionStatem}
   alias Parrot.Sip.Message
   alias Parrot.Sip.Headers.{Via, From, To, CSeq, Contact}
   alias Parrot.Sip.TestHandler
@@ -223,6 +223,47 @@ defmodule Parrot.Sip.TransactionStatemTest do
   end
 
   describe "response handling improvements" do
+    test "outbound BYE timer F notifies the owner with a timeout" do
+      parent = self()
+      request = %{create_bye_request_in_dialog() | direction: :outgoing}
+      {:ok, transaction} = Transaction.create_non_invite_client(request)
+      transaction = %{transaction | state: :calling}
+
+      state =
+        client_transaction_state(transaction, fn event ->
+          send(parent, {:transaction_callback, event})
+        end)
+
+      assert {:stop, :normal, new_state} =
+               TransactionStatem.calling(:info, {:event, :f}, state)
+
+      assert new_state.trans.state == :terminated
+      assert_receive {:transaction_callback, {:stop, :timeout}}
+    end
+
+    test "outbound BYE final response cancels timer F" do
+      parent = self()
+      request = %{create_bye_request_in_dialog() | direction: :outgoing}
+      {:ok, transaction} = Transaction.create_non_invite_client(request)
+      transaction = %{transaction | state: :calling}
+      timer_ref = Process.send_after(self(), :unexpected_timer_f, 10_000)
+
+      state =
+        transaction
+        |> client_transaction_state(fn event -> send(parent, {:transaction_callback, event}) end)
+        |> Map.put(:timers, %{f: timer_ref})
+
+      response = Message.reply(request, 200, "OK")
+
+      assert {:next_state, :completed, new_state} =
+               TransactionStatem.calling(:cast, {:received, response}, state)
+
+      assert new_state.timers == %{}
+      assert new_state.trans.state == :completed
+      assert_receive {:transaction_callback, {:response, ^response}}
+      refute_receive :unexpected_timer_f
+    end
+
     test "client INVITE sends ACK for non-2xx final responses" do
       parent = self()
 
@@ -312,6 +353,27 @@ defmodule Parrot.Sip.TransactionStatemTest do
   end
 
   # Helper functions for creating test messages
+
+  defp client_transaction_state(transaction, callback) do
+    request = transaction.request
+
+    %{
+      type: :client,
+      trans: transaction,
+      data: %{
+        handler: callback,
+        origmsg: request,
+        transaction: transaction,
+        trans: transaction,
+        options: %{},
+        outreq: request,
+        cancelled: false
+      },
+      timers: %{},
+      log: false,
+      logbranch: transaction.branch
+    }
+  end
 
   defp create_invite_request_without_branch do
     %Message{
