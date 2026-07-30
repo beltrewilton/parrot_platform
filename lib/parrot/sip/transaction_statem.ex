@@ -29,7 +29,7 @@ defmodule Parrot.Sip.TransactionStatem do
 
   @inspect_opts [pretty: false, limit: :infinity, width: 80, syntax_colors: []]
 
-  alias Parrot.Sip.Headers.Via
+  alias Parrot.Sip.Headers.{CSeq, Via}
   alias Parrot.Sip.Transaction
   alias Parrot.Sip.{Handler, UAS, Message, Parser}
 
@@ -1105,7 +1105,7 @@ defmodule Parrot.Sip.TransactionStatem do
         "call-id" => out_req.headers["call-id"],
         "from" => out_req.headers["from"],
         "to" => out_req.headers["to"],
-        "cseq" => %{number: out_req.headers["cseq"].number, method: :cancel},
+        "cseq" => CSeq.new(out_req.headers["cseq"].number, :cancel),
         "via" => out_req.headers["via"]
       })
 
