@@ -39,6 +39,7 @@ defmodule Parrot.Sip.TransactionStatem do
   @type handler :: term()
 
   @timer_t1_ms 500
+  @timer_b_ms 64 * @timer_t1_ms
   @timer_f_ms 64 * @timer_t1_ms
 
   # State definition for the state machine
@@ -731,6 +732,20 @@ defmodule Parrot.Sip.TransactionStatem do
 
   defp start_client_terminal_timers(
          state,
+         %Transaction{type: :invite_client},
+         options
+       ) do
+    timeout = Map.get(options, :timer_b_timeout_ms, @timer_b_ms)
+
+    case process_actions([{:start_timer, :b, timeout}], state) do
+      {:keep_state, new_state} -> new_state
+      {:keep_state_and_data, _} -> state
+      :stop -> state
+    end
+  end
+
+  defp start_client_terminal_timers(
+         state,
          %Transaction{type: :non_invite_client, method: :bye},
          options
        ) do
@@ -772,6 +787,16 @@ defmodule Parrot.Sip.TransactionStatem do
   end
 
   defp maybe_store_client_response(_response, state), do: state
+
+  defp maybe_cancel_invite_timer_b(
+         %{status_code: status_code},
+         %{trans: %Transaction{type: :invite_client}} = state
+       )
+       when status_code >= 100 do
+    cancel_named_timer(:b, state)
+  end
+
+  defp maybe_cancel_invite_timer_b(_response, state), do: state
 
   defp put_client_transaction(%{data: data} = state, %Transaction{} = transaction) do
     data =
@@ -980,6 +1005,7 @@ defmodule Parrot.Sip.TransactionStatem do
 
     maybe_send_non_2xx_invite_ack(response, data)
     state = maybe_store_client_response(response, state)
+    state = maybe_cancel_invite_timer_b(response, state)
 
     # Handle state transitions based on response code
     cond do
@@ -1007,6 +1033,20 @@ defmodule Parrot.Sip.TransactionStatem do
 
   def calling(:cast, :cancel, %{data: %{cancelled: false, outreq: out_req} = inner_data} = state) do
     cancel_client_transaction(state, inner_data, out_req)
+  end
+
+  def calling(
+        :info,
+        {:event, :b},
+        %{type: :client, data: %{handler: handler, trans: %Transaction{type: :invite_client}}} = state
+      ) do
+    Logger.warning("trans: INVITE client transaction timed out before any response")
+
+    if is_function(handler) do
+      handler.({:stop, :timeout})
+    end
+
+    {:stop, :normal, %{state | timers: Map.delete(state.timers || %{}, :b)}}
   end
 
   def calling(:cast, event, data), do: handle_common_event(event, data)
@@ -1215,11 +1255,11 @@ defmodule Parrot.Sip.TransactionStatem do
         :state_timeout,
         :cancel_timeout,
         _state,
-        %{trans: trans, data: %{callback: callback}} = data
+        %{trans: trans, data: %{handler: _handler}} = data
       ) do
     unless trans.last_response && trans.last_response.status_code >= 200 do
       Logger.warning("trans: remote side did not respond after CANCEL request: terminate")
-      callback.({:stop, :timeout})
+      notify_client_handler(data, {:stop, :timeout})
     end
 
     {:stop, :normal, data}
