@@ -95,6 +95,9 @@ defmodule Parrot.Media.MediaSession do
       # Browser signaling owner for the WebRTC branch
       :browser_owner_pid,
       :browser_agent_id,
+      # Optional side-channel consumer for Whisper-compatible PCM chunks
+      :audio_chunk_consumer,
+      :audio_chunk_consumer_args,
       # Whether handle_session_stop/3 has already been emitted
       session_stop_notified?: false
     ]
@@ -124,7 +127,9 @@ defmodule Parrot.Media.MediaSession do
             input_device_id: non_neg_integer() | nil,
             output_device_id: non_neg_integer() | nil,
             browser_owner_pid: pid() | nil,
-            browser_agent_id: String.t() | nil
+            browser_agent_id: String.t() | nil,
+            audio_chunk_consumer: module() | nil,
+            audio_chunk_consumer_args: term()
           }
   end
 
@@ -271,6 +276,8 @@ defmodule Parrot.Media.MediaSession do
     output_device_id = Keyword.get(opts, :output_device_id)
     browser_owner_pid = Keyword.get(opts, :browser_owner_pid)
     browser_agent_id = Keyword.get(opts, :browser_agent_id)
+    audio_chunk_consumer = Keyword.get(opts, :audio_chunk_consumer)
+    audio_chunk_consumer_args = Keyword.get(opts, :audio_chunk_consumer_args, %{})
 
     # Get pre-allocated RTP port if provided
     local_rtp_port = Keyword.get(opts, :local_rtp_port)
@@ -298,6 +305,8 @@ defmodule Parrot.Media.MediaSession do
       output_device_id: output_device_id,
       browser_owner_pid: browser_owner_pid,
       browser_agent_id: browser_agent_id,
+      audio_chunk_consumer: audio_chunk_consumer,
+      audio_chunk_consumer_args: audio_chunk_consumer_args,
       local_rtp_port: local_rtp_port
     }
 
@@ -1082,6 +1091,8 @@ defmodule Parrot.Media.MediaSession do
       output_device_id: data.output_device_id,
       browser_owner_pid: data.browser_owner_pid,
       browser_agent_id: data.browser_agent_id,
+      audio_chunk_consumer: data.audio_chunk_consumer,
+      audio_chunk_consumer_args: data.audio_chunk_consumer_args,
       # Pass the selected codec
       selected_codec: data.selected_codec
     }
